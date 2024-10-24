@@ -1,0 +1,93 @@
+from coatopt.networks import hppo
+from coatopt.environments import CoatingStack
+from coatopt.config import read_config, read_materials
+from coatopt.train_coating_hppo import training_loop
+import os
+import argparse
+
+if __name__ == "__main__":
+
+
+    parser = argparse.ArgumentParser()
+
+    parser.add_argument("-c", "--config", type=str, required=False, default="none")
+    parser.add_argument('--train', action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument('--test', action=argparse.BooleanOptionalAction, default=False)
+
+    args = parser.parse_args()
+
+    config = read_config(os.path.abspath(args.config)) 
+
+
+    materials = read_materials(os.path.join(config.get("General", "materials_file")))
+
+
+    env = CoatingStack(
+        config.get("Data", "n_layers"), 
+        config.get("Data", "min_thickness"),
+        config.get("Data", "max_thickness"),
+        materials,
+        opt_init=False)
+
+
+    device = "cpu"
+
+    insize = env.obs_space_size if config.get("Data", "use_observation")==True else env.state_space_size
+
+    agent = hppo.HPPO(
+            env.obs_space_shape,
+            env.n_materials, 
+            env.n_materials,
+            hidden_size=config.get("Network", "hidden_size"),
+            disc_lr_policy=config.get("Training", "lr_discrete_policy"),
+            cont_lr_policy=config.get("Training", "lr_continuous_policy"),
+            lr_value=config.get("Training", "lr_value"),
+            lr_step=config.get("Training", "lr_step"),
+            lr_min=config.get("Training", "lr_min"),
+            lower_bound=0,
+            upper_bound=1,
+            n_updates=config.get("Training", "n_episodes_per_update"),
+            beta=config.get("Training", "entropy_beta"),
+            clip_ratio=config.get("Training", "clip_ratio"),
+            gamma=config.get("Training", "gamma"),
+            include_layer_number=config.get("Network", "include_layer_number"),
+            pre_type=config.get("Network", "pre_network_type"),
+            n_heads=2,
+            n_attn_layers=2,
+            optimiser=config.get("Training", "optimiser"),
+            )
+ 
+    
+    if config.get("General", "load_model"):
+        if config.get("General", "load_model_path") == "root":
+            agent.load_networks(config.get("General", "root_dir"))
+        else:
+            agent.load_networks(config.get("General", "load_model_path"))
+
+
+    optimal_state = env.get_optimal_state()
+    optimal_value = env.compute_state_value(optimal_state)
+    fig, ax = env.plot_stack(optimal_state)
+    ax.set_title(f" opt val: {optimal_value}")
+    fig.savefig(os.path.join(config.get("General", "root_dir"),  f"opt_state.png"))
+    
+    
+    rewards, max_train_state = training_loop(
+        config.get("General", "root_dir"),
+        env, 
+        agent, 
+        max_episodes=config.get("Training", "n_iterations"),
+        n_ep_train=config.get("Training", "n_epochs_per_update"),
+        max_layers=config.get("Data", "n_layers"),
+        useobs=config.get("Data", "use_observation"),
+        beta_start=0.01,
+        beta_end=0.01,
+        beta_decay_length=1000,
+        beta_decay_start=100,
+        lr_start=1e-3,
+        lr_end=1e-3,
+        lr_decay_length=4000,
+        upper_bound=config.get("Data", "min_thickness"),
+        lower_bound=config.get("Data", "max_thickness"),
+        save_interval=config.get("Training", "model_save_interval")
+        )
