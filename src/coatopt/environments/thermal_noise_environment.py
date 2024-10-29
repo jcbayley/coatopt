@@ -341,21 +341,29 @@ class CoatingStack():
             3: 'red'      # m3
         }
 
+        labels = []
         for row in data:
             if row[1] == 1:
                 colors.append(color_map[0])  # m1
+                labels.append(f"{self.materials[0]['name']}")
             elif row[2] == 1:
                 colors.append(color_map[1])  # m2
+                labels.append(f"{self.materials[1]['name']} (1/4 wave{1064e-9 /(4*self.materials[1]['n'])})")
             elif row[3] == 1:
                 colors.append(color_map[2])  # m3
+                labels.append(f"{self.materials[2]['name']} (1/4 wave{1064e-9 /(4*self.materials[2]['n'])})")
             elif row[4] == 1:
                 colors.append(color_map[3])  # No active material
+                labels.append(f"{self.materials[3]['name']} (1/4 wave{1064e-9 /(4*self.materials[3]['n'])})")
             else:
                 pass
 
+
         # Create a bar plot
         fig, ax = plt.subplots(figsize=(10, 6))
-        bars = ax.bar(range(L), thickness, color=colors)
+        #bars = ax.bar(range(L), thickness, color=colors)
+        bars = [ax.bar(x, thickness[x], color=colors[x], label=labels[x]) for x in range(L)]
+
 
         # Add labels and title
         ax.set_xlabel('Layer Index')
@@ -363,15 +371,21 @@ class CoatingStack():
         ax.set_title('Layer Thickness Visualization')
         ax.set_xticks(range(L), [f'Layer {i + 1}' for i in range(L)])  # X-axis labels
 
-        # Show thickness values on top of bars
-        for bar in bars:
-            yval = bar.get_height()
-            ax.text(bar.get_x() + bar.get_width()/2, yval, f'{yval:.1f}', ha='center', va='bottom')
+        #  Show thickness values on top of bars
+        for x, bar in enumerate(bars):
+            yval = thickness[x]
+            ax.text(bar[0].get_x() + bar[0].get_width() / 2, yval, f'{yval:.1f}', ha='center', va='bottom')
+
 
         ax.set_ylim(0, np.max(thickness)*(1.1) )  # Set Y-axis limit
         ax.grid(axis='y', linestyle='--')
 
-        return fig, ax 
+        unique_labels = dict(zip(labels, colors))
+        handles = [plt.Line2D([0], [0], marker='o', color='w', label=label, markersize=10, markerfacecolor=color)
+               for label, color in unique_labels.items()]
+        ax.legend(handles=handles, title="Materials")
+
+        return fig, ax  
 
 if __name__ == "__main__":
     
