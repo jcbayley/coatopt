@@ -53,8 +53,14 @@ if __name__ == "__main__":
             include_layer_number=config.get("Network", "include_layer_number"),
             pre_type=config.get("Network", "pre_network_type"),
             n_heads=2,
-            n_attn_layers=2,
+            n_pre_layers=config.get("Network", "n_pre_layers"),
             optimiser=config.get("Training", "optimiser"),
+            n_continuous_layers=config.get("Network", "n_continuous_layers"),
+            n_discrete_layers=config.get("Network", "n_discrete_layers"),
+            n_value_layers=config.get("Network", "n_value_layers"),
+            discrete_hidden_size=config.get("Network", "discrete_hidden_size"),
+            continuous_hidden_size=config.get("Network", "continuous_hidden_size"),
+            value_hidden_size=config.get("Network", "value_hidden_size"),
             )
  
     

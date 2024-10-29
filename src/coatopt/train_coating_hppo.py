@@ -187,6 +187,8 @@ def training_loop(
                 ax.set_title(f"Optimal rew: {max_reward}, opt val: {opt_value}")
                 fig.savefig(os.path.join(outdir,  f"best_state.png"))
 
+                agent.save_networks(outdir)
+
             returns = agent.get_returns(t_rewards)
             agent.replay_buffer.update_returns(returns)
             
@@ -205,9 +207,6 @@ def training_loop(
 
         rewards.append(episode_reward)
         values.append(env.compute_state_value(state))
-
-        if episode % save_interval == 0:
-            agent.save_networks(outdir)
 
         if episode % 20 == 0 and episode !=0 :
             reward_fig, reward_ax = plt.subplots(nrows=4, figsize=(7,9))
@@ -271,8 +270,10 @@ def training_loop(
             print(f"Episode {episode + 1}: Total Reward: {episode_reward}")
 
             if episode % 100 == 0:
-                stfig = plot_state(state)
-                stfig.savefig(os.path.join(state_dir, f"episode_{episode}.png"))
+                fig, ax = env.plot_stack(state)
+                ax.set_title(f"Optimal rew: {max_reward}, opt val: {opt_value}")
+                fig.savefig(os.path.join(outdir,  "states", f"episode_{episode}.png"))
+            
 
     print("Max_state: ", max_reward)
     print(max_state)

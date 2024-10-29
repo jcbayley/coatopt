@@ -3,6 +3,8 @@ import torch
 from torch.nn import functional as F
 from collections import deque
 from coatopt.networks.truncated_normal import TruncatedNormalDist
+from coatopt.networks.policy_nets import DiscretePolicy, ContinuousPolicy, Value
+from coatopt.networks.pre_networks import PreNetworkLinear, PreNetworkLSTM, PreNetworkAttention
 import os
 import sys
 
@@ -96,8 +98,15 @@ class HPPO(object):
             include_layer_number=False,
             pre_type="linear",
             n_heads=2,
-            n_attn_layers=2,
-            optimiser="adam"):
+            n_pre_layers=2,
+            optimiser="adam",
+            n_discrete_layers=2,
+            n_continuous_layers=2,
+            n_value_layers=2,
+            value_hidden_size=32,
+            discrete_hidden_size=32,
+            continuous_hidden_size=32,
+            activation_function="relu"):
 
         print("sd", state_dim)
         self.upper_bound = upper_bound
@@ -114,21 +123,22 @@ class HPPO(object):
             self.pre_output_dim,
             hidden_size,
             num_heads=n_heads,
-            num_layers=n_attn_layers
+            num_layers=n_pre_layers
         )
         elif pre_type == "lstm":
             self.pre_network = PreNetworkLSTM(
                     state_dim[-1],
-                    hidden_size,
                     self.pre_output_dim,
+                    hidden_size,
                     include_layer_number=include_layer_number,
-                    n_layers = n_attn_layers
+                    n_layers = n_pre_layers
                 )
         elif pre_type == "linear":
             self.pre_network = PreNetworkLinear(
                 np.prod(state_dim),
-                hidden_size,
                 self.pre_output_dim,
+                hidden_size,
+                n_layers=n_pre_layers,
                 include_layer_number=include_layer_number
             )
         else:
@@ -136,58 +146,62 @@ class HPPO(object):
     
 
         self.policy_discrete = DiscretePolicy(
-            hidden_size, 
+            self.pre_output_dim, 
             num_discrete, 
-            num_cont, 
-            hidden_size,
+            discrete_hidden_size,
+            n_layers=n_discrete_layers,
             lower_bound=lower_bound,
             upper_bound=upper_bound,
-            include_layer_number=include_layer_number)
+            include_layer_number=include_layer_number,
+            activation=activation_function)
         
         self.policy_continuous = ContinuousPolicy(
-            hidden_size, 
-            num_discrete, 
+            self.pre_output_dim, 
             num_cont, 
-            hidden_size,
+            continuous_hidden_size,
+            n_layers=n_continuous_layers,
             lower_bound=lower_bound,
             upper_bound=upper_bound,
-            include_layer_number=include_layer_number)
+            include_layer_number=include_layer_number,
+            activation=activation_function)
         
         self.value = Value(
-            hidden_size, 
-            num_discrete, 
-            num_cont, 
-            hidden_size,
+            self.pre_output_dim, 
+            value_hidden_size,
+            n_layers=n_value_layers,
             lower_bound=lower_bound,
             upper_bound=upper_bound,
-            include_layer_number=include_layer_number)
+            include_layer_number=include_layer_number,
+            activation=activation_function)
         
         self.policy_old_discrete = DiscretePolicy(
-            hidden_size, 
+            self.pre_output_dim, 
             num_discrete, 
-            num_cont, 
-            hidden_size,
+            discrete_hidden_size,
+            n_layers=n_discrete_layers,
             lower_bound=lower_bound,
             upper_bound=upper_bound,
-            include_layer_number=include_layer_number)
+            include_layer_number=include_layer_number,
+            activation=activation_function)
         
         self.policy_old_continuous = ContinuousPolicy(
-            hidden_size, 
-            num_discrete, 
+            self.pre_output_dim, 
             num_cont, 
-            hidden_size,
+            continuous_hidden_size,
+            n_layers=n_continuous_layers,
             lower_bound=lower_bound,
             upper_bound=upper_bound,
-            include_layer_number=include_layer_number)
+            include_layer_number=include_layer_number,
+            activation=activation_function)
         
         self.value_old = Value(
-            hidden_size, 
-            num_discrete, 
-            num_cont, 
-            hidden_size,
+            self.pre_output_dim, 
+            value_hidden_size,
+            n_layers=n_value_layers,
             lower_bound=lower_bound,
             upper_bound=upper_bound,
-            include_layer_number=include_layer_number)
+            include_layer_number=include_layer_number,
+            activation=activation_function)
         
         self.policy_old_discrete.load_state_dict(self.policy_discrete.state_dict())
         self.policy_old_continuous.load_state_dict(self.policy_continuous.state_dict())
@@ -415,282 +429,7 @@ class HPPO(object):
         self.value.load_state_dict(vp["model_state_dict"])
         self.optimiser_value.load_state_dict(vp["optimiser_state_dict"])
 
-class PositionalEncoding(torch.nn.Module):
-
-    def __init__(self, d_model: int, dropout: float = 0.1, max_len: int = 5000):
-        super().__init__()
-        self.dropout = torch.nn.Dropout(p=dropout)
-
-        position = torch.arange(max_len).unsqueeze(1)
-        div_term = torch.exp(torch.arange(0, d_model, 2) * (-np.log(10000.0) / d_model))
-        pe = torch.zeros(max_len, 1, d_model)
-        pe[:, 0, 0::2] = torch.sin(position * div_term)
-        pe[:, 0, 1::2] = torch.cos(position * div_term)
-        self.register_buffer('pe', pe)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """
-        Arguments:
-            x: Tensor, shape ``[seq_len, batch_size, embedding_dim]``
-        """
-        #print(x.size())
-        #print(self.pe[:x.size(1)].size())
-        x = x + torch.swapaxes(self.pe[:x.size(1)], 0,1)
-        return self.dropout(x)
 
 
-class PreNetworkAttention(torch.nn.Module):
-    def __init__(self, input_dim, output_dim, embed_dim, num_heads=2, num_layers=2):
-        super(PreNetworkAttention, self).__init__()
-        self.embedding = torch.nn.Linear(input_dim, embed_dim)
-        encoder_layers = torch.nn.TransformerEncoderLayer(embed_dim, num_heads)
-        self.transformer_encoder = torch.nn.TransformerEncoder(encoder_layers, num_layers)
-        self.fc = torch.nn.Linear(embed_dim, output_dim)
-        
-    def forward(self, x, layer_number=None):
-        x = self.embedding(x)
-        x = x.permute(1, 0, 2)  # Change to shape (seq_len, batch_size, embed_dim) for Transformer encoder
-        x = self.transformer_encoder(x)
-        x = x.permute(1, 0, 2)  # Change back to shape (batch_size, seq_len, embed_dim)
-        x = self.fc(x)
-        if layer_number != None:
-            #indices = layer_number.flatten().view(x.size(0), 1, 1).to(torch.int64)
-            #indices = indices.expand(x.size(0), 1, x.size(2))
-            #x = torch.gather(x, 1, indices)
-            x = torch.mean(x, dim=1)
-            #x[:, layer_number.flatten()]
-        else:
-            x = torch.mean(x, dim=1)  # Global average pooling
-        return x.flatten(start_dim=1)
-    
-class PreNetworkLinear(torch.nn.Module):
-    def __init__(
-            self, 
-            input_dim, 
-            output_dim, 
-            hidden_dim, 
-            lower_bound=0, 
-            upper_bound=1,
-            include_layer_number=False):
-        super(PreNetworkLinear, self).__init__()
-        self.output_dim = output_dim
-        self.lower_bound = lower_bound
-        self.upper_bound = upper_bound
-        if include_layer_number:
-            input_dim = input_dim + 1
-        self.input = torch.nn.Linear(input_dim, hidden_dim)
 
-        self.affine1 = torch.nn.Linear(hidden_dim, hidden_dim)
-        self.affine2 = torch.nn.Linear(hidden_dim, hidden_dim)
-        self.affine3 = torch.nn.Linear(hidden_dim, hidden_dim)
-
-        self.output = torch.nn.Linear(hidden_dim, output_dim)
-
-        self.saved_log_probs = []
-        self.rewards = []
-
-    def forward(self, x, layer_number=None):
-        x = x.flatten(1)
-        if layer_number is not None:
-            x = torch.cat([x, layer_number], dim=1)
-        x = self.input(x)
-        #x = self.dropout(x)
-        x = F.relu(x)
-        x = self.affine1(x)
-        x = F.relu(x)
-        x = self.affine2(x)
-        x = F.relu(x)
-        x = self.affine3(x)
-        x = F.relu(x)
-        #x = self.dropout(x)
-        out= self.output(x)
-        return out
-    
-class PreNetworkLSTM(torch.nn.Module):
-    def __init__(
-            self, 
-            input_dim, 
-            output_dim, 
-            hidden_dim, 
-            lower_bound=0, 
-            upper_bound=1,
-            include_layer_number=False,
-            n_layers=2):
-        super(PreNetworkLSTM, self).__init__()
-        self.output_dim = output_dim
-        self.lower_bound = lower_bound
-        self.upper_bound = upper_bound
-        self.include_layer_number = include_layer_number
-        
-        # LSTM layer
-        self.lstm = torch.nn.LSTM(input_dim, hidden_dim, batch_first=True, num_layers = n_layers)
-        
-        # Fully connected layers after LSTM
-        self.affine1 = torch.nn.Linear(hidden_dim+ (1 if include_layer_number else 0), hidden_dim)
-        self.affine2 = torch.nn.Linear(hidden_dim, hidden_dim)
-
-        self.output = torch.nn.Linear(hidden_dim, output_dim)
-
-    def forward(self, x, layer_number=None):
-        # x shape: (B, N, I)
-        
-        # LSTM expects input shape (B, N, I) and we use batch_first=True
-        lstm_out, (h_n, c_n) = self.lstm(x)  # lstm_out shape: (B, N, hidden_dim)
-
-        # Use the last output of LSTM for further processing
-        out = lstm_out[:, -1, :]  # Take the output from the last layer (N)
-        
-        if self.include_layer_number and layer_number is not None:
-            # Expand layer number to match the (B, N) shape
-            layer_number = layer_number#.unsqueeze(-1)  # Shape: (B, N, 1)
-            out = torch.cat([out, layer_number], dim=-1)  # Concatenate along the last dimension
-
-        # Fully connected layers
-        out = self.affine1(out)
-        out = F.relu(out)
-        out = self.affine2(out)
-        out = F.relu(out)
-        
-        # Final output layer
-        out = self.output(out)  # Shape: (B, O)
-        
-        return out
-
-class DiscretePolicy(torch.nn.Module):
-    def __init__(
-            self, 
-            input_dim, 
-            output_dim_discrete, 
-            output_dim_continuous, 
-            hidden_dim, 
-            lower_bound=0, 
-            upper_bound=1,
-            include_layer_number=False,
-            pre_model="linear"):
-        super(DiscretePolicy, self).__init__()
-        self.output_dim_discrete = output_dim_discrete
-        self.lower_bound = lower_bound
-        self.upper_bound = upper_bound
-        if include_layer_number:
-            self.input = torch.nn.Linear(input_dim + 1, hidden_dim)
-        else:
-            self.input = torch.nn.Linear(input_dim, hidden_dim)
-        self.affine2 = torch.nn.Linear(hidden_dim, hidden_dim)
-        #self.affine3 = torch.nn.Linear(hidden_dim, hidden_dim)
-        #self.affine4 = torch.nn.Linear(hidden_dim, hidden_dim)
-        self.dropout = torch.nn.Dropout(p=0.0)
-        self.output_discrete = torch.nn.Linear(hidden_dim, output_dim_discrete)
-
-        self.saved_log_probs = []
-        self.rewards = []
-
-    def forward(self, x, layer_number=None):
-        if layer_number is not None:
-            x = torch.cat([x, layer_number], dim=1)
-        x = self.input(x)
-        #x = self.dropout(x)
-        x = F.relu(x)
-        x = self.affine2(x)
-        #x = self.dropout(x)
-        #x = F.relu(x)
-        #x = self.affine3(x)
-        #x = self.dropout(x)
-        #x = F.relu(x)
-        #x = self.affine4(x)
-        #x = self.dropout(x)
-        x = F.relu(x)
-        action_discrete = self.output_discrete(x)
-        #astd = torch.nn.functional.softplus(action_std) + 1e-5
-        adisc = F.softmax(action_discrete, dim=-1)
-        return adisc
-    
-    
-class ContinuousPolicy(torch.nn.Module):
-    def __init__(
-            self, 
-            input_dim, 
-            output_dim_discrete, 
-            output_dim_continuous, 
-            hidden_dim, 
-            lower_bound=0, 
-            upper_bound=1, 
-            include_layer_number=False):
-        super(ContinuousPolicy, self).__init__()
-        self.output_dim_discrete = output_dim_discrete
-        self.lower_bound = lower_bound
-        self.upper_bound = upper_bound
-        if include_layer_number:
-            self.input = torch.nn.Linear(input_dim + 1, hidden_dim)
-        else:
-            self.input = torch.nn.Linear(input_dim, hidden_dim)
-        self.affine2 = torch.nn.Linear(hidden_dim, hidden_dim)
-        #self.affine3 = torch.nn.Linear(hidden_dim, hidden_dim)
-        #self.affine4 = torch.nn.Linear(hidden_dim, hidden_dim)
-        self.dropout = torch.nn.Dropout(p=0.0)
-        self.output_continuous_mean = torch.nn.Linear(hidden_dim, output_dim_continuous)
-        self.output_continuous_std = torch.nn.Linear(hidden_dim, output_dim_continuous)
-
-        self.saved_log_probs = []
-        self.rewards = []
-
-    def forward(self, x, layer_number=None):
-        if layer_number is not None:
-            x = torch.cat([x, layer_number], dim=1)
-        x = self.input(x)
-        #x = self.dropout(x)
-        x = F.relu(x)
-        x = self.affine2(x)
-        #x = self.dropout(x)
-        #x = F.relu(x)
-        #x = self.affine3(x)
-        #x = self.dropout(x)
-        #x = F.relu(x)
-        #x = self.affine4(x)
-        #x = self.dropout(x)
-        x = F.relu(x)
-        action_mean = self.output_continuous_mean(x)
-        action_std = self.output_continuous_std(x)
-        amean = torch.sigmoid(action_mean)*(self.upper_bound - self.lower_bound) + self.lower_bound
-        astd = torch.sigmoid(action_std)*(self.upper_bound - self.lower_bound)*0.1 + 1e-6
-        return amean, astd
-    
-class Value(torch.nn.Module):
-    def __init__(
-            self, 
-            input_dim, 
-            output_dim_discrete, 
-            output_dim_continuous, 
-            hidden_dim, 
-            lower_bound=0, 
-            upper_bound=1,
-            include_layer_number=False):
-        super(Value, self).__init__()
-        self.output_dim_discrete = output_dim_discrete
-        self.lower_bound = lower_bound
-        self.upper_bound = upper_bound
-        if include_layer_number:
-            self.input = torch.nn.Linear(input_dim + 1, hidden_dim)
-        else:
-            self.input = torch.nn.Linear(input_dim, hidden_dim)
-        self.affine2 = torch.nn.Linear(hidden_dim, hidden_dim)
-        self.affine3 = torch.nn.Linear(hidden_dim, hidden_dim)
-        self.affine4 = torch.nn.Linear(hidden_dim, 1)
-        self.dropout = torch.nn.Dropout(p=0.0)
-
-
-    def forward(self, x, layer_number=None):
-        if layer_number is not None:
-            x = torch.cat([x, layer_number], dim=1)
-        x = self.input(x)
-        #x = self.dropout(x)
-        x = F.relu(x)
-        x = self.affine2(x)
-        #x = self.dropout(x)
-        x = F.relu(x)
-        x = self.affine3(x)
-        #x = self.dropout(x)
-        x = F.relu(x)
-        output = self.affine4(x)
-        #x = self.dropout(x)
-        return output
 
