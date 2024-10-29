@@ -89,6 +89,7 @@ class HPPO(object):
             lr_value=2e-4, 
             lr_step=10,
             lr_min=1e-6,
+            T_mult=1,
             lower_bound=0.1, 
             upper_bound=1.0, 
             n_updates=1, 
@@ -221,10 +222,23 @@ class HPPO(object):
         else:
             raise Exception(f"Optimiser not supported: {optimiser}")
         
-        self.scheduler_discrete = torch.optim.lr_scheduler.CosineAnnealingLR(self.optimiser_discrete, T_max=lr_step, eta_min=lr_min)  # Decrease LR by factor of 0.1 every 10 epochs
-        self.scheduler_continuous = torch.optim.lr_scheduler.CosineAnnealingLR(self.optimiser_continuous, T_max=lr_step, eta_min=lr_min)  # Decrease LR by factor of 0.1 every 10 epochs
-        self.scheduler_value = torch.optim.lr_scheduler.CosineAnnealingLR(self.optimiser_value, T_max=lr_step, eta_min=lr_min)  # Decrease LR by factor of 0.1 every 10 epochs
+        if type(lr_step) in [list, tuple]:
+            lr_step_discrete, lr_step_continuous, lr_step_value = lr_step
+        else:
+            lr_step_discrete = lr_step
+            lr_step_continuous = lr_step
+            lr_step_value = lr_step
 
+        if type(T_mult) in [list, tuple]:
+            T_mult_discrete, T_mult_continuous, T_mult_value = T_mult
+        else:
+            T_mult_discrete = T_mult
+            T_mult_continuous = T_mult
+            T_mult_value = T_mult
+
+        self.scheduler_discrete = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(self.optimiser_discrete, T_0=lr_step_discrete, T_mult=T_mult_discrete, eta_min=lr_min)
+        self.scheduler_continuous = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(self.optimiser_continuous, T_0=lr_step_continuous, T_mult=T_mult_continuous, eta_min=lr_min)
+        self.scheduler_value = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(self.optimiser_value, T_0=lr_step_value, T_mult=T_mult_value, eta_min=lr_min)
 
         self.mse_loss = torch.nn.MSELoss()
         self.replay_buffer = ReplayBuffer()
@@ -245,10 +259,13 @@ class HPPO(object):
         
         return np.array(temp_r)
 
-    def scheduler_step(self):
-        self.scheduler_discrete.step()
-        self.scheduler_continuous.step()
-        self.scheduler_value.step()
+    def scheduler_step(self, make_step=True):
+        if make_step:
+            self.scheduler_discrete.step()
+            self.scheduler_continuous.step()
+            self.scheduler_value.step()
+        
+        return self.scheduler_discrete.get_last_lr(), self.scheduler_continuous.get_last_lr(), self.scheduler_value.get_last_lr()
 
     def update(self, update_policy=True, update_value=True):
 

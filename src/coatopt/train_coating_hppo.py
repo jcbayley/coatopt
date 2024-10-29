@@ -199,7 +199,8 @@ def training_loop(
 
         if episode > 10:
             loss1, loss2, loss3 = agent.update(update_policy=update_policy, update_value=update_value)
-            agent.scheduler_step()
+            lr_outs = agent.scheduler_step()
+            lrs.append(lr_outs)
             losses_pold.append(loss1)
             losses_polc.append(loss2)
             losses_val.append(loss3)
@@ -227,9 +228,12 @@ def training_loop(
             reward_ax[2].set_xlabel("Episode number")
             reward_ax[2].set_ylabel("Entropy weight , beta param")
 
-            #reward_ax[2].plot(np.arange(episode+1), lrs)
+            reward_ax[3].plot(np.arange(len(lrs)) + 10, np.array(lrs)[:,0], label="discrete")
+            reward_ax[3].plot(np.arange(len(lrs)) + 10, np.array(lrs)[:,1], label="continuous")
+            reward_ax[3].plot(np.arange(len(lrs)) + 10, np.array(lrs)[:,2], label="value")
             reward_ax[3].set_xlabel("Episode number")
             reward_ax[3].set_ylabel("Learning Rate")
+            reward_ax[3].legend()
             reward_fig.savefig(os.path.join(outdir, "running_rewards.png"))
 
 
