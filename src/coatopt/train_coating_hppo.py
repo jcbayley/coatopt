@@ -63,9 +63,6 @@ def training_loop(
         beta_end=0.001,
         beta_decay_length=None,
         beta_decay_start=0,
-        lr_start=1e-3,
-        lr_end=1e-5,
-        lr_decay_length=4000,
         save_interval=10):
 
     # Training loop
@@ -92,7 +89,7 @@ def training_loop(
             update_policy = True
         else:
             update_policy=True
-        if episode > beta_decay_length:
+        if beta_decay_length is not None and episode > beta_decay_length:
             update_value=True
         else:
             update_value=True
@@ -101,8 +98,7 @@ def training_loop(
             agent.beta = beta_start - (beta_start-beta_end)*np.min([(episode-beta_decay_start)/beta_decay_length, 1])
         else:
             agent.beta = beta_start
-        if lr_decay_length is not None:
-            new_lr = lr_start - (lr_start-lr_end)*np.min([episode/lr_decay_length, 1])
+
             #agent.optimiser_discrete.learning_rate = new_lr
             #agent.optimiser_continuous.learning_rate = new_lr
             #agent.optimiser_value.learning_rate = new_lr

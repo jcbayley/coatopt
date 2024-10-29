@@ -27,7 +27,10 @@ if __name__ == "__main__":
         config.get("Data", "min_thickness"),
         config.get("Data", "max_thickness"),
         materials,
-        opt_init=False)
+        opt_init=False,
+        use_intermediate_reward = config.get("Data", "use_intermediate_reward"),
+        use_inv_sigmoid=config.get("Data", "use_inv_sigmoid_reward"),
+    )
 
 
     device = "cpu"
@@ -47,7 +50,7 @@ if __name__ == "__main__":
             lower_bound=0,
             upper_bound=1,
             n_updates=config.get("Training", "n_episodes_per_update"),
-            beta=config.get("Training", "entropy_beta"),
+            beta=config.get("Training", "entropy_beta_start"),
             clip_ratio=config.get("Training", "clip_ratio"),
             gamma=config.get("Training", "gamma"),
             include_layer_number=config.get("Network", "include_layer_number"),
@@ -86,13 +89,10 @@ if __name__ == "__main__":
         n_ep_train=config.get("Training", "n_epochs_per_update"),
         max_layers=config.get("Data", "n_layers"),
         useobs=config.get("Data", "use_observation"),
-        beta_start=0.01,
-        beta_end=0.01,
-        beta_decay_length=1000,
-        beta_decay_start=100,
-        lr_start=1e-3,
-        lr_end=1e-3,
-        lr_decay_length=4000,
+        beta_start=config.get("Training", "entropy_beta_start"),
+        beta_end=config.get("Training", "entropy_beta_end"),
+        beta_decay_length=config.get("Training", "entropy_beta_decay_length"),
+        beta_decay_start=config.get("Training", "entropy_beta_decay_start"),
         upper_bound=config.get("Data", "min_thickness"),
         lower_bound=config.get("Data", "max_thickness"),
         save_interval=config.get("Training", "model_save_interval")

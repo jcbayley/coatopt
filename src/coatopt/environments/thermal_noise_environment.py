@@ -16,7 +16,9 @@ class CoatingStack():
             air_material_index=0,
             substrate_material_index=1,
             variable_layers=False,
-            opt_init=False):
+            opt_init=False,
+            use_inv_sigmoid=False,
+            use_intermediate_reward=False):
         """_summary_
 
         Args:
@@ -37,6 +39,8 @@ class CoatingStack():
         self.air_material_index = air_material_index
         self.substrate_material_index = substrate_material_index
         self.opt_init = opt_init
+        self.use_inv_sigmoid = use_inv_sigmoid
+        self.use_intermediate_reward = use_intermediate_reward
 
         # state space size is index for each material (onehot encoded) plus thickness of each material
         self.state_space_size = self.max_layers*self.n_materials + self.max_layers
@@ -46,7 +50,7 @@ class CoatingStack():
         self.length = 0
         self.current_state = self.sample_state_space()
         self.current_index = self.max_layers - 1
-        self.previous_material = -1
+        self.previous_material = self.substrate_material_index
     
 
     def reset(self,):
@@ -223,7 +227,10 @@ class CoatingStack():
         #reward_diff = 0.01/(new_value - target_reflectivity)**2
         #reward_diff = (new_value - target_reflectivity)**2
         #reward_diff = np.log(reward_diff/(1-reward_diff))
-        reward_diff = self.inv_sigmoid(new_value)
+        if self.use_inv_sigmoid:
+            reward_diff = self.inv_sigmoid(new_value)
+        else:
+            reward_diff = new_value
         #reward_diff = new_value - max_value
 
         if reward_diff > 0:
@@ -302,7 +309,10 @@ class CoatingStack():
             self.current_state = new_state
             #reward_diff, reward, new_value = self.compute_reward(new_state, max_state)
             #self.current_state_value = reward
-            reward = 0.0
+            if self.use_intermediate_reward:
+                reward = 0.1*reward
+            else:
+                reward = 0.0
         
         # was for adding an extra layer at start and end
         #if new_state[0, 4] == 1 and new_state[-1, 4] and np.all(new_state[:,4]) == False:
