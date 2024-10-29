@@ -183,7 +183,7 @@ def training_loop(
                 max_reward = episode_reward
                 max_state = state
                 opt_value = env.compute_state_value(max_state)
-                fig, ax = env.plot_stack(state)
+                fig, ax = env.plot_stack(max_state)
                 ax.set_title(f"Optimal rew: {max_reward}, opt val: {opt_value}")
                 fig.savefig(os.path.join(outdir,  f"best_state.png"))
 
@@ -262,10 +262,17 @@ def training_loop(
             n_layers = max_layers
             loss_fig, loss_ax = plt.subplots(nrows = n_layers)
             all_mats2 = pad_lists(all_mats, [0.0,]*env.n_materials, n_layers)
+
             #all_mats2 = all_mats2[:,:,:]
+            color_map = {
+                0: 'gray',    # No active material
+                1: 'blue',    # m1
+                2: 'green',   # m2
+                3: 'red'      # m3
+            }
             for i in range(n_layers):
                 for mind in range(len(all_mats2[0, i])):
-                    loss_ax[i].scatter(np.arange(len(all_mats2)), np.ones(len(all_mats2))*mind, s=100*all_mats2[:,i,mind])
+                    loss_ax[i].scatter(np.arange(len(all_mats2)), np.ones(len(all_mats2))*mind, s=100*all_mats2[:,i,mind], color=color_map[mind])
                 loss_ax[i].set_ylabel(f"Layer {i}")
             loss_ax[-1].set_xlabel("Episode number")
             loss_fig.savefig(os.path.join(outdir, "running_mats.png"))
@@ -275,7 +282,8 @@ def training_loop(
 
             if episode % 100 == 0:
                 fig, ax = env.plot_stack(state)
-                ax.set_title(f"Optimal rew: {max_reward}, opt val: {opt_value}")
+                t_opt_value = env.compute_state_value(state)
+                ax.set_title(f", opt val: {t_opt_value}")
                 fig.savefig(os.path.join(outdir,  "states", f"episode_{episode}.png"))
             
 

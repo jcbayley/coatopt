@@ -295,9 +295,9 @@ class CoatingStack():
             finished = True
             self.current_state = new_state
             #reward_diff, reward, new_value = self.compute_reward(new_state, max_state)
-        #elif action[1][0] == self.previous_material:
+        elif material == self.previous_material:
         #    terminated = True
-        #    reward = -0.01
+            reward = neg_reward
         else:
             self.current_state = new_state
             #reward_diff, reward, new_value = self.compute_reward(new_state, max_state)
