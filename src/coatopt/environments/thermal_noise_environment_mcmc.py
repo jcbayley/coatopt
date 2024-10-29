@@ -122,7 +122,7 @@ class MCMCCoatingStack(CoatingStack):
         std_dev = 0.1  # Set the standard deviation as desired
 
         # Compute the likelihood using the Gaussian distribution
-        likelihood = -mean
+        likelihood = mean/(1-mean)
 
         return likelihood
         

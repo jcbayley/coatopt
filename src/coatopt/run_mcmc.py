@@ -49,7 +49,7 @@ if __name__ == "__main__":
 
     sampler.run_mcmc(np.array(initial_params), nsteps)
 
-    flat_samples = sampler.get_chain(discard=100, thin=15, flat=True)
+    flat_samples = sampler.get_chain(discard=2000, thin=1, flat=True)
 
     fig = corner.corner(flat_samples)
     fig.savefig(os.path.join(config.get("General", "root_dir"), f'cornerplot.png'))
@@ -81,3 +81,10 @@ if __name__ == "__main__":
         fig, ax = env.plot_stack(state)
         ax.set_title(f'Top 10 State, value:{top_10_values[i]}')
         fig.savefig(os.path.join(config.get("General", "root_dir"), f'top_10_state_{i}.png'))
+
+
+    opt_state = env.get_optimal_state()
+    opt_value = env.compute_state_value(opt_state)
+    fig, ax = env.plot_stack(opt_state)
+    ax.set_title(f'Optimal State, value:{opt_value}')
+    fig.savefig(os.path.join(config.get("General", "root_dir"), 'optimal_state.png'))
