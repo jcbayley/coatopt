@@ -1,6 +1,6 @@
 import torch
 import numpy as np
-from coating_utils import getCoatAbsorption, getCoatNoise2, getCoatRefl2, merit_function_2
+from coatopt.environments.coating_utils import getCoatAbsorption, getCoatNoise2, getCoatRefl2, merit_function_2
 import time
 from tmm import coh_tmm
 import copy
