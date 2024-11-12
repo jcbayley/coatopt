@@ -1,0 +1,1 @@
+This repo contains a set of algorithms to design coating stacks for gravitational wave detectors mirror coatings. There is a mixture of reinforcement learning, genetic algorithms and mcmc methods which are compared.
