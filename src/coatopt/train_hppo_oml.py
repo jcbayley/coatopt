@@ -1,4 +1,4 @@
-from coatopt.networks import hppo
+from coatopt.algorithms import hppo_oml
 from coatopt.environments import CoatingStack
 from coatopt.config import read_config, read_materials
 from coatopt.train_coating_hppo import training_loop
@@ -29,18 +29,21 @@ if __name__ == "__main__":
         materials,
         opt_init=False,
         use_intermediate_reward = config.get("Data", "use_intermediate_reward"),
-        use_inv_sigmoid=config.get("Data", "use_inv_sigmoid_reward"),
+        reward_shape=config.get("Data", "reward_shape"),
+        ignore_air_option=config.get("Data", "ignore_air_option"),
+        use_ligo_reward=config.get("Data", "use_ligo_reward"),
+        use_ligo_thermal_noise=config.get("Data", "use_ligo_thermal_noise"),
     )
 
 
     device = "cpu"
 
-    insize = env.obs_space_size if config.get("Data", "use_observation")==True else env.state_space_size
+    insize = env.obs_space_shape if config.get("Data", "use_observation")==True else env.state_space_shape
 
-    agent = hppo.HPPO(
-            env.obs_space_shape,
+    agent = hppo_oml.HPPO(
+            insize,
             env.n_materials, 
-            env.n_materials,
+            1,
             hidden_size=config.get("Network", "hidden_size"),
             disc_lr_policy=config.get("Training", "lr_discrete_policy"),
             cont_lr_policy=config.get("Training", "lr_continuous_policy"),
@@ -54,6 +57,7 @@ if __name__ == "__main__":
             clip_ratio=config.get("Training", "clip_ratio"),
             gamma=config.get("Training", "gamma"),
             include_layer_number=config.get("Network", "include_layer_number"),
+            include_material_in_policy=config.get("Network", "include_material_in_policy"),
             pre_type=config.get("Network", "pre_network_type"),
             n_heads=2,
             n_pre_layers=config.get("Network", "n_pre_layers"),
@@ -64,6 +68,8 @@ if __name__ == "__main__":
             discrete_hidden_size=config.get("Network", "discrete_hidden_size"),
             continuous_hidden_size=config.get("Network", "continuous_hidden_size"),
             value_hidden_size=config.get("Network", "value_hidden_size"),
+            substrate_material_index=env.substrate_material_index
+
             )
  
     
@@ -79,8 +85,30 @@ if __name__ == "__main__":
     fig, ax = env.plot_stack(optimal_state)
     ax.set_title(f" opt val: {optimal_value}")
     fig.savefig(os.path.join(config.get("General", "root_dir"),  f"opt_state.png"))
+
+    optimal_state_r = env.get_optimal_state(reverse=True)
+    optimal_value_r = env.compute_state_value(optimal_state_r)
+    fig, ax = env.plot_stack(optimal_state_r)
+    ax.set_title(f" opt val: {optimal_value_r}")
+    fig.savefig(os.path.join(config.get("General", "root_dir"),  f"opt_state_reverse.png"))
     
+
+    trainer = hppo_oml.HPPOTrainer(
+        agent, 
+        env, 
+        config.get("Training", "n_iterations"), 
+        config.get("Data", "n_layers"),  
+        root_dir=config.get("General", "root_dir"),
+        use_obs=config.get("Data", "use_observation"),
+        beta_start=config.get("Training", "entropy_beta_start"),
+        beta_end=config.get("Training", "entropy_beta_end"),
+        beta_decay_length=config.get("Training", "entropy_beta_decay_length"),
+        beta_decay_start=config.get("Training", "entropy_beta_decay_start"),
+    )
     
+    trainer.train()
+    
+    """
     rewards, max_train_state = training_loop(
         config.get("General", "root_dir"),
         env, 
@@ -97,3 +125,4 @@ if __name__ == "__main__":
         lower_bound=config.get("Data", "max_thickness"),
         save_interval=config.get("Training", "model_save_interval")
         )
+    """

@@ -85,10 +85,11 @@ def training_loop(
     lrs = []
 
     for episode in range(max_episodes):
-        if episode > 0:
+        if episode < 100:
             update_policy = True
         else:
             update_policy=True
+
         if beta_decay_length is not None and episode > beta_decay_length:
             update_value=True
         else:
@@ -131,16 +132,7 @@ def training_loop(
                 action, actiond, actionc, log_prob_discrete, log_prob_continuous, d_prob, c_means, c_std, value, entropy_discrete, entropy_continuous = agent.select_action(obs, t)
 
                 action[1] = action[1]*(upper_bound - lower_bound) + lower_bound
-                """
-                if t == 0:
-                    action[0] = 2
-                if t == 1:
-                    action[0] = 1
-                if t == 2:
-                    action[0] = 2
-                if t == 3:
-                    action[0] = 1
-                """
+               
                 # Take action and observe reward and next state
                 next_state, reward, done, finished, _, full_action = env.step(action)
 
@@ -279,7 +271,7 @@ def training_loop(
             if episode % 100 == 0:
                 fig, ax = env.plot_stack(state)
                 t_opt_value = env.compute_state_value(state)
-                ax.set_title(f", opt val: {t_opt_value}")
+                ax.set_title(f"Reward: {episode_reward}, val: {t_opt_value}")
                 fig.savefig(os.path.join(outdir,  "states", f"episode_{episode}.png"))
             
 
