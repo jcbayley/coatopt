@@ -43,7 +43,7 @@ class DiscretePolicy(torch.nn.Module):
         self.saved_log_probs = []
         self.rewards = []
 
-    def forward(self, x, layer_number=None):
+    def forward(self, x, layer_number=None, zero_idx=None):
         if layer_number is not None and self.include_layer_number:
             x = torch.cat([x, layer_number], dim=1)
         x = self.input(x)
@@ -53,6 +53,7 @@ class DiscretePolicy(torch.nn.Module):
             x = self.activation(x)
 
         action_discrete = self.output_discrete(x)
+
         #astd = torch.nn.functional.softplus(action_std) + 1e-5
         adisc = torch.nn.functional.softmax(action_discrete, dim=-1)
         return adisc
@@ -68,17 +69,22 @@ class ContinuousPolicy(torch.nn.Module):
             lower_bound=0, 
             upper_bound=1, 
             include_layer_number=False,
+            include_material=False,
             activation="relu"):
         super(ContinuousPolicy, self).__init__()
         self.lower_bound = lower_bound
         self.upper_bound = upper_bound
         self.n_layers = n_layers
         self.include_layer_number = include_layer_number
+        self.include_material = include_material
 
+        indim = input_dim
         if include_layer_number:
-            self.input = torch.nn.Linear(input_dim + 1, hidden_dim)
-        else:
-            self.input = torch.nn.Linear(input_dim, hidden_dim)
+            indim += 1
+        if include_material:
+            indim += 1
+            
+        self.input = torch.nn.Linear(indim, hidden_dim)
         
         for i in range(self.n_layers):
             setattr(self, f"affine{i}", torch.nn.Linear(hidden_dim, hidden_dim))
@@ -99,9 +105,13 @@ class ContinuousPolicy(torch.nn.Module):
         self.saved_log_probs = []
         self.rewards = []
 
-    def forward(self, x, layer_number=None):
+    def forward(self, x, layer_number=None, material=None):
+
         if layer_number is not None and self.include_layer_number:
             x = torch.cat([x, layer_number], dim=1)
+        if layer_number is not None and self.include_material:
+            x = torch.cat([x, material], dim=1)
+
         x = self.input(x)
         x = self.activation(x)  
         #x = self.dropout(x)

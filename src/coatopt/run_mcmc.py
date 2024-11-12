@@ -39,7 +39,8 @@ if __name__ == "__main__":
     initial_params = []
     for i in range(nwalkers):
         t_initial_state = env.sample_state_space()
-        t_initial_params = env.convert_state_to_params(t_initial_state)
+        t_initial_params = env.convert_state_to_params(t_initial_state) 
+        t_initial_params += np.random.normal(0, 1e-4, np.shape(t_initial_params))
         initial_params.append(t_initial_params)
 
 

@@ -3,8 +3,8 @@ import torch
 from torch.nn import functional as F
 from collections import deque
 from coatopt.networks.truncated_normal import TruncatedNormalDist
-from coatopt.networks.policy_nets import DiscretePolicy, ContinuousPolicy, Value
-from coatopt.networks.pre_networks import PreNetworkLinear, PreNetworkLSTM, PreNetworkAttention
+from coatopt.algorithms.policy_nets import DiscretePolicy, ContinuousPolicy, Value
+from coatopt.algorithms.pre_networks import PreNetworkLinear, PreNetworkLSTM, PreNetworkAttention
 import os
 import sys
 
@@ -107,7 +107,8 @@ class HPPO(object):
             value_hidden_size=32,
             discrete_hidden_size=32,
             continuous_hidden_size=32,
-            activation_function="relu"):
+            activation_function="relu",
+            include_material_in_policy=False):
 
         print("sd", state_dim)
         self.upper_bound = upper_bound
@@ -164,6 +165,7 @@ class HPPO(object):
             lower_bound=lower_bound,
             upper_bound=upper_bound,
             include_layer_number=include_layer_number,
+            include_material=include_material_in_policy,
             activation=activation_function)
         
         self.value = Value(
@@ -193,6 +195,7 @@ class HPPO(object):
             lower_bound=lower_bound,
             upper_bound=upper_bound,
             include_layer_number=include_layer_number,
+            include_material=include_material_in_policy,
             activation=activation_function)
         
         self.value_old = Value(
@@ -318,7 +321,6 @@ class HPPO(object):
             #policy_loss_continuous = -(torch.min(c_surr1, c_surr2)).mean()
             #policy_loss_continuous = -(log_prob_continuous * advantage.squeeze() + self.beta*entropy_continuous.squeeze()).mean()
 
-   
             value_loss = self.mse_loss(returns.to(torch.float32).squeeze(), state_value.squeeze())
 
             #print(policy_loss_discrete, policy_loss_continuous, value_loss)
@@ -365,7 +367,6 @@ class HPPO(object):
         pre_output_c = self.pre_network(state, layer_number)
         pre_output_v = self.pre_network(state, layer_number)
         d_probs = self.policy_discrete(pre_output_d, layer_number)
-        c_means, c_std = self.policy_continuous(pre_output_c, layer_number)
 
         state_value = self.value(pre_output_v, layer_number)
         #d_onehot = F.one_hot(d_probs, num_classes=policy.output_dim_discrete)
@@ -374,6 +375,7 @@ class HPPO(object):
         if actiond is None:
             actiond = d.sample()
 
+        c_means, c_std = self.policy_continuous(pre_output_c, layer_number, actiond)
         
         c = TruncatedNormalDist(
             c_means, 
