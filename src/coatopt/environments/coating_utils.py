@@ -455,7 +455,7 @@ def merit_function_2(
         Temp=Temp)
     
     if isinstance(noise_summary['Frequency'],float):
-        difference_array = np.absolute(noise_summary['Frequency']-100)
+        difference_array = np.absolute(noise_summary['Frequency']-frequency)
         
         # find the index of minimum element from the array
         index = difference_array.argmin()
@@ -466,4 +466,4 @@ def merit_function_2(
         
         thermal_noise = noise_summary['BrownianNoise']
     
-    return np.real(rCoat), thermal_noise
+    return rCoat, thermal_noise
