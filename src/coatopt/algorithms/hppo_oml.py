@@ -9,6 +9,7 @@ from torch.nn.utils.rnn import pack_padded_sequence, pad_sequence
 import os
 import sys
 import matplotlib.pyplot as plt
+import pandas as pd
 
 class ReplayBuffer:
     def __init__(self):
@@ -456,25 +457,25 @@ class HPPO(object):
         return action, actiond, actionc, log_prob_discrete, log_prob_continuous, d_probs, c_means, c_std, state_value, entropy_discrete, entropy_continuous
 
 
-    def save_networks(self, save_directory, epoch=None):
+    def save_networks(self, save_directory, episode=None):
 
         discrete_policy_fname = os.path.join(save_directory, "discrete_policy.pt")
         torch.save({
-            "epoch":epoch,
+            "episode":episode,
             "model_state_dict":self.policy_discrete.state_dict(),
             "optimiser_state_dict":self.optimiser_discrete.state_dict()
         }, discrete_policy_fname)
 
         continuous_policy_fname = os.path.join(save_directory, "continuous_policy.pt")
         torch.save({
-            "epoch":epoch,
+            "episode":episode,
             "model_state_dict":self.policy_continuous.state_dict(),
             "optimiser_state_dict":self.optimiser_continuous.state_dict()
         }, continuous_policy_fname)
 
         value_fname = os.path.join(save_directory, "value.pt")
         torch.save({
-            "epoch":epoch,
+            "episode":episode,
             "model_state_dict":self.value.state_dict(),
             "optimiser_state_dict":self.optimiser_value.state_dict()
         }, value_fname)
@@ -513,7 +514,8 @@ class HPPOTrainer:
             n_training_epochs=10,
             use_obs=True,
             scheduler_start=0,
-            scheduler_end=np.inf
+            scheduler_end=np.inf,
+            continue_training=False
             ):
         self.agent = agent
         self.env = env
@@ -530,22 +532,72 @@ class HPPOTrainer:
         self.scheduler_start = scheduler_start
         self.scheduler_end = np.inf if scheduler_end == -1 else scheduler_end
 
-    def write_losses_to_file(self, filename):
+        if continue_training:
+            self.load_metrics_from_file()
+        else:
+            self.metrics = pd.DataFrame(columns=["episode", "loss_policy_continuous", "loss_policy_deiscrete", "beta", "lr_discrete", "lr_continuous", "lr_value", "reward", "reflectivity", "thermal_noise"])
 
-        with open(filename, "w") as f:
-            for i in range(len(self.losses_pold)):
-                f.write(f"{self.losses_pold[i]}, {self.losses_polc[i]}, {self.losses_val[i]}\n")
 
+    def write_metrics_to_file(self):
+        self.metrics.to_csv(os.path.join(self.root_dir, "training_metrics.csv"), index=False)
+
+    def load_metrics_from_file(self):
+        self.metrics = pd.read_csv(os.path.join(self.root_dir, "training_metrics.csv"))
+
+
+    def make_reward_plot(self,):
+
+        reward_fig, reward_ax = plt.subplots(nrows=5, figsize=(7,9))
+        window_size = 20
+        #downsamp_rewards = np.mean(np.reshape(self.rewards[:int((len(self.rewards)//window_size)*window_size)], (-1,window_size)), axis=1)
+        downsamp_rewards = self.metrics['reward'].rolling(window=window_size, center=False).median()
+        downsamp_episodes = self.metrics['episode'].rolling(window=window_size, center=False).median()
+        reward_ax[0].plot(self.metrics["episode"], self.metrics["reward"])
+        reward_ax[0].plot(downsamp_episodes, downsamp_rewards)
+        reward_ax[0].set_xlabel("Episode number")
+        reward_ax[0].set_ylabel("Reward")
+
+        downsamp_reflectivities= self.metrics['reflectivity'].rolling(window=window_size, center=False).median()
+        #downsamp_values = np.mean(np.reshape(self.reflectivities[:int((len(self.reflectivities)//window_size)*window_size)], (-1,window_size)), axis=1)
+        reward_ax[1].plot(self.metrics["episode"], self.metrics["reflectivitiy"])
+        reward_ax[1].plot(downsamp_episodes, downsamp_reflectivities)
+        reward_ax[1].set_xlabel("Episode number")
+        reward_ax[1].set_ylabel("Reflectivity ")
+
+        #downsamp_values = np.mean(np.reshape(self.thermal_noises[:int((len(self.thermal_noises)//window_size)*window_size)], (-1,window_size)), axis=1)
+        downsamp_thermal_noise = self.metrics['thermal_noise'].rolling(window=window_size, center=False).median()
+        reward_ax[2].plot(self.metric["episode"], self.metrics["thermal_noise"])
+        reward_ax[2].plot(downsamp_episodes, downsamp_thermal_noise)
+        reward_ax[2].set_xlabel("Episode number")
+        reward_ax[2].set_ylabel("Thermal noise")
+
+        reward_ax[3].plot(self.metrics["episodes"], self.metrics["beta"])
+        reward_ax[3].set_xlabel("Episode number")
+        reward_ax[3].set_ylabel("Entropy weight")
+
+        reward_ax[4].plot(self.metrics["episodes"], self.metrics["lr_discrete"], label="discrete")
+        reward_ax[4].plot(self.metrics["episodes"], self.metrics["lr_continuous"], label="continuous")
+        reward_ax[4].plot(self.metrics["episodes"], self.metrics["lr_value"], label="value")
+        reward_ax[4].set_xlabel("Episode number")
+        reward_ax[4].set_ylabel("Learning Rate")
+        reward_ax[4].legend()
+        reward_fig.savefig(os.path.join(self.root_dir, "running_rewards.png"))
+
+    def make_loss_plot(self,):
+        loss_fig, loss_ax = plt.subplots(nrows=3)
+        loss_ax[0].plot(self.metrics["episode"], self.metrics["loss_policy_discrete"])
+        loss_ax[1].plot(self.metrics["episode"], self.metrics["loss_policy_continuous"])
+        loss_ax[2].plot(self.metrics["episode"], self.metrics["loss_value"])
+        loss_ax[0].set_ylabel("Policy discrete loss")
+        loss_ax[1].set_ylabel("Policy continuous loss")
+        loss_ax[2].set_ylabel("Value loss")
+        loss_ax[2].set_yscale("log")
+        loss_ax[2].set_xlabel("Episode number")
+        loss_fig.savefig(os.path.join(self.root_dir, "running_losses.png"))
 
     def train(self):
 
         # Training loop
-        self.rewards = []
-        self.reflectivities = []
-        self.thermal_noises = []
-        self.losses_pold = []
-        self.losses_polc = []
-        self.losses_val = []
         all_means = []
         all_stds = []
         all_mats = []
@@ -556,8 +608,8 @@ class HPPOTrainer:
         if not os.path.isdir(state_dir):
             os.makedirs(state_dir)
 
-        betas = []
-        lrs = []
+        self.betas = []
+        self.lrs = []
 
         for episode in range(self.n_iterations):
 
@@ -580,7 +632,9 @@ class HPPOTrainer:
                 #agent.optimiser_continuous.learning_rate = new_lr
                 #agent.optimiser_value.learning_rate = new_lr
 
-            betas.append(self.agent.beta)
+            metric_update = {}
+
+            metric_update["beta"] = self.agent.beta
             #lrs.append(agent.optimiser_discrete.learning_rate)
 
             states = []
@@ -664,66 +718,27 @@ class HPPOTrainer:
             if episode > 10:
                 loss1, loss2, loss3 = self.agent.update(update_policy=True, update_value=True)
                 lr_outs = self.agent.scheduler_step(make_step)
-                lrs.append(lr_outs)
-                self.losses_pold.append(loss1)
-                self.losses_polc.append(loss2)
-                self.losses_val.append(loss3)
+                metric_update["lr_discrete"] = lr_outs[0]
+                metric_update["lr_continuous"] = lr_outs[1]
+                metric_update["lr_value"] = lr_outs[2]
+                metric_update["loss_policy_dicrete"] = loss1
+                metric_update["loss_policy_continuous"] = loss2
+                metric_update["loss_value"] = loss3
                 self.agent.replay_buffer.clear()
 
-            self.rewards.append(episode_reward)
+            metric_update["episode"] = episode
+            metric_update["reward"] = episode_reward
 
             _, reflectivity, thermal_noise = self.env.compute_reward(state)
-            self.reflectivities.append(reflectivity)
-            self.thermal_noises.append(thermal_noise)
+            metric_update["reflectivity"] = reflectivity
+            metric_update["thermal_noise"] = thermal_noise
+
+            self.metrics = pd.concat([self.metrics, pd.DataFrame([metric_update])], ignore_index=True)
 
             if episode % 20 == 0 and episode !=0 :
-
-                self.write_losses_to_file(os.path.join(self.root_dir, "losses.txt"))
-
-                reward_fig, reward_ax = plt.subplots(nrows=4, figsize=(7,9))
-                window_size = 20
-                downsamp_rewards = np.mean(np.reshape(self.rewards[:int((len(self.rewards)//window_size)*window_size)], (-1,window_size)), axis=1)
-                reward_ax[0].plot(np.arange(episode+1), self.rewards)
-                reward_ax[0].plot(np.arange(episode).reshape(-1,window_size)[:,0], downsamp_rewards)
-                reward_ax[0].set_xlabel("Episode number")
-                reward_ax[0].set_ylabel("Reward")
-
-                downsamp_values = np.mean(np.reshape(self.reflectivities[:int((len(self.reflectivities)//window_size)*window_size)], (-1,window_size)), axis=1)
-                reward_ax[1].plot(np.arange(episode+1), self.reflectivities)
-                reward_ax[1].plot(np.arange(episode).reshape(-1,window_size)[:,0], downsamp_values)
-                reward_ax[1].set_xlabel("Episode number")
-                reward_ax[1].set_ylabel("Reflectivity ")
-
-                downsamp_values = np.mean(np.reshape(self.reflectivities[:int((len(self.reflectivities)//window_size)*window_size)], (-1,window_size)), axis=1)
-                reward_ax[2].plot(np.arange(episode+1), self.reflectivities)
-                reward_ax[2].plot(np.arange(episode).reshape(-1,window_size)[:,0], downsamp_values)
-                reward_ax[2].set_xlabel("Episode number")
-                reward_ax[2].set_ylabel("Thermal noise")
-
-                reward_ax[3].plot(np.arange(episode+1), betas)
-                reward_ax[3].set_xlabel("Episode number")
-                reward_ax[3].set_ylabel("Entropy weight , beta param")
-
-                reward_ax[4].plot(np.arange(len(lrs)) + 10, np.array(lrs)[:,0], label="discrete")
-                reward_ax[4].plot(np.arange(len(lrs)) + 10, np.array(lrs)[:,1], label="continuous")
-                reward_ax[4].plot(np.arange(len(lrs)) + 10, np.array(lrs)[:,2], label="value")
-                reward_ax[4].set_xlabel("Episode number")
-                reward_ax[4].set_ylabel("Learning Rate")
-                reward_ax[4].legend()
-                reward_fig.savefig(os.path.join(self.root_dir, "running_rewards.png"))
-
-
-                loss_fig, loss_ax = plt.subplots(nrows=3)
-                loss_ax[0].plot(self.losses_pold)
-                loss_ax[1].plot(self.losses_polc)
-                loss_ax[2].plot(self.losses_val)
-                loss_ax[0].set_ylabel("Policy discrete loss")
-                loss_ax[1].set_ylabel("Policy continuous loss")
-                loss_ax[2].set_ylabel("Value loss")
-                loss_ax[2].set_yscale("log")
-                loss_ax[2].set_xlabel("Episode number")
-                loss_fig.savefig(os.path.join(self.root_dir, "running_losses.png"))
-
+                self.write_metrics_to_file()
+                self.make_reward_plot()
+                self.make_loss_plot()
 
                 
                 n_layers = self.n_layers

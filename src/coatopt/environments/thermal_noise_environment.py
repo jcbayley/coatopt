@@ -105,7 +105,15 @@ class CoatingStack():
             opt_state2.append(l_state)
             material = current_material
 
-        return np.array(opt_state2)
+        opt_state2 = np.array(opt_state2)
+
+        if self.include_random_rare_state:
+            mean1 = self.min_thickness + (self.max_thickness - self.min_thickness/10)
+            mean2 = self.min_thickness + (self.max_thickness - self.min_thickness/2)
+            opt_state2[1] = [mean1, 0,0,0,1]
+            opt_state2[-2] = [mean2, 0,0,0,1]
+
+        return opt_state2
 
     def sample_state_space(self, ):
         """return air with a thickness of 1
@@ -239,7 +247,7 @@ class CoatingStack():
             reflected_power, scaled_thermal_noise = self.compute_state_value_ligo(state)
             return reflected_power, scaled_thermal_noise 
         else:
-            return self.compute_reflectivity(state), None
+            return self.compute_reflectivity(state), 0
 
     def inv_sigmoid(self, val):
         return np.log(val/(1-val))
@@ -293,9 +301,12 @@ class CoatingStack():
             reward += new_thermal_noise
 
         if self.include_random_rare_state:
-            if new_state[1][3] == 1 and new_state[-2][3] == 1:
-                reward += 100*scipy.stats.norm(self.min_thickness + (self.max_thickness - self.min_thickness/10),(self.max_thickness - self.min_thickness)/4).pdf(new_state[1][0])
-                reward += 100*scipy.stats.norm(self.min_thickness + (self.max_thickness - self.min_thickness/2),(self.max_thickness - self.min_thickness)/4).pdf(new_state[-2][0])
+            if new_state[1][4] == 1 and new_state[-2][4] == 1:
+                mean1 = self.min_thickness + (self.max_thickness - self.min_thickness/10)
+                mean2 = self.min_thickness + (self.max_thickness - self.min_thickness/2)
+                var1 = (self.max_thickness - self.min_thickness)/20
+                reward += 50*scipy.stats.norm(mean1,var1).pdf(new_state[1][0]) * np.sqrt(2*np.pi*var1**2)
+                reward += 50*scipy.stats.norm(mean2,var1).pdf(new_state[-2][0]) * np.sqrt(2*np.pi*var1**2)
 
         return reward, new_reflectivity, new_thermal_noise
     
