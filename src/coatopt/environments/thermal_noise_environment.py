@@ -2,6 +2,7 @@ import torch
 import numpy as np
 from .coating_utils import getCoatAbsorption, getCoatNoise2, getCoatRefl2, merit_function_2
 import time
+import scipy
 from tmm import coh_tmm
 import matplotlib.pyplot as plt
 
@@ -22,7 +23,8 @@ class CoatingStack():
             ignore_air_option=False,
             use_ligo_reward=False,
             use_ligo_thermal_noise=False,
-            light_wavelength=1064e-9):
+            light_wavelength=1064e-9,
+            include_random_rare_state=False):
         """_summary_
 
         Args:
@@ -40,7 +42,7 @@ class CoatingStack():
         self.max_thickness = max_thickness
         self.materials = materials
         self.n_materials = len(materials) 
-        self.n_material_options = len(materials) - 1 if ignore_air_option else len(materials)
+        self.n_material_options = self.n_materials#len(materials) - 1 if ignore_air_option else len(materials)
         self.air_material_index = air_material_index
         self.substrate_material_index = substrate_material_index
         self.opt_init = opt_init
@@ -49,6 +51,7 @@ class CoatingStack():
         self.ignore_air_option = ignore_air_option
         self.use_ligo_reward = use_ligo_reward
         self.use_ligo_thermal_noise = use_ligo_thermal_noise
+        self.include_random_rare_state = include_random_rare_state
 
         # state space size is index for each material (onehot encoded) plus thickness of each material
         self.state_space_size = self.max_layers*self.n_materials + self.max_layers
@@ -126,7 +129,7 @@ class CoatingStack():
         """
 
         new_layer_material = torch.nn.functional.one_hot(torch.from_numpy(np.array(np.random.randint(self.n_material_options))), num_classes=self.n_material_options)
-        new_layer_thickness = torch.random.uniform(self.min_thickness, self.max_thickness)
+        new_layer_thickness = torch.rand(1)*(self.max_thickness - self.min_thickness) +  self.min_thickness
         new_layer = torch.cat([new_layer_thickness, new_layer_material])
 
         return new_layer
@@ -152,7 +155,8 @@ class CoatingStack():
             light_wavelength=1064E-9, 
             frequency=100, 
             wBeam=0.062, 
-            Temp=293):
+            Temp=293,
+            return_separate = False):
         """_summary_
 
         Args:
@@ -182,7 +186,7 @@ class CoatingStack():
             state_trim = np.array([[self.min_thickness, 0, 1, 0], ])
 
 
-        R, thermal_noise = merit_function_2(
+        r, thermal_noise = merit_function_2(
             np.array(state_trim),
             self.materials,
             light_wavelength=light_wavelength,
@@ -193,15 +197,18 @@ class CoatingStack():
             air_index = self.air_material_index
             )
         
+        R = np.abs(r)**2
+
+        scaled_thermal_noise = -np.log(thermal_noise)/10
      
-        if self.use_ligo_thermal_noise:
-            rtn = R - np.log(thermal_noise)/50
-        else:
-            rtn = R
+        
         #print(R, np.log(thermal_noise))
-        return rtn
+        if return_separate:
+            return r, thermal_noise
+        else:
+            return R, scaled_thermal_noise
     
-    def compute_state_value_tmm(
+    def compute_reflectivity(
             self, 
             state, 
             material_sub=1, 
@@ -222,16 +229,17 @@ class CoatingStack():
 
         theta = 0
 
-        ref = coh_tmm('p', n_list, d_list, theta, light_wavelength)['R']
+        ref = coh_tmm('s', n_list, d_list, theta, light_wavelength)['R']
         #refs = coh_tmm('s', n_list, d_list, theta, light_wavelength)['R']
 
         return ref
     
     def compute_state_value(self, state):
         if self.use_ligo_reward:
-            return self.compute_state_value_ligo(state)
+            reflected_power, scaled_thermal_noise = self.compute_state_value_ligo(state)
+            return reflected_power, scaled_thermal_noise 
         else:
-            return self.compute_state_value_tmm(state)
+            return self.compute_reflectivity(state), None
 
     def inv_sigmoid(self, val):
         return np.log(val/(1-val))
@@ -260,34 +268,36 @@ class CoatingStack():
             action (_type_): _description_
         """
 
-        new_value = self.compute_state_value(new_state)
+        new_reflectivity, new_thermal_noise = self.compute_state_value(new_state)
         #new_value = np.log(new_value/(1-new_value))
         #old_value = self.compute_state_value(old_state) + 5
         #reward_diff = 0.01/(new_value - target_reflectivity)**2
         #reward_diff = (new_value - target_reflectivity)**2
         #reward_diff = np.log(reward_diff/(1-reward_diff))
         if self.reward_shape == "inv_sigmoid_cut":
-            if new_value > 0.5:
-                reward_diff = self.inv_sigmoid(new_value) + 0.5
+            if new_reflectivity > 0.5:
+                reward = self.inv_sigmoid(new_reflectivity) + 0.5
             else:
-                reward_diff = new_value
+                reward = new_reflectivity
         elif self.reward_shape == "inv_diff":
-            reward_diff = 0.01/np.abs(new_value - target_reflectivity)
+            reward = 0.01/np.abs(new_reflectivity - target_reflectivity)
         elif self.reward_shape == "smooth_asymptote":
-            reward_diff = self.smooth_reward_function(new_value, a=0.01)
+            reward = self.smooth_reward_function(new_reflectivity, a=0.01)
         elif self.reward_shape == "none":
-            reward_diff = new_value
+            reward = new_reflectivity
         else:
             raise Exception(f"reward shape not supported {self.reward_shape}")
         #reward_diff = new_value - max_value
 
-        if reward_diff > 0:
-            #print(reward_diff)
-            reward = reward_diff
-        else:
-            reward = reward_diff
- 
-        return reward_diff, reward, new_value 
+        if self.use_ligo_thermal_noise and new_thermal_noise is not None:
+            reward += new_thermal_noise
+
+        if self.include_random_rare_state:
+            if new_state[1][3] == 1 and new_state[-2][3] == 1:
+                reward += 100*scipy.stats.norm(self.min_thickness + (self.max_thickness - self.min_thickness/10),(self.max_thickness - self.min_thickness)/4).pdf(new_state[1][0])
+                reward += 100*scipy.stats.norm(self.min_thickness + (self.max_thickness - self.min_thickness/2),(self.max_thickness - self.min_thickness)/4).pdf(new_state[-2][0])
+
+        return reward, new_reflectivity, new_thermal_noise
     
     def update_state(self, current_state, thickness, material):
         """new state is the current action choice
@@ -302,10 +312,10 @@ class CoatingStack():
         thickness = torch.from_numpy(np.array([thickness]))
         new_layer = torch.cat([thickness, material])
         current_state[self.current_index][0] = thickness
-        if self.ignore_air_option:
-            current_state[self.current_index][2:] = material
-        else:
-            current_state[self.current_index][1:] = material
+        #if self.ignore_air_option:
+        #    current_state[self.current_index][2:] = material
+        #else:
+        current_state[self.current_index][1:] = material
 
         #if material[0] == 1 and self.current_index != self.max_layers - 1:
         #    current_state[self.current_index:] = new_layer.repeat((self.max_layers-self.current_index, 1))
@@ -341,7 +351,7 @@ class CoatingStack():
 
         terminated = False
         finished = False
-        reward_diff, reward, new_value = self.compute_reward(new_state, max_state)
+        reward, new_reflectivity, new_thermal_noise = self.compute_reward(new_state, max_state)
 
         #print(torch.any((self.current_state[0] + actions[2]) < self.min_thickness))
         if self.min_thickness > thickness or thickness > self.max_thickness or not np.isfinite(thickness):

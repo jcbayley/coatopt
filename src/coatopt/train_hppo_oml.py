@@ -33,6 +33,7 @@ if __name__ == "__main__":
         ignore_air_option=config.get("Data", "ignore_air_option"),
         use_ligo_reward=config.get("Data", "use_ligo_reward"),
         use_ligo_thermal_noise=config.get("Data", "use_ligo_thermal_noise"),
+        include_random_rare_state=config.get("Data", "include_random_rare_state"),
     )
 
 
@@ -68,7 +69,8 @@ if __name__ == "__main__":
             discrete_hidden_size=config.get("Network", "discrete_hidden_size"),
             continuous_hidden_size=config.get("Network", "continuous_hidden_size"),
             value_hidden_size=config.get("Network", "value_hidden_size"),
-            substrate_material_index=env.substrate_material_index
+            substrate_material_index=env.substrate_material_index,
+            ignore_air_option=config.get("Data", "ignore_air_option"),
 
             )
  
@@ -104,6 +106,8 @@ if __name__ == "__main__":
         beta_end=config.get("Training", "entropy_beta_end"),
         beta_decay_length=config.get("Training", "entropy_beta_decay_length"),
         beta_decay_start=config.get("Training", "entropy_beta_decay_start"),
+        scheduler_start=config.get("Training", "scheduler_start"),
+        scheduler_end=config.get("Training", "scheduler_end")
     )
     
     trainer.train()
