@@ -13,6 +13,7 @@ if __name__ == "__main__":
     parser.add_argument("-c", "--config", type=str, required=False, default="none")
     parser.add_argument('--train', action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument('--test', action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument('--continue-training', action=argparse.BooleanOptionalAction, default=False)
 
     args = parser.parse_args()
 
@@ -20,6 +21,8 @@ if __name__ == "__main__":
 
 
     materials = read_materials(os.path.join(config.get("General", "materials_file")))
+
+    continue_training = args.continue_training or config.get("General", "continue_training")
 
 
     env = CoatingStack(
@@ -75,8 +78,8 @@ if __name__ == "__main__":
             )
  
     
-    if config.get("General", "load_model"):
-        if config.get("General", "load_model_path") == "root":
+    if config.get("General", "load_model") or continue_training:
+        if config.get("General", "load_model_path") == "root" or continue_training:
             agent.load_networks(config.get("General", "root_dir"))
         else:
             agent.load_networks(config.get("General", "load_model_path"))
@@ -107,7 +110,8 @@ if __name__ == "__main__":
         beta_decay_length=config.get("Training", "entropy_beta_decay_length"),
         beta_decay_start=config.get("Training", "entropy_beta_decay_start"),
         scheduler_start=config.get("Training", "scheduler_start"),
-        scheduler_end=config.get("Training", "scheduler_end")
+        scheduler_end=config.get("Training", "scheduler_end"),
+        continue_training=continue_training
     )
     
     trainer.train()

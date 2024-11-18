@@ -108,8 +108,8 @@ class CoatingStack():
         opt_state2 = np.array(opt_state2)
 
         if self.include_random_rare_state:
-            mean1 = self.min_thickness + (self.max_thickness - self.min_thickness/10)
-            mean2 = self.min_thickness + (self.max_thickness - self.min_thickness/2)
+            mean1 = self.min_thickness + (self.max_thickness - self.min_thickness)/10
+            mean2 = self.min_thickness + (self.max_thickness - self.min_thickness)/2
             opt_state2[1] = [mean1, 0,0,0,1]
             opt_state2[-2] = [mean2, 0,0,0,1]
 
@@ -301,12 +301,27 @@ class CoatingStack():
             reward += new_thermal_noise
 
         if self.include_random_rare_state:
-            if new_state[1][4] == 1 and new_state[-2][4] == 1:
-                mean1 = self.min_thickness + (self.max_thickness - self.min_thickness/10)
-                mean2 = self.min_thickness + (self.max_thickness - self.min_thickness/2)
-                var1 = (self.max_thickness - self.min_thickness)/20
-                reward += 50*scipy.stats.norm(mean1,var1).pdf(new_state[1][0]) * np.sqrt(2*np.pi*var1**2)
-                reward += 50*scipy.stats.norm(mean2,var1).pdf(new_state[-2][0]) * np.sqrt(2*np.pi*var1**2)
+            rstate = 2
+            correct_states = []
+            for i in range(len(new_state)):
+                if i == 1 or i == len(new_state)-2:
+                    continue
+                if new_state[i][rstate] == 1:
+                    correct_states.append(True)
+                else:
+                    correct_states.append(False)
+                if rstate == 2:
+                    rstate = 3
+                else:
+                    rstate = 2
+
+            correct_state = np.all(correct_states)
+            if new_state[1][4] == 1 and new_state[-2][4] == 1 and correct_state:
+                mean1 = self.min_thickness + (self.max_thickness - self.min_thickness)/10
+                mean2 = self.min_thickness + (self.max_thickness - self.min_thickness)/2
+                var1 = (self.max_thickness - self.min_thickness)/10
+                reward += 100*scipy.stats.norm(mean1,var1).pdf(new_state[1][0]) * np.sqrt(2*np.pi*var1**2)
+                reward += 100*scipy.stats.norm(mean2,var1).pdf(new_state[-2][0]) * np.sqrt(2*np.pi*var1**2)
 
         return reward, new_reflectivity, new_thermal_noise
     
