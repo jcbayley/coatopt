@@ -33,10 +33,12 @@ if __name__ == "__main__":
         opt_init=False,
         use_intermediate_reward = config.get("Data", "use_intermediate_reward"),
         reward_shape=config.get("Data", "reward_shape"),
+        thermal_reward_shape=config.get("Data", "thermal_reward_shape"),                
         ignore_air_option=config.get("Data", "ignore_air_option"),
         use_ligo_reward=config.get("Data", "use_ligo_reward"),
         use_ligo_thermal_noise=config.get("Data", "use_ligo_thermal_noise"),
         include_random_rare_state=config.get("Data", "include_random_rare_state"),
+        use_design_requirements=config.get("Data", "use_design_requirements"),
     )
 
 

@@ -600,7 +600,7 @@ class HPPOTrainer:
         self.betas = []
         self.lrs = []
 
-        for episode in range(self.n_iterations):
+        for episode in range(self.start_episode, self.n_iterations):
 
             if episode < self.scheduler_start or episode > self.scheduler_end:
                 make_step = False
@@ -631,7 +631,7 @@ class HPPOTrainer:
             actions_continuous = []
             returns = []
             advantages = []
-            for n in range(self.start_episode, self.n_training_epochs):
+            for n in range(self.n_training_epochs):
                 state = self.env.reset()
                 episode_reward = 0
                 means = []
@@ -653,7 +653,9 @@ class HPPOTrainer:
                     action[1] = action[1]*(self.env.max_thickness - self.env.min_thickness) + self.env.min_thickness
                 
                     # Take action and observe reward and next state
-                    next_state, reward, done, finished, _, full_action = self.env.step(action)
+                    next_state, rewards, done, finished, _, full_action = self.env.step(action)
+
+                    reward = rewards["total_reward"]
 
                     t_rewards.append(reward)
                     self.agent.replay_buffer.update(
