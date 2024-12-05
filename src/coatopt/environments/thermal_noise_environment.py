@@ -1,6 +1,6 @@
 import torch
 import numpy as np
-from .coating_utils import getCoatAbsorption, getCoatNoise2, getCoatRefl2, merit_function_2
+from .coating_utils import getCoatAbsorption, getCoatNoise2, getCoatRefl2, merit_function, merit_function_2
 import time
 import scipy
 from tmm import coh_tmm
@@ -202,8 +202,7 @@ class CoatingStack():
         if len(state_trim) == 0:
             state_trim = np.array([[self.min_thickness, 0, 1, 0], ])
 
-
-        r, thermal_noise = merit_function_2(
+        m,m_scales, r, thermal_noise, e_integrated, thickness = merit_function(
             np.array(state_trim),
             self.materials,
             light_wavelength=light_wavelength,
@@ -214,7 +213,7 @@ class CoatingStack():
             air_index = self.air_material_index
             )
         
-        R = np.abs(r)**2
+        R = r#np.abs(r)**2
 
         #scaled_thermal_noise = -np.log(thermal_noise)/10
      
@@ -344,6 +343,8 @@ class CoatingStack():
                 thermal_reward = -np.log(new_thermal_noise)
             else:
                 raise Exception(f"thermal noise reward shape not supported {self.thermal_reward_shape}")
+        else:
+            thermal_reward = 0
 
 
         reward = reflectivity_reward + thermal_reward
@@ -502,31 +503,31 @@ class CoatingStack():
         L = data.shape[0]
         thickness = data[:, 0]
         colors = []
+        nmats = data.shape[1] - 1
 
         # Define colors for m1, m2, and m3
         color_map = {
-            0: 'gray',    # No active material
-            1: 'blue',    # m1
+            0: 'gray',    # air
+            1: 'blue',    # m1 - substrate
             2: 'green',   # m2
-            3: 'red'      # m3
+            3: 'red',      # m3
+            4: 'black',
+            5: 'yellow',
+            6: 'orange',
+            7: 'purple',
+            8: 'cyan',
         }
 
         labels = []
         for row in data:
-            if row[1] == 1:
+            row = np.argmax(row[1:])
+            if row == 0:
                 colors.append(color_map[0])  # m1
                 labels.append(f"{self.materials[0]['name']}")
-            elif row[2] == 1:
-                colors.append(color_map[1])  # m2
-                labels.append(f"{self.materials[1]['name']} (1/4 wave{1064e-9 /(4*self.materials[1]['n'])})")
-            elif row[3] == 1:
-                colors.append(color_map[2])  # m3
-                labels.append(f"{self.materials[2]['name']} (1/4 wave{1064e-9 /(4*self.materials[2]['n'])})")
-            elif row[4] == 1:
-                colors.append(color_map[3])  # No active material
-                labels.append(f"{self.materials[3]['name']} (1/4 wave{1064e-9 /(4*self.materials[3]['n'])})")
             else:
-                pass
+                colors.append(color_map[row])  # m2
+                labels.append(f"{self.materials[row]['name']} (1/4 wave{1064e-9 /(4*self.materials[row]['n'])})")
+
 
 
         # Create a bar plot

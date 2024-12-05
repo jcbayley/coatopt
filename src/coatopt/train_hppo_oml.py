@@ -24,7 +24,6 @@ if __name__ == "__main__":
 
     continue_training = args.continue_training or config.get("General", "continue_training")
 
-
     env = CoatingStack(
         config.get("Data", "n_layers"), 
         config.get("Data", "min_thickness"),

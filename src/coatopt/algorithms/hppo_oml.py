@@ -524,7 +524,19 @@ class HPPOTrainer:
             self.load_metrics_from_file()
             self.start_episode = self.metrics["episode"].max()
         else:
-            self.metrics = pd.DataFrame(columns=["episode", "loss_policy_continuous", "loss_policy_discrete", "beta", "lr_discrete", "lr_continuous", "lr_value", "reward", "reflectivity", "thermal_noise"])
+            self.metrics = pd.DataFrame(columns=[
+                "episode", 
+                "loss_policy_continuous", 
+                "loss_policy_discrete",
+                "beta", 
+                "lr_discrete", 
+                "lr_continuous", 
+                "lr_value", 
+                "reward", 
+                "reflectivity", 
+                "thermal_noise", 
+                "reflectivity_reward", 
+                "thermal_reward"])  
             self.start_episode = 0
 
     def write_metrics_to_file(self):
@@ -546,19 +558,19 @@ class HPPOTrainer:
         reward_ax[0].set_xlabel("Episode number")
         reward_ax[0].set_ylabel("Reward")
 
-        downsamp_reflectivites= self.metrics['reflectivity'].rolling(window=window_size, center=False).median()
+        downsamp_reflectivites= self.metrics['reflectivity_reward'].rolling(window=window_size, center=False).median()
         #downsamp_values = np.mean(np.reshape(self.reflectivities[:int((len(self.reflectivities)//window_size)*window_size)], (-1,window_size)), axis=1)
-        reward_ax[1].plot(self.metrics["episode"], self.metrics["reflectivity"])
+        reward_ax[1].plot(self.metrics["episode"], self.metrics["reflectivity_reward"])
         reward_ax[1].plot(downsamp_episodes, downsamp_reflectivites)
         reward_ax[1].set_xlabel("Episode number")
-        reward_ax[1].set_ylabel("Reflectivity ")
+        reward_ax[1].set_ylabel("Reflectivity reward")
 
         #downsamp_values = np.mean(np.reshape(self.thermal_noises[:int((len(self.thermal_noises)//window_size)*window_size)], (-1,window_size)), axis=1)
-        downsamp_thermal_noise = self.metrics['thermal_noise'].rolling(window=window_size, center=False).median()
-        reward_ax[2].plot(self.metrics["episode"], self.metrics["thermal_noise"])
+        downsamp_thermal_noise = self.metrics['thermal_reward'].rolling(window=window_size, center=False).median()
+        reward_ax[2].plot(self.metrics["episode"], self.metrics["thermal_reward"])
         reward_ax[2].plot(downsamp_episodes, downsamp_thermal_noise)
         reward_ax[2].set_xlabel("Episode number")
-        reward_ax[2].set_ylabel("Thermal noise")
+        reward_ax[2].set_ylabel("Thermal noise reward")
 
         reward_ax[3].plot(self.metrics["episode"], self.metrics["beta"])
         reward_ax[3].set_xlabel("Episode number")
@@ -725,9 +737,11 @@ class HPPOTrainer:
             metric_update["episode"] = episode
             metric_update["reward"] = episode_reward
 
-            _, reflectivity, thermal_noise = self.env.compute_reward(state)
+            _, reflectivity, thermal_noise, reflectvity_reward, thermal_reward = self.env.compute_reward(state)
             metric_update["reflectivity"] = reflectivity
             metric_update["thermal_noise"] = thermal_noise
+            metric_update["reflectivity_reward"] = reflectvity_reward
+            metric_update["thermal_reward"] = thermal_reward
 
             self.metrics = pd.concat([self.metrics, pd.DataFrame([metric_update])], ignore_index=True)
 
@@ -743,10 +757,15 @@ class HPPOTrainer:
 
                 #all_mats2 = all_mats2[:,:,:]
                 color_map = {
-                    0: 'gray',    # No active material
-                    1: 'blue',    # m1
+                    0: 'gray',    # air
+                    1: 'blue',    # m1 - substrate
                     2: 'green',   # m2
-                    3: 'red'      # m3
+                    3: 'red',      # m3
+                    4: 'black',
+                    5: 'yellow',
+                    6: 'orange',
+                    7: 'purple',
+                    8: 'cyan',
                 }
                 for i in range(n_layers):
                     for mind in range(len(all_mats2[0, i])):
