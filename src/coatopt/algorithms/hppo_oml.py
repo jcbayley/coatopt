@@ -555,10 +555,10 @@ class HPPOTrainer:
 
         #downsamp_values = np.mean(np.reshape(self.thermal_noises[:int((len(self.thermal_noises)//window_size)*window_size)], (-1,window_size)), axis=1)
         downsamp_thermal_noise = self.metrics['thermal_noise'].rolling(window=window_size, center=False).median()
-        reward_ax[2].plot(self.metrics["episode"], self.metrics["thermal_noise"])
-        reward_ax[2].plot(downsamp_episodes, downsamp_thermal_noise)
+        reward_ax[2].plot(self.metrics["episode"], np.log10(self.metrics["thermal_noise"]))
+        reward_ax[2].plot(downsamp_episodes, np.log10(downsamp_thermal_noise))
         reward_ax[2].set_xlabel("Episode number")
-        reward_ax[2].set_ylabel("Thermal noise")
+        reward_ax[2].set_ylabel("log_10 Thermal noise")
 
         reward_ax[3].plot(self.metrics["episode"], self.metrics["beta"])
         reward_ax[3].set_xlabel("Episode number")
@@ -600,7 +600,7 @@ class HPPOTrainer:
         self.betas = []
         self.lrs = []
 
-        for episode in range(self.n_iterations):
+        for episode in range(self.start_episode, self.n_iterations):
 
             if episode < self.scheduler_start or episode > self.scheduler_end:
                 make_step = False
@@ -631,7 +631,7 @@ class HPPOTrainer:
             actions_continuous = []
             returns = []
             advantages = []
-            for n in range(self.start_episode, self.n_training_epochs):
+            for n in range(self.n_training_epochs):
                 state = self.env.reset()
                 episode_reward = 0
                 means = []
@@ -699,7 +699,6 @@ class HPPOTrainer:
                 returns = self.agent.get_returns(t_rewards)
                 self.agent.replay_buffer.update_returns(returns)
                 
-
             all_means.append(means)
             all_stds.append(stds)
             all_mats.append(mats)
@@ -742,9 +741,11 @@ class HPPOTrainer:
                 #all_mats2 = all_mats2[:,:,:]
                 color_map = {
                     0: 'gray',    # No active material
-                    1: 'blue',    # m1
-                    2: 'green',   # m2
-                    3: 'red'      # m3
+                    1: 'C0',    # m1
+                    2: 'C1',   # m2
+                    3: 'C2',      # m3
+                    4: 'C3',
+                    5: 'C4'
                 }
                 for i in range(n_layers):
                     for mind in range(len(all_mats2[0, i])):

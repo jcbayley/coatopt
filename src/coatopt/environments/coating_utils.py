@@ -385,9 +385,9 @@ def merit_function(
     nAir = all_materials[0]["n"]
     
     # Reflectivity
-    R, dcdp, rbar, r = getCoatRefl2(nAir, nSub, n_layer, optical_thickness)
+    #R, dcdp, rbar, r = getCoatRefl2(nAir, nSub, n_layer, optical_thickness)
     
-    R = np.real(R)
+    #R = np.real(R)
 
     """
     # Clear the previous output (the number of spaces should cover the previous line)
@@ -401,6 +401,8 @@ def merit_function(
     print(f"{'D':<10}{(D):<10.2f}")
     """
 
+    return ThermalNoise[1], ThermalNoise_Total, E_integrated, D
+    """
     R_scaled =  w_R * (R)
     CTN_scaled = w_T * (ThermalNoise_Total/(5.92672659826259e-21))
     EFI_scaled =  w_E * (1/10 * E_integrated)   
@@ -414,7 +416,7 @@ def merit_function(
     
     #return M_scaled, R_scaled , CTN_scaled , EFI_scaled , thick_scaled
     return M, M_scaled, R, ThermalNoise_Total, E_integrated,D
-
+    """
 def optical_to_physical(optical_thickness, vacuum_wavelength, refractive_index):
     physical_thickness = optical_thickness*vacuum_wavelength/ refractive_index
     return physical_thickness

@@ -1,6 +1,6 @@
 import torch
 import numpy as np
-from .coating_utils import getCoatAbsorption, getCoatNoise2, getCoatRefl2, merit_function_2
+from .coating_utils import getCoatAbsorption, getCoatNoise2, getCoatRefl2, merit_function, merit_function_2
 import time
 import scipy
 from tmm import coh_tmm
@@ -22,7 +22,8 @@ class CoatingStack():
             use_intermediate_reward=False,
             ignore_air_option=False,
             use_ligo_reward=False,
-            use_ligo_thermal_noise=False,
+            optimise_parameters = ["reflectivity", "thermal_noise", "absorption","thickness"],
+            optimise_targets = {"reflectivity":0.99999, "thermal_noise":5.394480540642821e-21, "absorption":0.01, "thickness":0.1},
             light_wavelength=1064e-9,
             include_random_rare_state=False):
         """_summary_
@@ -50,7 +51,8 @@ class CoatingStack():
         self.use_intermediate_reward = use_intermediate_reward
         self.ignore_air_option = ignore_air_option
         self.use_ligo_reward = use_ligo_reward
-        self.use_ligo_thermal_noise = use_ligo_thermal_noise
+        self.optimise_parameters = optimise_parameters
+        self.optimise_targets = optimise_targets
         self.include_random_rare_state = include_random_rare_state
 
         # state space size is index for each material (onehot encoded) plus thickness of each material
@@ -193,8 +195,7 @@ class CoatingStack():
         if len(state_trim) == 0:
             state_trim = np.array([[self.min_thickness, 0, 1, 0], ])
 
-
-        r, thermal_noise = merit_function_2(
+        r, thermal_noise, E_integrated, total_thickness = merit_function(
             np.array(state_trim),
             self.materials,
             light_wavelength=light_wavelength,
@@ -205,6 +206,19 @@ class CoatingStack():
             air_index = self.air_material_index
             )
         
+        """
+        r, thermal_noise = merit_function_2(
+            np.array(state_trim),
+            self.materials,
+            light_wavelength=light_wavelength,
+            frequency=frequency,
+            wBeam=wBeam,
+            Temp=Temp,
+            substrate_index = self.substrate_material_index,
+            air_index = self.air_material_index
+            )
+        """
+
         R = np.abs(r)**2
 
         scaled_thermal_noise = -np.log(thermal_noise)/10
@@ -212,9 +226,9 @@ class CoatingStack():
         
         #print(R, np.log(thermal_noise))
         if return_separate:
-            return r, thermal_noise
+            return r, thermal_noise, E_integrated, total_thickness
         else:
-            return R, scaled_thermal_noise
+            return R, scaled_thermal_noise, None, None
     
     def compute_reflectivity(
             self, 
@@ -242,12 +256,12 @@ class CoatingStack():
 
         return ref
     
-    def compute_state_value(self, state):
+    def compute_state_value(self, state, return_separate=False):
         if self.use_ligo_reward:
-            reflected_power, scaled_thermal_noise = self.compute_state_value_ligo(state)
-            return reflected_power, scaled_thermal_noise 
+            reflected_power, scaled_thermal_noise, E_integrated, total_thickness = self.compute_state_value_ligo(state, return_separate=return_separate)
+            return reflected_power, scaled_thermal_noise , E_integrated, total_thickness
         else:
-            return self.compute_reflectivity(state), 0
+            return self.compute_reflectivity(state), None, None, None
 
     def inv_sigmoid(self, val):
         return np.log(val/(1-val))
@@ -276,55 +290,82 @@ class CoatingStack():
             action (_type_): _description_
         """
 
-        new_reflectivity, new_thermal_noise = self.compute_state_value(new_state)
+        new_reflectivity, new_thermal_noise, new_E_integrated, new_total_thickness = self.compute_state_value(new_state, return_separate=True)
+
+
         #new_value = np.log(new_value/(1-new_value))
         #old_value = self.compute_state_value(old_state) + 5
         #reward_diff = 0.01/(new_value - target_reflectivity)**2
         #reward_diff = (new_value - target_reflectivity)**2
         #reward_diff = np.log(reward_diff/(1-reward_diff))
-        if self.reward_shape == "inv_sigmoid_cut":
-            if new_reflectivity > 0.5:
-                reward = self.inv_sigmoid(new_reflectivity) + 0.5
-            else:
+        
+        if "reflectivity" in self.optimise_parameters:
+
+            new_reflectivity = np.abs(new_reflectivity)**2
+
+            if self.reward_shape == "inv_sigmoid_cut":
+                if new_reflectivity > 0.5:
+                    reward = self.inv_sigmoid(new_reflectivity) + 0.5
+                else:
+                    reward = new_reflectivity
+            elif self.reward_shape == "inv_diff":
+                reward = 0.01/np.abs(new_reflectivity - target_reflectivity)
+            elif self.reward_shape == "smooth_asymptote":
+                reward = self.smooth_reward_function(new_reflectivity, a=0.01)
+            elif self.reward_shape == "none":
                 reward = new_reflectivity
-        elif self.reward_shape == "inv_diff":
-            reward = 0.01/np.abs(new_reflectivity - target_reflectivity)
-        elif self.reward_shape == "smooth_asymptote":
-            reward = self.smooth_reward_function(new_reflectivity, a=0.01)
-        elif self.reward_shape == "none":
-            reward = new_reflectivity
-        else:
-            raise Exception(f"reward shape not supported {self.reward_shape}")
+            else:
+                raise Exception(f"reward shape not supported {self.reward_shape}")
+            
+            if new_reflectivity > self.optimise_targets["reflectivity"]:
+                reward *= 10
+
         #reward_diff = new_value - max_value
 
-        if self.use_ligo_thermal_noise and new_thermal_noise is not None:
-            reward += new_thermal_noise
+        if "thermal_noise" in self.optimise_parameters and new_thermal_noise is not None:
+            reward *= -np.log(new_thermal_noise)/10
+
+            if new_thermal_noise < self.optimise_targets["thermal_noise"]:
+                reward *= 10
+
+        if "thickness" in self.optimise_parameters:
+            reward += -new_total_thickness
+        
+        if "absorption" in self.optimise_parameters:
+            reward += -new_E_integrated
+            if new_E_integrated < self.optimise_targets["absorption"]:
+                reward *= 10
 
         if self.include_random_rare_state:
-            rstate = 2
-            correct_states = []
-            for i in range(len(new_state)):
-                if i == 1 or i == len(new_state)-2:
-                    continue
-                if new_state[i][rstate] == 1:
-                    correct_states.append(True)
-                else:
-                    correct_states.append(False)
-                if rstate == 2:
-                    rstate = 3
-                else:
-                    rstate = 2
-
-            correct_state = np.all(correct_states)
-            if new_state[1][4] == 1 and new_state[-2][4] == 1 and correct_state:
-                mean1 = self.min_thickness + (self.max_thickness - self.min_thickness)/10
-                mean2 = self.min_thickness + (self.max_thickness - self.min_thickness)/2
-                var1 = (self.max_thickness - self.min_thickness)/10
-                reward += 100*scipy.stats.norm(mean1,var1).pdf(new_state[1][0]) * np.sqrt(2*np.pi*var1**2)
-                reward += 100*scipy.stats.norm(mean2,var1).pdf(new_state[-2][0]) * np.sqrt(2*np.pi*var1**2)
+            reward += self.include_random_rare_state(new_state)
 
         return reward, new_reflectivity, new_thermal_noise
     
+    def include_random_rare_state(self, new_state):
+        rstate = 2
+        reward = 0
+        correct_states = []
+        for i in range(len(new_state)):
+            if i == 1 or i == len(new_state)-2:
+                continue
+            if new_state[i][rstate] == 1:
+                correct_states.append(True)
+            else:
+                correct_states.append(False)
+            if rstate == 2:
+                rstate = 3
+            else:
+                rstate = 2
+
+        correct_state = np.all(correct_states)
+        if new_state[1][4] == 1 and new_state[-2][4] == 1 and correct_state:
+            mean1 = self.min_thickness + (self.max_thickness - self.min_thickness)/10
+            mean2 = self.min_thickness + (self.max_thickness - self.min_thickness)/2
+            var1 = (self.max_thickness - self.min_thickness)/10
+            reward += 100*scipy.stats.norm(mean1,var1).pdf(new_state[1][0]) * np.sqrt(2*np.pi*var1**2)
+            reward += 100*scipy.stats.norm(mean2,var1).pdf(new_state[-2][0]) * np.sqrt(2*np.pi*var1**2)
+
+        return reward
     def update_state(self, current_state, thickness, material):
         """new state is the current action choice
 
@@ -443,25 +484,22 @@ class CoatingStack():
         # Define colors for m1, m2, and m3
         color_map = {
             0: 'gray',    # No active material
-            1: 'blue',    # m1
-            2: 'green',   # m2
-            3: 'red'      # m3
+            1: 'C0',    # m1
+            2: 'C1',   # m2
+            3: 'C2',      # m3
+            4: 'C3',
+            5: 'C4',
         }
 
         labels = []
         for row in data:
-            if row[1] == 1:
-                colors.append(color_map[0])  # m1
-                labels.append(f"{self.materials[0]['name']}")
-            elif row[2] == 1:
-                colors.append(color_map[1])  # m2
-                labels.append(f"{self.materials[1]['name']} (1/4 wave{1064e-9 /(4*self.materials[1]['n'])})")
-            elif row[3] == 1:
-                colors.append(color_map[2])  # m3
-                labels.append(f"{self.materials[2]['name']} (1/4 wave{1064e-9 /(4*self.materials[2]['n'])})")
-            elif row[4] == 1:
-                colors.append(color_map[3])  # No active material
-                labels.append(f"{self.materials[3]['name']} (1/4 wave{1064e-9 /(4*self.materials[3]['n'])})")
+            for i in range(len(self.materials)):
+                if row[1] == 1:
+                    colors.append(color_map[i])
+                    labels.append(f"{self.materials[0]['name']}")
+                elif row[i+1] == 1:
+                    colors.append(color_map[i])
+                    labels.append(f"{self.materials[i]['name']} (1/4 wave{1064e-9 /(4*self.materials[i]['n'])})")
             else:
                 pass
 

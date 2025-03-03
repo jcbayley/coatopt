@@ -35,7 +35,8 @@ if __name__ == "__main__":
         reward_shape=config.get("Data", "reward_shape"),
         ignore_air_option=config.get("Data", "ignore_air_option"),
         use_ligo_reward=config.get("Data", "use_ligo_reward"),
-        use_ligo_thermal_noise=config.get("Data", "use_ligo_thermal_noise"),
+        optimise_parameters=config.get("Data", "optimise_parameters"),
+        optimise_targets=config.get("Data", "optimise_targets"),
         include_random_rare_state=config.get("Data", "include_random_rare_state"),
     )
 
