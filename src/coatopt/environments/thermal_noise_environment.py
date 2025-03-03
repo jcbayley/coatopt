@@ -220,7 +220,7 @@ class CoatingStack():
         
         #print(R, np.log(thermal_noise))
         if return_separate:
-            return r, thermal_noise
+            return r, thermal_noise, e_integrated, thickness
         else:
             return R, thermal_noise
     
