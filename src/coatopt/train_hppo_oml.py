@@ -35,9 +35,9 @@ if __name__ == "__main__":
         thermal_reward_shape=config.get("Data", "thermal_reward_shape"),                
         ignore_air_option=config.get("Data", "ignore_air_option"),
         use_ligo_reward=config.get("Data", "use_ligo_reward"),
-        use_ligo_thermal_noise=config.get("Data", "use_ligo_thermal_noise"),
+        optimise_parameters=config.get("Data", "optimise_parameters"),
+        optimise_targets=config.get("Data", "optimise_targets"),
         include_random_rare_state=config.get("Data", "include_random_rare_state"),
-        use_design_requirements=config.get("Data", "use_design_requirements"),
     )
 
 
@@ -87,13 +87,13 @@ if __name__ == "__main__":
 
 
     optimal_state = env.get_optimal_state()
-    optimal_value = env.compute_state_value(optimal_state)
+    optimal_value = env.compute_state_value(optimal_state, return_separate=True)
     fig, ax = env.plot_stack(optimal_state)
     ax.set_title(f" opt val: {optimal_value}")
     fig.savefig(os.path.join(config.get("General", "root_dir"),  f"opt_state.png"))
 
     optimal_state_r = env.get_optimal_state(reverse=True)
-    optimal_value_r = env.compute_state_value(optimal_state_r)
+    optimal_value_r = env.compute_state_value(optimal_state_r, return_separate=True)
     fig, ax = env.plot_stack(optimal_state_r)
     ax.set_title(f" opt val: {optimal_value_r}")
     fig.savefig(os.path.join(config.get("General", "root_dir"),  f"opt_state_reverse.png"))

@@ -10,6 +10,7 @@ import os
 import sys
 import matplotlib.pyplot as plt
 import pandas as pd
+import time
 
 class ReplayBuffer:
     def __init__(self):
@@ -535,8 +536,12 @@ class HPPOTrainer:
                 "reward", 
                 "reflectivity", 
                 "thermal_noise", 
+                "thickness",
+                "absorption",
                 "reflectivity_reward", 
-                "thermal_reward"])  
+                "thermal_reward",
+                "thickness_reward",
+                "absorption_reward"])  
             self.start_episode = 0
 
     def write_metrics_to_file(self):
@@ -548,7 +553,7 @@ class HPPOTrainer:
 
     def make_reward_plot(self,):
 
-        reward_fig, reward_ax = plt.subplots(nrows=5, figsize=(7,9))
+        reward_fig, reward_ax = plt.subplots(nrows=7, figsize=(7,9))
         window_size = 20
         #downsamp_rewards = np.mean(np.reshape(self.rewards[:int((len(self.rewards)//window_size)*window_size)], (-1,window_size)), axis=1)
         downsamp_rewards = self.metrics['reward'].rolling(window=window_size, center=False).median()
@@ -566,23 +571,76 @@ class HPPOTrainer:
         reward_ax[1].set_ylabel("Reflectivity reward")
 
         #downsamp_values = np.mean(np.reshape(self.thermal_noises[:int((len(self.thermal_noises)//window_size)*window_size)], (-1,window_size)), axis=1)
-        downsamp_thermal_noise = self.metrics['thermal_reward'].rolling(window=window_size, center=False).median()
-        reward_ax[2].plot(self.metrics["episode"], self.metrics["thermal_reward"])
+        downsamp_thermal_noise = self.metrics['thermal_noise_reward'].rolling(window=window_size, center=False).median()
+        reward_ax[2].plot(self.metrics["episode"], self.metrics["thermal_noise_reward"])
         reward_ax[2].plot(downsamp_episodes, downsamp_thermal_noise)
         reward_ax[2].set_xlabel("Episode number")
         reward_ax[2].set_ylabel("Thermal noise reward")
 
-        reward_ax[3].plot(self.metrics["episode"], self.metrics["beta"])
+        downsamp_thickness_noise = self.metrics['thickness_reward'].rolling(window=window_size, center=False).median()
+        reward_ax[3].plot(self.metrics["episode"], self.metrics["thickness_reward"])
+        reward_ax[3].plot(downsamp_episodes, downsamp_thickness_noise)
         reward_ax[3].set_xlabel("Episode number")
-        reward_ax[3].set_ylabel("Entropy weight")
+        reward_ax[3].set_ylabel("Thickness reward")
 
-        reward_ax[4].plot(self.metrics["episode"], self.metrics["lr_discrete"], label="discrete")
-        reward_ax[4].plot(self.metrics["episode"], self.metrics["lr_continuous"], label="continuous")
-        reward_ax[4].plot(self.metrics["episode"], self.metrics["lr_value"], label="value")
+        downsamp_absorption_noise = self.metrics['absorption_reward'].rolling(window=window_size, center=False).median()
+        reward_ax[4].plot(self.metrics["episode"], self.metrics["absorption_reward"])
+        reward_ax[4].plot(downsamp_episodes, downsamp_absorption_noise)
         reward_ax[4].set_xlabel("Episode number")
-        reward_ax[4].set_ylabel("Learning Rate")
-        reward_ax[4].legend()
+        reward_ax[4].set_ylabel("absorption reward")
+
+        reward_ax[5].plot(self.metrics["episode"], self.metrics["beta"])
+        reward_ax[5].set_xlabel("Episode number")
+        reward_ax[5].set_ylabel("Entropy weight")
+
+        reward_ax[6].plot(self.metrics["episode"], self.metrics["lr_discrete"], label="discrete")
+        reward_ax[6].plot(self.metrics["episode"], self.metrics["lr_continuous"], label="continuous")
+        reward_ax[6].plot(self.metrics["episode"], self.metrics["lr_value"], label="value")
+        reward_ax[6].set_xlabel("Episode number")
+        reward_ax[6].set_ylabel("Learning Rate")
+        reward_ax[6].legend()
         reward_fig.savefig(os.path.join(self.root_dir, "running_rewards.png"))
+
+    def make_val_plot(self,):
+
+        reward_fig, reward_ax = plt.subplots(nrows=5, figsize=(7,9))
+        window_size = 20
+        #downsamp_rewards = np.mean(np.reshape(self.rewards[:int((len(self.rewards)//window_size)*window_size)], (-1,window_size)), axis=1)
+        downsamp_rewards = self.metrics['reward'].rolling(window=window_size, center=False).median()
+        downsamp_episodes = self.metrics['episode'].rolling(window=window_size, center=False).median()
+        reward_ax[0].plot(self.metrics["episode"], self.metrics["reward"])
+        reward_ax[0].plot(downsamp_episodes, downsamp_rewards)
+        reward_ax[0].set_xlabel("Episode number")
+        reward_ax[0].set_ylabel("Reward")
+
+        downsamp_reflectivites= self.metrics['reflectivity'].rolling(window=window_size, center=False).median()
+        #downsamp_values = np.mean(np.reshape(self.reflectivities[:int((len(self.reflectivities)//window_size)*window_size)], (-1,window_size)), axis=1)
+        reward_ax[1].plot(self.metrics["episode"], self.metrics["reflectivity"])
+        reward_ax[1].plot(downsamp_episodes, downsamp_reflectivites)
+        reward_ax[1].set_xlabel("Episode number")
+        reward_ax[1].set_ylabel("Reflectivity ")
+
+        #downsamp_values = np.mean(np.reshape(self.thermal_noises[:int((len(self.thermal_noises)//window_size)*window_size)], (-1,window_size)), axis=1)
+        downsamp_thermal_noise = self.metrics['thermal_noise'].rolling(window=window_size, center=False).median()
+        reward_ax[2].plot(self.metrics["episode"], self.metrics["thermal_noise"])
+        reward_ax[2].plot(downsamp_episodes, downsamp_thermal_noise)
+        reward_ax[2].set_xlabel("Episode number")
+        reward_ax[2].set_ylabel("Thermal noise")
+
+        downsamp_thickness_noise = self.metrics['thickness'].rolling(window=window_size, center=False).median()
+        reward_ax[3].plot(self.metrics["episode"], self.metrics["thickness"])
+        reward_ax[3].plot(downsamp_episodes, downsamp_thickness_noise)
+        reward_ax[3].set_xlabel("Episode number")
+        reward_ax[3].set_ylabel("Thickness")
+
+        downsamp_absorption_noise = self.metrics['absorption'].rolling(window=window_size, center=False).median()
+        reward_ax[4].plot(self.metrics["episode"], self.metrics["absorption"])
+        reward_ax[4].plot(downsamp_episodes, downsamp_absorption_noise)
+        reward_ax[4].set_xlabel("Episode number")
+        reward_ax[4].set_ylabel("absorption")
+
+        reward_fig.savefig(os.path.join(self.root_dir, "running_values.png"))
+
 
     def make_loss_plot(self,):
         loss_fig, loss_ax = plt.subplots(nrows=3)
@@ -611,9 +669,9 @@ class HPPOTrainer:
 
         self.betas = []
         self.lrs = []
-
+        start_time = time.time()
         for episode in range(self.start_episode, self.n_iterations):
-
+            episode_time = time.time()
             if episode < self.scheduler_start or episode > self.scheduler_end:
                 make_step = False
             else:
@@ -703,7 +761,7 @@ class HPPOTrainer:
                 if episode_reward > max_reward:
                     max_reward = episode_reward
                     max_state = state
-                    opt_value = self.env.compute_state_value(max_state)
+                    opt_value = self.env.compute_state_value(max_state, return_separate=True)
                     fig, ax = self.env.plot_stack(max_state)
                     ax.set_title(f"Optimal rew: {max_reward}, opt val: {opt_value}")
                     fig.savefig(os.path.join(self.root_dir,  f"best_state.png"))
@@ -713,7 +771,6 @@ class HPPOTrainer:
                 returns = self.agent.get_returns(t_rewards)
                 self.agent.replay_buffer.update_returns(returns)
                 
-
             all_means.append(means)
             all_stds.append(stds)
             all_mats.append(mats)
@@ -737,17 +794,25 @@ class HPPOTrainer:
             metric_update["episode"] = episode
             metric_update["reward"] = episode_reward
 
-            _, reflectivity, thermal_noise, reflectvity_reward, thermal_reward = self.env.compute_reward(state)
-            metric_update["reflectivity"] = reflectivity
-            metric_update["thermal_noise"] = thermal_noise
-            metric_update["reflectivity_reward"] = reflectvity_reward
-            metric_update["thermal_reward"] = thermal_reward
+            _, vals, rewards = self.env.compute_reward(state)
+            metric_update["reflectivity"] = vals["reflectivity"]
+            metric_update["thermal_noise"] = vals["thermal_noise"]
+            metric_update["absorption"] = vals["absorption"]
+            metric_update["thickness"] = vals["thickness"]
+            metric_update["reflectivity_reward"] = rewards["reflectivity"]
+            metric_update["thermal_noise_reward"] = rewards["thermal_noise"]
+            metric_update["absorption_reward"] = rewards["absorption"]
+            metric_update["thickness_reward"] = rewards["thickness"]
 
             self.metrics = pd.concat([self.metrics, pd.DataFrame([metric_update])], ignore_index=True)
+
+            
+            episode_length = time.time() - episode_time
 
             if episode % 20 == 0 and episode !=0 :
                 self.write_metrics_to_file()
                 self.make_reward_plot()
+                self.make_val_plot()
                 self.make_loss_plot()
 
                 
@@ -775,11 +840,11 @@ class HPPOTrainer:
                 loss_fig.savefig(os.path.join(self.root_dir, "running_mats.png"))
                 
                 # Print episode information
-                print(f"Episode {episode + 1}: Total Reward: {episode_reward}")
+                print(f"Episode {episode + 1}: Total Reward: {episode_reward}, Episode time: {episode_length:.2f}s, Total_time: {time.time()-start_time:.2f}s")
 
                 if episode % 100 == 0:
                     fig, ax = self.env.plot_stack(state)
-                    t_opt_value = self.env.compute_state_value(state)
+                    t_opt_value = self.env.compute_state_value(state, return_separate=True)
                     ax.set_title(f"Reward: {episode_reward}, val: {t_opt_value}")
                     fig.savefig(os.path.join(self.root_dir,  "states", f"episode_{episode}.png"))
                 

@@ -23,10 +23,10 @@ class CoatingStack():
             use_intermediate_reward=False,
             ignore_air_option=False,
             use_ligo_reward=False,
-            use_ligo_thermal_noise=False,
+            optimise_parameters = ["reflectivity", "thermal_noise", "absorption","thickness"],
+            optimise_targets = {"reflectivity":0.99999, "thermal_noise":5.394480540642821e-21, "absorption":0.01, "thickness":0.1},
             light_wavelength=1064e-9,
-            include_random_rare_state=False,
-            use_design_requirements=False):
+            include_random_rare_state=False):
         """_summary_
 
         Args:
@@ -53,9 +53,9 @@ class CoatingStack():
         self.use_intermediate_reward = use_intermediate_reward
         self.ignore_air_option = ignore_air_option
         self.use_ligo_reward = use_ligo_reward
-        self.use_ligo_thermal_noise = use_ligo_thermal_noise
+        self.optimise_parameters = optimise_parameters
+        self.optimise_targets = optimise_targets
         self.include_random_rare_state = include_random_rare_state
-        self.use_design_requirements = use_design_requirements
 
         # state space size is index for each material (onehot encoded) plus thickness of each material
         self.state_space_size = self.max_layers*self.n_materials + self.max_layers
@@ -202,7 +202,7 @@ class CoatingStack():
         if len(state_trim) == 0:
             state_trim = np.array([[self.min_thickness, 0, 1, 0], ])
 
-        m,m_scales, r, thermal_noise, e_integrated, thickness = merit_function(
+        r, thermal_noise, e_integrated, total_thickness = merit_function(
             np.array(state_trim),
             self.materials,
             light_wavelength=light_wavelength,
@@ -213,14 +213,14 @@ class CoatingStack():
             air_index = self.air_material_index
             )
         
-        R = r#np.abs(r)**2
+        R = np.abs(r)**2
 
         #scaled_thermal_noise = -np.log(thermal_noise)/10
      
         
         #print(R, np.log(thermal_noise))
         if return_separate:
-            return r, thermal_noise, e_integrated, thickness
+            return R, thermal_noise, e_integrated, total_thickness
         else:
             return R, thermal_noise
     
@@ -250,12 +250,12 @@ class CoatingStack():
 
         return ref
     
-    def compute_state_value(self, state):
+    def compute_state_value(self, state, return_separate=False):
         if self.use_ligo_reward:
-            reflected_power, scaled_thermal_noise = self.compute_state_value_ligo(state)
-            return reflected_power, scaled_thermal_noise 
+            reflected_power, scaled_thermal_noise, E_integrated, total_thickness = self.compute_state_value_ligo(state, return_separate=return_separate)
+            return reflected_power, scaled_thermal_noise , E_integrated, total_thickness
         else:
-            return self.compute_reflectivity(state), 0
+            return self.compute_reflectivity(state), None, None, None
 
     def inv_sigmoid(self, val):
         return np.log(val/(1-val))
@@ -316,73 +316,100 @@ class CoatingStack():
             action (_type_): _description_
         """
 
-        new_reflectivity, new_thermal_noise = self.compute_state_value(new_state)
-       
-       # Reflectivity reward shaping
-        if self.reward_shape == "inv_sigmoid_cut":
-            if new_reflectivity > 0.5:
-                reflectivity_reward = self.inv_sigmoid(new_reflectivity) + 0.5
-            else:
-                reflectivity_reward = new_reflectivity
-        elif self.reward_shape == "inv_diff":
-            reflectivity_reward = 0.01/np.abs(new_reflectivity - target_reflectivity)
-        elif self.reward_shape == "smooth_asymptote":
-            #reward = self.smooth_reward_function(new_reflectivity, a=0.01)
-            reflectivity_reward = self.smooth_reflectivity_function(new_reflectivity, a=0.01)
-        elif self.reward_shape == "none":
-            reflectivity_reward = new_reflectivity
-        else:
-            raise Exception(f"reward shape not supported {self.reward_shape}")
-        #reward_diff = new_value - max_value
+        new_reflectivity, new_thermal_noise, new_E_integrated, new_total_thickness = self.compute_state_value(new_state, return_separate=True)
 
-        # thermal noise reward shaping
-        if self.use_ligo_thermal_noise and new_thermal_noise is not None:
+        vals = {
+            "reflectivity": new_reflectivity,
+            "thermal_noise": new_thermal_noise,
+            "thickness": new_total_thickness,
+            "absorption": new_E_integrated
+        }
+
+        rewards = {key:0 for key in vals}
+
+        #new_value = np.log(new_value/(1-new_value))
+        #old_value = self.compute_state_value(old_state) + 5
+        #reward_diff = 0.01/(new_value - target_reflectivity)**2
+        #reward_diff = (new_value - target_reflectivity)**2
+        #reward_diff = np.log(reward_diff/(1-reward_diff))
+        
+        if "reflectivity" in self.optimise_parameters:
+
+
+            if self.reward_shape == "inv_sigmoid_cut":
+                if new_reflectivity > 0.5:
+                    rewards["reflectivity"] = self.inv_sigmoid(new_reflectivity) + 0.5
+                else:
+                    rewards["reflectivity"] = new_reflectivity
+            elif self.reward_shape == "inv_diff":
+                rewards["reflectivity"] = 0.01/np.abs(new_reflectivity - target_reflectivity)
+            elif self.reward_shape == "smooth_asymptote":
+                #reward = self.smooth_reward_function(new_reflectivity, a=0.01)
+                rewards["reflectivity"] = self.smooth_reflectivity_function(new_reflectivity, a=0.01)
+            elif self.reward_shape == "none":
+                rewards["reflectivity"] = new_reflectivity
+            else:
+                raise Exception(f"reward shape not supported {self.reward_shape}")
+
+
+
+        if "thermal_noise" in self.optimise_parameters and new_thermal_noise is not None:
             if self.thermal_reward_shape == "scaled_thermal_noise":
-                thermal_reward = self.smooth_thermal_reward(new_thermal_noise)
+                rewards["thermal_noise"] = self.smooth_thermal_reward(new_thermal_noise)
             elif self.thermal_reward_shape == "log_thermal_noise":
-                thermal_reward = -np.log(new_thermal_noise)
+                rewards["thermal_noise"] = -np.log(new_thermal_noise)
             else:
                 raise Exception(f"thermal noise reward shape not supported {self.thermal_reward_shape}")
-        else:
-            thermal_reward = 0
 
 
-        reward = reflectivity_reward + thermal_reward
+        if "thickness" in self.optimise_parameters:
+            rewards["thickeness"] = -new_total_thickness
+        
+        if "absorption" in self.optimise_parameters:
+            rewards["absorption"] = -new_E_integrated
+
 
         # design requirements shaping
-        if self.use_design_requirements:
-            if new_thermal_noise < self.design_requirements["thermal_noise"]:
-                reward += 10
-            
-            if new_reflectivity > self.design_requirements["reflectivity"]:
-                reward += 10
+        if self.optimise_targets is not None:
+            for key in self.optimise_targets:
+                if vals[key] > self.optimise_targets[key]:
+                    rewards[key] += 10
+
+        total_reward = np.sum([rewards[key] for key in self.optimise_parameters])
 
         # rare state shaping (not to be used outside of testing)
         if self.include_random_rare_state:
-            rstate = 2
-            correct_states = []
-            for i in range(len(new_state)):
-                if i == 1 or i == len(new_state)-2:
-                    continue
-                if new_state[i][rstate] == 1:
-                    correct_states.append(True)
-                else:
-                    correct_states.append(False)
-                if rstate == 2:
-                    rstate = 3
-                else:
-                    rstate = 2
+            total_reward += self.include_random_rare_state(new_state)
 
-            correct_state = np.all(correct_states)
-            if new_state[1][4] == 1 and new_state[-2][4] == 1 and correct_state:
-                mean1 = self.min_thickness + (self.max_thickness - self.min_thickness)/10
-                mean2 = self.min_thickness + (self.max_thickness - self.min_thickness)/2
-                var1 = (self.max_thickness - self.min_thickness)/10
-                reward += 100*scipy.stats.norm(mean1,var1).pdf(new_state[1][0]) * np.sqrt(2*np.pi*var1**2)
-                reward += 100*scipy.stats.norm(mean2,var1).pdf(new_state[-2][0]) * np.sqrt(2*np.pi*var1**2)
+        rewards["total_reward"] = total_reward
 
-        return reward, new_reflectivity, new_thermal_noise, reflectivity_reward, thermal_reward
+        return total_reward, vals, rewards
     
+    def include_random_rare_state(self, new_state):
+        rstate = 2
+        reward = 0
+        correct_states = []
+        for i in range(len(new_state)):
+            if i == 1 or i == len(new_state)-2:
+                continue
+            if new_state[i][rstate] == 1:
+                correct_states.append(True)
+            else:
+                correct_states.append(False)
+            if rstate == 2:
+                rstate = 3
+            else:
+                rstate = 2
+
+        correct_state = np.all(correct_states)
+        if new_state[1][4] == 1 and new_state[-2][4] == 1 and correct_state:
+            mean1 = self.min_thickness + (self.max_thickness - self.min_thickness)/10
+            mean2 = self.min_thickness + (self.max_thickness - self.min_thickness)/2
+            var1 = (self.max_thickness - self.min_thickness)/10
+            reward += 100*scipy.stats.norm(mean1,var1).pdf(new_state[1][0]) * np.sqrt(2*np.pi*var1**2)
+            reward += 100*scipy.stats.norm(mean2,var1).pdf(new_state[-2][0]) * np.sqrt(2*np.pi*var1**2)
+
+        return reward
     def update_state(self, current_state, thickness, material):
         """new state is the current action choice
 
@@ -432,10 +459,17 @@ class CoatingStack():
         reward = 0
         neg_reward = -1.0
         new_value = 0
+        rewards = {
+            "reflectivity": 0,
+            "thermal_noise": 0,
+            "thickness": 0,
+            "absorption": 0,
+            "total_reward": 0
+        }
 
         terminated = False
         finished = False
-        reward, new_reflectivity, new_thermal_noise, reflectivity_reward, thermal_reward = self.compute_reward(new_state, max_state)
+        
 
         #print(torch.any((self.current_state[0] + actions[2]) < self.min_thickness))
         if self.min_thickness > thickness or thickness > self.max_thickness or not np.isfinite(thickness):
@@ -452,6 +486,7 @@ class CoatingStack():
          #print("out of thickness bounds")
             finished = True
             self.current_state = new_state
+            reward, vals, rewards = self.compute_reward(new_state, max_state)
             #print("finished")
             #reward_diff, reward, new_value = self.compute_reward(new_state, max_state)
         #elif material == self.previous_material:
@@ -465,7 +500,7 @@ class CoatingStack():
             #reward_diff, reward, new_value = self.compute_reward(new_state, max_state)
             #self.current_state_value = reward
             if self.use_intermediate_reward:
-                reward = reward
+                reward, vals, rewards = self.compute_reward(new_state, max_state)
             else:
                 reward = 0.0
         
@@ -484,14 +519,7 @@ class CoatingStack():
         self.length += 1
         self.current_index += 1
 
-        #print("cind:", self.current_index)
-        #print(new_state)
 
-        rewards = {
-            "total_reward": reward,
-            "reflectivity_reward": reflectivity_reward,
-            "thermal_reward": thermal_reward
-        }
 
 
         return new_state, rewards, terminated, finished, new_value, full_action

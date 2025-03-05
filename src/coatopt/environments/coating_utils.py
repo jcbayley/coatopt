@@ -2,8 +2,13 @@ import numpy as np
 from .EFI_tmm import CalculateEFI_tmm
 from .YAM_CoatingBrownian_2 import getCoatingThermalNoise
 import copy
+import logging
 #functions used to Calculate Coating Thermal Noise 
 # not to be used to calculate optical properties 
+
+logging.basicConfig(level=logging.INFO, 
+    format='%(asctime)s %(levelname)-8s %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S') 
 
 def getCoatRefl2(nIn, nOut, nLayer, dOpt):
     # Vector of all refractive indices
@@ -327,6 +332,7 @@ def merit_function(
     #print(new_all_materials.keys())
     num_points = 2000
 
+    #logging.info(f"Calculating EFI .......")
     E_total, layer_idx,  PhysicalThickness,E, poyn, total_absorption= CalculateEFI_tmm(
         dOpt = layer_thicknesses,
         materialLayer = layer_material_inds, 
@@ -341,6 +347,7 @@ def merit_function(
         #air_index = air_index,
         #substrate_index=substrate_index)
         
+    #logging.info(f"Calculating Coating Thermal Noise .......")
     ThermalNoise= getCoatingThermalNoise(
         dOpt=layer_thicknesses, 
         materialLayer=layer_material_inds, 
@@ -370,6 +377,7 @@ def merit_function(
     # Total Thickness
     D = PhysicalThickness[-1]
     
+    #logging.info(f"Integrating over the Electric Field Intensity .......")
     normallised_EFI = integrand(E_total,light_wavelength,layer_material_inds,all_materials,num_points=len(E_total))
     #normallised_EFI = integrand(state,E_total,laser_wavelength,num_points=30000)
     
@@ -386,13 +394,15 @@ def merit_function(
 
     nSub = all_materials[1]["n"]
     nAir = all_materials[0]["n"]
-    
+
+    return ThermalNoise[1], ThermalNoise_Total, E_integrated, D
+    """
     # Reflectivity
-    R, dcdp, rbar, r = getCoatRefl2(nAir, nSub, n_layer, optical_thickness)
+    #R, dcdp, rbar, r = getCoatRefl2(nAir, nSub, n_layer, optical_thickness)
     
     R = np.abs(R)**2
 
-    """
+    
     R_scaled =  w_R * (R)
     CTN_scaled = w_T * (ThermalNoise_Total/(5.92672659826259e-21))
     EFI_scaled =  w_E * (1/10 * E_integrated)

@@ -83,7 +83,7 @@ def CalculateEFI_tmm(dOpt ,materialLayer, materialParams,lambda_ =1064 ,t_air = 
     
     #####
     
-    
+
     for num_points in [1000, 5000, 10000, 30000]:
         ds = np.linspace(-t_air, sum(t_coat) + t_sub, num=num_points)
     
