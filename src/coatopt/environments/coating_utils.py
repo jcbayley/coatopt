@@ -1,9 +1,14 @@
 import numpy as np
-from .EFI_tmm import CalculateEFI_tmm
-from .YAM_CoatingBrownian_2 import getCoatingThermalNoise
+from .EFI_tmm import CalculateEFI_tmm, physical_to_optical
+from .YAM_CoatingBrownian import getCoatingThermalNoise
 import copy
+import logging
 #functions used to Calculate Coating Thermal Noise 
 # not to be used to calculate optical properties 
+
+logging.basicConfig(level=logging.INFO, 
+    format='%(asctime)s %(levelname)-8s %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S') 
 
 def getCoatRefl2(nIn, nOut, nLayer, dOpt):
     # Vector of all refractive indices
@@ -301,7 +306,9 @@ def merit_function(
         Temp = 293,                 # temperature - Room temperature 
         frequency = 100.0,                     # frequencies for plotting
         substrate_index = 1,
-        air_index = 0
+        air_index = 0,
+        optimise_on=["R","T","E","D"],
+        use_optical_thickness=True
     ):
     #set up with default inputs to match aLIGO for testing = this should be modified to allow for varying inputs. 
     
@@ -316,34 +323,43 @@ def merit_function(
     
     # convert current state to format for EFI functions
 
-    layer_thicknesses = state[:,0]
     layer_material_inds = np.argmax(state[:,1:], axis=1) 
-    
+    if use_optical_thickness:
+        layer_optical_thicknesses = state[:,0]
+        layer_thicknesses = np.array([optical_to_physical(layer_optical_thicknesses[i], light_wavelength, all_materials[layer_material_inds[i]]['n']) for i in range(len(layer_optical_thicknesses))])
+    else:
+        layer_thicknesses = state[:,0]
+        layer_optical_thicknesses = np.array([physical_to_optical(layer_thicknesses[i], light_wavelength, all_materials[layer_material_inds[i]]['n']) for i in range(len(layer_thicknesses))])
+
     #layer_materials = np.array(layer_material_inds, dtype=np.int32)
     #new_all_materials.update(air_material)
     #new_all_materials = copy.copy(all_materials)
     new_all_materials = all_materials
     #print(new_all_materials.keys())
-    num_points = 200
+    num_points = 2000
 
-    E_total, _, PhysicalThickness = CalculateEFI_tmm(
-        layer_thicknesses = layer_thicknesses,
-        layer_materials = layer_material_inds, 
-        material_parameters = new_all_materials,
-        light_wavelength=light_wavelength ,
+    #logging.info(f"Calculating EFI .......")
+    E_total, layer_idx,  PhysicalThickness,E, poyn, total_absorption, reflectivity = CalculateEFI_tmm(
+        dOpt = layer_optical_thicknesses,
+        materialLayer = layer_material_inds, 
+        materialParams = new_all_materials,
+        lambda_=light_wavelength ,
         t_air=500,
-        polarisation='p' ,
+        polarisation='p',
         plots=False,
-        num_points=num_points,
         air_index = air_index,
         substrate_index=substrate_index)
-    
-    ThermalNoise= getCoatingThermalNoise(
-        layer_thicknesses, 
-        layer_material_inds, 
-        new_all_materials, 
-        substrate_index=1, 
-        light_wavelength=light_wavelength, 
+        #num_points=num_points,
+        #air_index = air_index,
+        #substrate_index=substrate_index)
+        
+    #logging.info(f"Calculating Coating Thermal Noise .......")
+    noise_summary, rCoat, dcdp, rbar, r, _ = getCoatingThermalNoise(
+        dOpt=layer_optical_thicknesses, 
+        materialLayer=layer_material_inds, 
+        materialParams=new_all_materials, 
+        materialSub=substrate_index, 
+        lambda_=light_wavelength, 
         f=frequency, 
         wBeam=wBeam, 
         Temp=Temp,
@@ -351,29 +367,30 @@ def merit_function(
 
 
 
-    if isinstance(ThermalNoise[0]['Frequency'],float):
-        difference_array = np.absolute(ThermalNoise[0]['Frequency']-100)
+    if isinstance(noise_summary['Frequency'],float):
+        difference_array = np.absolute(noise_summary['Frequency']-100)
         
         # find the index of minimum element from the array
         index = difference_array.argmin()
         
-        ThermalNoise_Total = ThermalNoise[0]['BrownianNoise'][index]
+        ThermalNoise_Total = noise_summary['BrownianNoise'][index]
         #use only the thermal noise at the specified frequency = default : 100 Hz 
     else:
         
-        ThermalNoise_Total = ThermalNoise[0]['BrownianNoise']
+        ThermalNoise_Total = noise_summary['BrownianNoise']
 
 
     # Total Thickness
     D = PhysicalThickness[-1]
     
-    normallised_EFI = integrand(E_total,light_wavelength,layer_material_inds,all_materials,num_points=num_points)
+    #logging.info(f"Integrating over the Electric Field Intensity .......")
+    #normallised_EFI = integrand(E_total,light_wavelength,layer_material_inds,all_materials,num_points=len(E_total))
     #normallised_EFI = integrand(state,E_total,laser_wavelength,num_points=30000)
     
-    depths = np.linspace(0, D, len(normallised_EFI))
+    #depths = np.linspace(0, D, len(normallised_EFI))
 
     # Perform the integration using the trapezoidal rule
-    E_integrated = np.trapz(normallised_EFI, depths)
+    #E_integrated = np.trapz(normallised_EFI, depths)
     
     n_layer = np.array([all_materials[mat]["n"] for mat in layer_material_inds])
 
@@ -383,41 +400,41 @@ def merit_function(
 
     nSub = all_materials[1]["n"]
     nAir = all_materials[0]["n"]
+
     
+    return np.abs(rCoat)**2, ThermalNoise_Total, total_absorption, D
+    """
     # Reflectivity
-    R, dcdp, rbar, r = getCoatRefl2(nAir, nSub, n_layer, optical_thickness)
+    #R, dcdp, rbar, r = getCoatRefl2(nAir, nSub, n_layer, optical_thickness)
     
-    R = np.real(R)
+    R = np.abs(R)**2
 
-    """
-    # Clear the previous output (the number of spaces should cover the previous line)
-    print("\r" + " " * 50, end="\r")
-
-    # Merit Function
-    print(f"{'Parameter':<10}{'Value':<10}")
-    print(f"{'R':<10}{R:<10.5f}")
-    print(f"{'CTN':<10}{ThermalNoise_Total:<10.2e}")
-    print(f"{'E':<10}{(1/100 * E_integrated):<10.2f}")
-    print(f"{'D':<10}{(D):<10.2f}")
-    """
-
+    
     R_scaled =  w_R * (R)
     CTN_scaled = w_T * (ThermalNoise_Total/(5.92672659826259e-21))
-    EFI_scaled =  w_E * (1/10 * E_integrated)   
+    EFI_scaled =  w_E * (1/10 * E_integrated)
     thick_scaled = w_D * (1/4 * np.log10(D))
 
     #print(R_scaled, CTN_scaled, EFI_scaled, thick_scaled)
-    
-    M = w_R * (1/R) + w_T * ThermalNoise_Total + w_E * (1/E_integrated) + w_D * D
-    
+    M = 0
+    if "R" in optimise_on:
+        M += R_scaled
+    elif "T" in optimise_on:
+        M += CTN_scaled
+    elif "E" in optimise_on:
+        M += EFI_scaled
+    elif "D" in optimise_on:
+        M += thick_scaled
+
     M_scaled = 1./(R_scaled + CTN_scaled + EFI_scaled + thick_scaled)
     
     #return M_scaled, R_scaled , CTN_scaled , EFI_scaled , thick_scaled
     return M, M_scaled, R, ThermalNoise_Total, E_integrated,D
-
+    """
 def optical_to_physical(optical_thickness, vacuum_wavelength, refractive_index):
     physical_thickness = optical_thickness*vacuum_wavelength/ refractive_index
     return physical_thickness
+
 def physical_to_optical(physical_thickness, vacuum_wavelength, refractive_index):
     optical_thickness = physical_thickness*refractive_index/vacuum_wavelength
     return optical_thickness
@@ -444,7 +461,7 @@ def merit_function_2(
 
 
 
-    noise_summary, rCoat, dcdp, rbar, r = getCoatingThermalNoise(
+    noise_summary, rCoat, dcdp, rbar, r, _ = getCoatingThermalNoise(
         layer_optical_thicknesses, 
         layer_material_inds, 
         all_materials, 

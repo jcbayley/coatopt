@@ -1,0 +1,70 @@
+{
+    "1": {
+        "name" : "SiO2",
+        "n"    : 1.45,
+        "a"    : 0,
+        "alpha": 0.51e-6, 
+        "beta" : 8e-6,    
+        "kappa": 1.38,
+        "C"    : 1.64e6,  
+        "Y"    : 70e9,    
+        "prat" : 0.17,
+        "phiM" : 2.3e-5,    
+
+        "k"    : 3E-8      
+    },
+    "2": {
+        "name" : "Ti:Ta2O5",
+        "n"    : 2.09,       
+        "a"    : 2,
+        "alpha": 3.6e-6,     
+        "beta" : 14e-6,      
+        "kappa": 33,         
+        "C"    : 2.1e6,      
+        "Y"    : 120e9,      
+        "prat" : 0.23,
+        "phiM" : 2.3E-4,     
+        "k"    : 5E-8       
+    },
+
+    "3": {
+        "name" : "TiGermaia", 
+        "n"    : 1.89,          
+        "a"    : 1,
+        "alpha": 12.82e-7,      
+        "beta" : 2.4e-5,       
+        "kappa": 33,
+        "C"    : 2.51e6,
+        "Y"    : 92E9,          
+        "prat" : 0.25,          
+        "phiM" : 1E-4,        
+        "k"    :  2E-7        
+    }, 
+    
+    "4": {
+        "name" : "TiSiO2",
+        "n"    : 1.90,
+        "a"    : 2,
+        "alpha": 1e-6,
+        "beta" : 14e-6,
+        "kappa": 33,
+        "C"    : 2.1e6,
+        "Y"    : 103.8E9,
+        "prat" : 0.241,
+        "phiM" : 2.49E-4,
+        "k"    : 1E-4  
+    },
+
+    "0": {
+        "name" : "air",
+        "n"    : 1,
+        "a"    : "np.NaN",
+        "alpha": "np.NaN",
+        "beta" : "np.NaN",
+        "kappa": "np.NaN",
+        "C"    : "np.NaN",
+        "Y"    : "np.NaN",
+        "prat" : "np.NaN",
+        "phiM" : "np.NaN"
+    }
+}

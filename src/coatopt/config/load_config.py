@@ -46,6 +46,8 @@ def read_materials(materials_file: str) -> dict:
     """Read a materials file"""
     if materials_file == "default":
         materials_file = pkg_resources.files("coatopt.config") / "materials.json"
+    if materials_file == "default2":
+        materials_file = pkg_resources.files("coatopt.config") / "materials2.json"
     elif materials_file == "default_noair":
         materials_file = pkg_resources.files("coatopt.config") / "materials_noair.json"
         
