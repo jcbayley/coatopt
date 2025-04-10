@@ -21,5 +21,8 @@ Run instructions (for HPPO OML)
 
 There are example configs in the /examples/ folder, this also includes the choice of materials in a json file. The above script will then put a set of outputs into the chosen root directory in the config file
 
+You should see an evolution of the reward and values similar to below
+![rewards](https://raw.githubusercontent.com/jcbayley/coatopt/refs/heads/main/examples/running_values.png)
 
-
+Where the optimal coating stack from this run looks like:
+![rewards](https://raw.githubusercontent.com/jcbayley/coatopt/refs/heads/main/examples/best_state.png)
