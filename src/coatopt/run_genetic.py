@@ -94,33 +94,34 @@ if __name__ == '__main__':
         if i % 10 == 0:
             print('episode: ', i,'score %.5f ' % score)
 
-            fig, ax = plt.subplots()
-            ax.plot(scores[:])
-            ax.set_ylabel("mean batch score")
-            ax.set_xlabel("iteration")
-            fig.savefig(os.path.join(config.get("General", "root_dir"), "scores.png"))
-
-            fig, ax = plt.subplots()
-            ax.plot(max_scores[:])
-            ax.set_ylabel("log(max_score)")
-            ax.set_xlabel("iteration")
-            fig.savefig(os.path.join(config.get("General", "root_dir"), "max_scores.png"))
-
-            
-            fig, ax = env.plot_stack(top_state)
-            fig.savefig(os.path.join(config.get("General", "root_dir"), "stackplots", f"it{i}.png"))
-
-            fig, ax = env.plot_stack(best_state)
-            fig.savefig(os.path.join(config.get("General", "root_dir"),  f"best_state.png"))
-
-            if i > 100:
+            if best_state is not None:
                 fig, ax = plt.subplots()
-                ax.plot(scores[-100:])
-                fig.savefig(os.path.join(config.get("General", "root_dir"), "scores_zoom.png"))
+                ax.plot(scores[:])
+                ax.set_ylabel("mean batch score")
+                ax.set_xlabel("iteration")
+                fig.savefig(os.path.join(config.get("General", "root_dir"), "scores.png"))
 
                 fig, ax = plt.subplots()
-                ax.plot(max_scores[-100:])
-                fig.savefig(os.path.join(config.get("General", "root_dir"), "max_scores_zoom.png"))
+                ax.plot(max_scores[:])
+                ax.set_ylabel("max_score")
+                ax.set_xlabel("iteration")
+                fig.savefig(os.path.join(config.get("General", "root_dir"), "max_scores.png"))
+
+                
+                fig, ax = env.plot_stack(top_state)
+                fig.savefig(os.path.join(config.get("General", "root_dir"), "stackplots", f"it{i}.png"))
+
+                fig, ax = env.plot_stack(best_state)
+                fig.savefig(os.path.join(config.get("General", "root_dir"),  f"best_state.png"))
+
+                if i > 100:
+                    fig, ax = plt.subplots()
+                    ax.plot(scores[-100:])
+                    fig.savefig(os.path.join(config.get("General", "root_dir"), "scores_zoom.png"))
+
+                    fig, ax = plt.subplots()
+                    ax.plot(max_scores[-100:])
+                    fig.savefig(os.path.join(config.get("General", "root_dir"), "max_scores_zoom.png"))
 
     sorted_state_values = statepool.order_states()
     top_states = statepool.current_states[sorted_state_values[:10, 0].astype(int)]

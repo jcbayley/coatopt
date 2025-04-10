@@ -77,7 +77,7 @@ class GeneticCoatingStack(CoatingStack):
         layers = np.zeros((self.max_layers, self.n_materials + 1))
         reach_end = False
         for i in range(self.max_layers):
-            material = np.random.randint(0, self.n_materials)
+            material = np.random.randint(1, self.n_materials)
             if material == self.air_material_index:
                 reach_end = True
             if reach_end:
@@ -108,7 +108,11 @@ class GeneticCoatingStack(CoatingStack):
             layer_ind = 0
         else:   
             layer_ind = np.random.randint(maxind+1)
-        new_material = torch.nn.functional.one_hot(torch.from_numpy(np.array(np.random.randint(self.n_materials))), num_classes=self.n_materials)
+
+        if self.ignore_air_option:
+            new_material = torch.nn.functional.one_hot(torch.from_numpy(np.array(np.random.randint(self.n_materials-1) + 1)), num_classes=self.n_materials)
+        else:
+            new_material = torch.nn.functional.one_hot(torch.from_numpy(np.array(np.random.randint(self.n_materials))), num_classes=self.n_materials)
 
         thickness_change = torch.randn(1)*self.thickness_sigma
         new_thickness = current_state[layer_ind, 0] + thickness_change

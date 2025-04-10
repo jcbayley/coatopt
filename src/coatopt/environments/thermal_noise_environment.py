@@ -173,6 +173,17 @@ class CoatingStack():
 
         return opt_state2
     
+    def get_air_only_state(self,):
+        """return air with a thickness of 1
+
+        Returns:
+            _type_: _description_
+        """
+        layers = np.zeros((self.max_layers, self.n_materials + 1))
+        layers[:,self.air_material_index+1] = 1
+        layers[:,0] = self.min_thickness*np.ones(len(layers[:,0]))
+        return layers
+    
     def sample_state_space(self, ):
         """return air with a thickness of 1
 
@@ -214,6 +225,29 @@ class CoatingStack():
         thickness = torch.random.uniform(self.min_thickness, self.max_thickness)
         return thickness, material
     
+    def trim_state(self, state):
+        """trim the state to remove duplicate air layers and inverse order
+
+        Args:
+            state (_type_): _description_
+
+        Returns:
+            _type_: _description_
+        """
+        # trim out the duplicate air layers and inverse order
+        state_trim = self.get_air_only_state()
+        for ind, layer in enumerate(state):
+            material_ind = np.argmax(layer[1:])
+            if material_ind == self.air_material_index:
+                break
+            else:
+                state_trim[ind] = layer
+        
+        if len(state_trim) == 0:
+            state_trim = np.array([[self.min_thickness, 0, 1, 0], ])
+
+        return state_trim
+    
     def compute_state_value_ligo(
             self, 
             state, 
@@ -240,16 +274,8 @@ class CoatingStack():
 
         
         # trim out the duplicate air layers and inverse order
-        state_trim = []
-        for layer in state[::-1]:
-            material_ind = np.argmax(layer[1:])
-            if material_ind == 0:
-                continue
-            else:
-                state_trim.append(layer)
+        state_trim = self.trim_state(state[::-1])
         
-        if len(state_trim) == 0:
-            state_trim = np.array([[self.min_thickness, 0, 1, 0], ])
 
         r, thermal_noise, e_integrated, total_thickness = merit_function(
             np.array(state_trim),
@@ -530,13 +556,14 @@ class CoatingStack():
             layer_index = self.current_index
         else:
             self.current_index = layer_index
-            
+
         material = action[0]
         thickness = action[1] #* self.light_wavelength /(4*self.materials[material]["n"])
         new_state, full_action = self.update_state(np.copy(state), thickness, material)
 
-        reward = 0
-        neg_reward = -1.0
+
+        neg_reward = -1000
+        reward = neg_reward
         new_value = 0
         rewards = {
             "reflectivity": 0,
@@ -585,8 +612,9 @@ class CoatingStack():
         #if new_state[0, 4] == 1 and new_state[-1, 4] and np.all(new_state[:,4]) == False:
         #    reward += 1
 
-        if np.any(np.isinf(new_state)) or np.any(np.isnan(new_state)) or np.isnan(reward):
-            reward = 0.0#neg_reward-10
+        if np.any(np.isinf(new_state)) or np.any(np.isnan(new_state)) or np.isnan(reward) or np.isinf(reward):
+            #rewards["total_reward"] = neg_reward
+            reward = neg_reward
             terminated = True
             new_value = neg_reward
 
@@ -599,7 +627,7 @@ class CoatingStack():
 
 
 
-        return new_state, rewards, terminated, finished, new_value, full_action
+        return new_state, rewards, terminated, finished, reward, full_action
 
     def plot_stack(self, data):
         #data = self.current_state

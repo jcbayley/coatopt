@@ -121,7 +121,8 @@ class HPPO(object):
             continuous_hidden_size=32,
             activation_function="relu",
             include_material_in_policy=False,
-            substrate_material_index=0,
+            substrate_material_index=1,
+            air_material_index=0,
             ignore_air_option=False,
             ignore_substrate_option=False):
 
@@ -130,6 +131,7 @@ class HPPO(object):
         self.lower_bound = lower_bound
         self.include_layer_number = include_layer_number
         self.substrate_material_index = substrate_material_index
+        self.air_material_index = air_material_index
         self.ignore_air_option = ignore_air_option
         self.ignore_substrate_option = ignore_substrate_option
 
@@ -394,6 +396,36 @@ class HPPO(object):
             #mask[torch.arange(d_probs.size(0)), zeroidx] = 1e-10
             #mask[:, 0] *= 1e-2 # add low probabillity of choosing air to start with
             t_d_probs = t_d_probs * mask
+            action_to_index = []
+            if isinstance(layer_number, torch.Tensor) and layer_number.ndim > 0:
+                for i, layer_num in enumerate(layer_number.squeeze(0)):
+                    previous_material = torch.argmax(state[i, layer_num - 1,     1:]) if layer_num > 0 else self.substrate_material_index
+                    valid_indices = torch.arange(t_d_probs.size(1))
+                    if self.ignore_air_option:
+                        valid_indices = valid_indices[valid_indices != self.air_material_index]
+                    if self.ignore_substrate_option:
+                        valid_indices = valid_indices[valid_indices != self.substrate_material_index]
+                    valid_indices = valid_indices[valid_indices != previous_material]
+                    action_to_index.append(valid_indices)
+            else:
+                previous_material = torch.argmax(state[0, layer_number - 1, 1:]) if layer_number > 0 else self.substrate_material_index
+                valid_indices = torch.arange(t_d_probs.size(1))
+                if self.ignore_air_option:
+                    valid_indices = valid_indices[valid_indices != self.air_material_index]
+                if self.ignore_substrate_option:
+                    valid_indices = valid_indices[valid_indices != self.substrate_material_index]
+                valid_indices = valid_indices[valid_indices != previous_material]
+                action_to_index.append(valid_indices)
+
+
+            # Create a mask for t_d_probs based on action_to_index
+            mask = torch.zeros_like(t_d_probs)
+            for i, indices in enumerate(action_to_index):
+                mask[i, indices] = 1
+
+            # Apply the mask to t_d_probs
+            t_d_probs = t_d_probs * mask
+            """
             if self.ignore_substrate_option and self.ignore_air_option:
                 t_d_probs = t_d_probs[:,2:]
             elif self.ignore_air_option:
@@ -401,7 +433,7 @@ class HPPO(object):
             elif self.ignore_substrate_option:
                 t_d_probs = torch.cat((t_d_probs[:,:1], t_d_probs[:,2:]), dim=1)
             #t_d_probs[torch.arange(d_probs.size(0)), zeroidx] = 0
-
+            """
             if len(t_d_probs.size()) == 1:
                 t_d_probs = t_d_probs.unsqueeze(0)
             d = torch.distributions.Categorical(t_d_probs)
@@ -410,12 +442,15 @@ class HPPO(object):
 
         if actiond is None:
             actiond = d.sample()
+            #actiond = torch.tensor(action_to_index)[actiond_pre]
+            """
             if self.ignore_air_option and self.ignore_substrate_option:
                 actiond += 2
             elif self.ignore_air_option:
                 actiond += 1
             elif self.ignore_substrate_option:
-                actiond[actiond >= 1] += 1
+                actiond[actiond >= 1] += 1"
+            """
 
 
 
@@ -436,7 +471,7 @@ class HPPO(object):
         #actionc[actionc == self.upper_bound] -= 1e-4
 
         #print(d_probs.size(), actiond.size(), actionc.size(), c_means.size())
-        
+        """
         if self.ignore_air_option and self.ignore_substrate_option:
             log_prob_discrete = d.log_prob(actiond-2) 
         elif self.ignore_air_option:
@@ -447,7 +482,8 @@ class HPPO(object):
             log_prob_discrete = d.log_prob(ad2) 
         else:
             log_prob_discrete = d.log_prob(actiond)
-
+        """
+        log_prob_discrete = d.log_prob(actiond)
         log_prob_continuous = torch.sum(c.log_prob(actionc), dim=-1)#[:, actiond.detach()]
 
         # get the continuous action for sampled discrete element

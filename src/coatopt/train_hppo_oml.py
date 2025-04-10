@@ -79,6 +79,7 @@ if __name__ == "__main__":
             continuous_hidden_size=config.get("Network", "continuous_hidden_size"),
             value_hidden_size=config.get("Network", "value_hidden_size"),
             substrate_material_index=env.substrate_material_index,
+            air_material_index=env.air_material_index,
             ignore_air_option=config.get("Data", "ignore_air_option"),
             ignore_substrate_option=config.get("Data", "ignore_substrate_option"),
 
