@@ -20,7 +20,7 @@ class StatePool():
         """
         state_values = np.zeros((self.n_states, 2))
         for i in range(self.n_states):
-            temp_stval = self.environment.compute_reward(self.current_states[i])
+            temp_stval, vals, rewards = self.environment.compute_reward(self.current_states[i])
             state_values[i] = [i,temp_stval]
 
         sorted_state_values = sorted(state_values, key=lambda a: -a[1])
@@ -61,7 +61,10 @@ class StatePool():
         #actions = self.environment.get_actions(action)
         #new_state = self.environment.get_new_state(state, actions)
         action = self.environment.sample_action_space(state)
-        new_state, reward = self.environment.step(state, action)
+        #new_state, reward = self.environment.step(state, action)
+        new_state, rewards, terminated, finished, new_value, full_action = self.environment.step(action, state=state, layer_index=action[2])
+        #new_state, rewards = self.environment.step(state, action)
+
         #new_state = self.environment.sample_state_space()
         #done = self.check_state_possible(new_state)
         return new_state
@@ -107,6 +110,7 @@ class StatePool():
         if self.fraction_random_add != 0 :
             num_random_add = int(self.n_states * self.fraction_random_add())
             self.current_states[-num_random_add:] = self.get_new_states(num_random_add)
+            
         for i in range(self.n_states):
             self.current_states[i] = self.evolve_state(self.current_states[i])
 

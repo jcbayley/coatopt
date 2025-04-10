@@ -11,6 +11,7 @@ import sys
 import matplotlib.pyplot as plt
 import pandas as pd
 import time
+import pickle
 
 class ReplayBuffer:
     def __init__(self):
@@ -121,7 +122,8 @@ class HPPO(object):
             activation_function="relu",
             include_material_in_policy=False,
             substrate_material_index=0,
-            ignore_air_option=False):
+            ignore_air_option=False,
+            ignore_substrate_option=False):
 
         print("sd", state_dim)
         self.upper_bound = upper_bound
@@ -129,6 +131,7 @@ class HPPO(object):
         self.include_layer_number = include_layer_number
         self.substrate_material_index = substrate_material_index
         self.ignore_air_option = ignore_air_option
+        self.ignore_substrate_option = ignore_substrate_option
 
         self.pre_output_dim = hidden_size
         self.pre_type = pre_type
@@ -285,7 +288,7 @@ class HPPO(object):
         for _ in range(self.n_updates):
             # compute probs values and advantages
 
-            states = torch.tensor(self.replay_buffer.states).to(torch.float32)
+            states = torch.tensor(np.array(self.replay_buffer.states)).to(torch.float32)
             
 
             if self.include_layer_number:
@@ -364,6 +367,7 @@ class HPPO(object):
         state_pack = pack_padded_sequence(state, lengths=lyn, batch_first=True, enforce_sorted=False)
 
         #print(state.size(), layer_number.size())
+        # run three times to get three different graphs
         pre_output_d = self.pre_network(state_pack, layer_number, packed=True)
         pre_output_c = self.pre_network(state_pack, layer_number, packed=True)
         pre_output_v = self.pre_network(state_pack, layer_number, packed=True)
@@ -387,11 +391,15 @@ class HPPO(object):
 
             t_d_probs = d_probs
             mask = torch.ones_like(t_d_probs)
-            mask[torch.arange(d_probs.size(0)), zeroidx] = 1e-10
-            mask[:, 0] *= 1e-2 # add low probabillity of choosing air to start with
+            #mask[torch.arange(d_probs.size(0)), zeroidx] = 1e-10
+            #mask[:, 0] *= 1e-2 # add low probabillity of choosing air to start with
             t_d_probs = t_d_probs * mask
-            if self.ignore_air_option:
+            if self.ignore_substrate_option and self.ignore_air_option:
+                t_d_probs = t_d_probs[:,2:]
+            elif self.ignore_air_option:
                 t_d_probs = t_d_probs[:,1:]
+            elif self.ignore_substrate_option:
+                t_d_probs = torch.cat((t_d_probs[:,:1], t_d_probs[:,2:]), dim=1)
             #t_d_probs[torch.arange(d_probs.size(0)), zeroidx] = 0
 
             if len(t_d_probs.size()) == 1:
@@ -402,8 +410,13 @@ class HPPO(object):
 
         if actiond is None:
             actiond = d.sample()
-            if self.ignore_air_option:
+            if self.ignore_air_option and self.ignore_substrate_option:
+                actiond += 2
+            elif self.ignore_air_option:
                 actiond += 1
+            elif self.ignore_substrate_option:
+                actiond[actiond >= 1] += 1
+
 
 
         c_means, c_std = self.policy_continuous(pre_output_c, layer_number, actiond.unsqueeze(1))
@@ -424,10 +437,17 @@ class HPPO(object):
 
         #print(d_probs.size(), actiond.size(), actionc.size(), c_means.size())
         
-        if self.ignore_air_option:
-            log_prob_discrete = d.log_prob(actiond-1) 
+        if self.ignore_air_option and self.ignore_substrate_option:
+            log_prob_discrete = d.log_prob(actiond-2) 
+        elif self.ignore_air_option:
+            log_prob_discrete = d.log_prob(actiond-1)
+        elif self.ignore_substrate_option:
+            ad2 =  actiond
+            ad2[ad2 >= 1] -= 1
+            log_prob_discrete = d.log_prob(ad2) 
         else:
             log_prob_discrete = d.log_prob(actiond)
+
         log_prob_continuous = torch.sum(c.log_prob(actionc), dim=-1)#[:, actiond.detach()]
 
         # get the continuous action for sampled discrete element
@@ -524,6 +544,9 @@ class HPPOTrainer:
         if continue_training:
             self.load_metrics_from_file()
             self.start_episode = self.metrics["episode"].max()
+            #self.start_learning_rate_discrete = self.metrics["lr_discrete"][-1]
+            #self.start_learning_rate_continuous = self.metrics["lr_continuous"][-1]
+            #self.start_learning_rate_value = self.metrics["lr_value"][-1]
         else:
             self.metrics = pd.DataFrame(columns=[
                 "episode", 
@@ -626,6 +649,7 @@ class HPPOTrainer:
         reward_ax[2].plot(downsamp_episodes, downsamp_thermal_noise)
         reward_ax[2].set_xlabel("Episode number")
         reward_ax[2].set_ylabel("Thermal noise")
+        reward_ax[2].set_yscale("log")
 
         downsamp_thickness_noise = self.metrics['thickness'].rolling(window=window_size, center=False).median()
         reward_ax[3].plot(self.metrics["episode"], self.metrics["thickness"])
@@ -638,6 +662,7 @@ class HPPOTrainer:
         reward_ax[4].plot(downsamp_episodes, downsamp_absorption_noise)
         reward_ax[4].set_xlabel("Episode number")
         reward_ax[4].set_ylabel("absorption")
+        reward_ax[4].set_yscale("log")
 
         reward_fig.savefig(os.path.join(self.root_dir, "running_values.png"))
 
@@ -654,19 +679,30 @@ class HPPOTrainer:
         loss_ax[2].set_xlabel("Episode number")
         loss_fig.savefig(os.path.join(self.root_dir, "running_losses.png"))
 
+    def update_best_states(self, state, rewards, best_states, max_length=20):
+        if len(best_states) < max_length:
+            best_states.append((state, rewards))
+        else:
+            min_score = min(best_states, key=lambda x: x[1]["total_reward"])[1]
+            if rewards["total_reward"] > min_score["total_reward"]:
+                min_index = next(i for i, v in enumerate(best_states) if v[1]["total_reward"] == min_score["total_reward"])
+                best_states[min_index] = (state, rewards)
+        return best_states
+
     def train(self):
 
         # Training loop
         all_means = []
         all_stds = []
         all_mats = []
-        max_reward = -np.inf
+        max_reward = np.max(self.metrics["reward"]) if len(self.metrics) > 0 else -np.inf
         max_state = None
 
         state_dir = os.path.join(self.root_dir, "states")
         if not os.path.isdir(state_dir):
             os.makedirs(state_dir)
 
+        best_states = []
         self.betas = []
         self.lrs = []
         start_time = time.time()
@@ -743,6 +779,8 @@ class HPPOTrainer:
                     )
                     #log_prob, state_value, entropy = agent.evaluate(fl_state, action[0], action[1])
 
+                    best_states = self.update_best_states(state, rewards, best_states, max_length=20)
+
                     means.append(c_means.detach().numpy())
                     stds.append(c_std.detach().numpy())
                     mats.append(d_prob.detach().numpy().tolist()[0])
@@ -765,7 +803,8 @@ class HPPOTrainer:
                     fig, ax = self.env.plot_stack(max_state)
                     ax.set_title(f"Optimal rew: {max_reward}, opt val: {opt_value}")
                     fig.savefig(os.path.join(self.root_dir,  f"best_state.png"))
-
+                    with open(os.path.join(self.root_dir,  f"best_state.txt"), "w") as f:
+                        np.savetxt(f, max_state)
                     self.agent.save_networks(self.root_dir)
 
                 returns = self.agent.get_returns(t_rewards)
@@ -777,6 +816,10 @@ class HPPOTrainer:
 
             if episode > 10:
                 loss1, loss2, loss3 = self.agent.update(update_policy=True, update_value=True)
+                #if episode > self.scheduler_end and make_step:
+                #    self.agent.optimiser_discrete.param_groups[0]['lr'] = self.start_learning_rate_discrete
+                #    self.agent.optimiser_continuous.param_groups[0]['lr'] = self.start_learning_rate_continuous
+                #    self.agent.optimiser_value.param_groups[0]['lr'] = self.start_learning_rate_value
                 lr_outs = self.agent.scheduler_step(make_step)
                 lr_outs = lr_outs[0][0], lr_outs[1][0], lr_outs[2][0]
                 self.agent.replay_buffer.clear()
@@ -838,6 +881,10 @@ class HPPOTrainer:
                     loss_ax[i].set_ylabel(f"Layer {i}")
                 loss_ax[-1].set_xlabel("Episode number")
                 loss_fig.savefig(os.path.join(self.root_dir, "running_mats.png"))
+
+                with open(os.path.join(self.root_dir, "best_states.pkl"), "wb") as f:
+                    pickle.dump(best_states, f)
+
                 
                 # Print episode information
                 print(f"Episode {episode + 1}: Total Reward: {episode_reward}, Episode time: {episode_length:.2f}s, Total_time: {time.time()-start_time:.2f}s")

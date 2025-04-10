@@ -16,10 +16,22 @@ class GeneticCoatingStack(CoatingStack):
             max_thickness, 
             materials, 
             air_material_index=0,
-            thickness_sigma=1e-4,
             substrate_material_index=1,
             variable_layers=False,
-            opt_init=False):
+            opt_init=False,
+            reflectivity_reward_shape="none",
+            thermal_reward_shape="log_thermal_noise",
+            absorption_reward_shape="log_absorption",
+            use_intermediate_reward=False,
+            ignore_air_option=False,
+            ignore_substrate_option=False,
+            use_ligo_reward=False,
+            optimise_parameters = ["reflectivity", "thermal_noise", "absorption","thickness"],
+            optimise_targets = {"reflectivity":0.99999, "thermal_noise":5.394480540642821e-21, "absorption":0.01, "thickness":0.1},
+            light_wavelength=1064e-9,
+            include_random_rare_state=False,
+            use_optical_thickness=True,
+            thickness_sigma=1e-4,):
         """_summary_
 
         Args:
@@ -32,7 +44,27 @@ class GeneticCoatingStack(CoatingStack):
             variable_layers (bool, optional): _description_. Defaults to False.
         """
         self.thickness_sigma = thickness_sigma
-        super(GeneticCoatingStack, self).__init__(max_layers, min_thickness, max_thickness, materials, air_material_index, substrate_material_index, variable_layers, opt_init)
+        super(GeneticCoatingStack, self).__init__(
+            max_layers, 
+            min_thickness, 
+            max_thickness, 
+            materials, 
+            air_material_index=air_material_index,
+            substrate_material_index=substrate_material_index,
+            variable_layers=variable_layers,
+            opt_init=opt_init,
+            reflectivity_reward_shape=reflectivity_reward_shape,
+            thermal_reward_shape=thermal_reward_shape,
+            absorption_reward_shape=absorption_reward_shape,
+            use_intermediate_reward=use_intermediate_reward,
+            ignore_air_option=ignore_air_option,
+            ignore_substrate_option=ignore_substrate_option,
+            use_ligo_reward=use_ligo_reward,
+            optimise_parameters = optimise_parameters,
+            optimise_targets = optimise_targets,
+            light_wavelength=light_wavelength,
+            include_random_rare_state=include_random_rare_state,
+            use_optical_thickness=use_optical_thickness)
 
     
     def sample_state_space(self, ):
@@ -70,11 +102,11 @@ class GeneticCoatingStack(CoatingStack):
         maxind = 0
         for i,current_layer in enumerate(current_state):
             maxind = i
-            if current_layer[1] == 1:
+            if current_layer[self.air_material_index] == 1:
                 break
         if maxind == 0:
             layer_ind = 0
-        else:
+        else:   
             layer_ind = np.random.randint(maxind+1)
         new_material = torch.nn.functional.one_hot(torch.from_numpy(np.array(np.random.randint(self.n_materials))), num_classes=self.n_materials)
 
@@ -88,11 +120,9 @@ class GeneticCoatingStack(CoatingStack):
         if new_thickness < 0:
             print(new_thickness)
 
-    
+        return np.argmax(new_material), new_thickness[0], layer_ind
 
-        return new_material, thickness_change, layer_ind
-
-
+    '''
     def compute_reward(self, new_state, max_value=0.0, target_reflectivity=1.0):
         """reward is the improvement of the state over the previous one
 
@@ -126,10 +156,10 @@ class GeneticCoatingStack(CoatingStack):
 
  
         return reward
-    
+    '''
 
 
-    def step(self, state, action, max_state=0, verbose=False):
+    def old_step(self, state, action, max_state=0, verbose=False):
         """action[0] - thickness
            action[1:N] - material probability
 
@@ -159,7 +189,7 @@ class GeneticCoatingStack(CoatingStack):
 
         terminated = False
         finished = False
-        reward = self.compute_reward(new_state, max_state)
+        reward, vals, rewards = self.compute_reward(new_state, max_state)
 
         if thickness < 0:
             print(action)
@@ -171,8 +201,8 @@ class GeneticCoatingStack(CoatingStack):
         if self.min_thickness > thickness or thickness > self.max_thickness or not np.isfinite(thickness):
             terminated=True
             reward = neg_reward
-            self.current_state = new_state
-            new_value = neg_reward
+            #self.current_state = new_state
+            #new_value = neg_reward
         elif self.current_index == self.max_layers-1 or material == self.air_material_index:
          #print("out of thickness bounds")
             finished = True

@@ -1,9 +1,10 @@
 from coatopt.algorithms import hppo_oml
-from coatopt.environments import CoatingStack
+from coatopt.environments import CoatingStack, coating_utils
 from coatopt.config import read_config, read_materials
 from coatopt.train_coating_hppo import training_loop
 import os
 import argparse
+import numpy as np
 
 if __name__ == "__main__":
 
@@ -31,13 +32,17 @@ if __name__ == "__main__":
         materials,
         opt_init=False,
         use_intermediate_reward = config.get("Data", "use_intermediate_reward"),
-        reward_shape=config.get("Data", "reward_shape"),
-        thermal_reward_shape=config.get("Data", "thermal_reward_shape"),                
+        reflectivity_reward_shape=config.get("Data", "reflectivity_reward_shape"),
+        thermal_reward_shape=config.get("Data", "thermal_reward_shape"),
+        absorption_reward_shape=config.get("Data", "absorption_reward_shape"),                
         ignore_air_option=config.get("Data", "ignore_air_option"),
+        ignore_substrate_option=config.get("Data", "ignore_substrate_option"),
         use_ligo_reward=config.get("Data", "use_ligo_reward"),
         optimise_parameters=config.get("Data", "optimise_parameters"),
         optimise_targets=config.get("Data", "optimise_targets"),
         include_random_rare_state=config.get("Data", "include_random_rare_state"),
+        use_optical_thickness=config.get("Data", "use_optical_thickness"),
+        combine= config.get("Data", "combine"),
     )
 
 
@@ -75,6 +80,7 @@ if __name__ == "__main__":
             value_hidden_size=config.get("Network", "value_hidden_size"),
             substrate_material_index=env.substrate_material_index,
             ignore_air_option=config.get("Data", "ignore_air_option"),
+            ignore_substrate_option=config.get("Data", "ignore_substrate_option"),
 
             )
  
@@ -86,18 +92,57 @@ if __name__ == "__main__":
             agent.load_networks(config.get("General", "load_model_path"))
 
 
-    optimal_state = env.get_optimal_state()
+    def convert_state_to_physical(state, env):
+        for l_ind in range(len(state)):
+            state[l_ind,0] = coating_utils.optical_to_physical(state[l_ind,0], env.light_wavelength, env.materials[np.argmax(state[l_ind][1:])]['n'])
+        return state
+    optimal_state = env.get_optimal_state(inds_alternate=[1,2])
     optimal_value = env.compute_state_value(optimal_state, return_separate=True)
+    if env.use_optical_thickness:
+        optimal_stat = convert_state_to_physical(optimal_state, env)
     fig, ax = env.plot_stack(optimal_state)
     ax.set_title(f" opt val: {optimal_value}")
     fig.savefig(os.path.join(config.get("General", "root_dir"),  f"opt_state.png"))
 
-    optimal_state_r = env.get_optimal_state(reverse=True)
+    optimal_state_r = env.get_optimal_state(inds_alternate=[2,1])
     optimal_value_r = env.compute_state_value(optimal_state_r, return_separate=True)
+    if env.use_optical_thickness:
+        optimal_state_r = convert_state_to_physical(optimal_state_r, env)
     fig, ax = env.plot_stack(optimal_state_r)
     ax.set_title(f" opt val: {optimal_value_r}")
     fig.savefig(os.path.join(config.get("General", "root_dir"),  f"opt_state_reverse.png"))
+
+    optimal_state_2 = env.get_optimal_state(inds_alternate=[1,3])
+    optimal_value_2 = env.compute_state_value(optimal_state_2, return_separate=True)
+    if env.use_optical_thickness:
+        optimal_state_2 = convert_state_to_physical(optimal_state_2, env)
+    fig, ax = env.plot_stack(optimal_state_2)
+    ax.set_title(f" opt val: {optimal_value_2}")
+    fig.savefig(os.path.join(config.get("General", "root_dir"),  f"opt_state_2.png"))
+
+    optimal_state_r2 = env.get_optimal_state(inds_alternate=[3,1])
+    optimal_value_r2 = env.compute_state_value(optimal_state_r2, return_separate=True)
+    if env.use_optical_thickness:
+        optimal_state_r2 = convert_state_to_physical(optimal_state_r2, env)
+    fig, ax = env.plot_stack(optimal_state_r2)
+    ax.set_title(f" opt val: {optimal_value_r2}")
+    fig.savefig(os.path.join(config.get("General", "root_dir"),  f"opt_state_reverse_2.png"))
     
+    optimal_state_2m = env.get_optimal_state_2mat(inds_alternate=[1,3,2])
+    optimal_value_2m = env.compute_state_value(optimal_state_2m, return_separate=True)
+    if env.use_optical_thickness:
+        optimal_state_2m = convert_state_to_physical(optimal_state_2m, env)
+    fig, ax = env.plot_stack(optimal_state_2m)
+    ax.set_title(f" opt val: {optimal_value_2m}")
+    fig.savefig(os.path.join(config.get("General", "root_dir"),  f"opt_state_2mat.png"))
+
+    optimal_state_2rm = env.get_optimal_state_2mat(inds_alternate=[1,2,3])
+    optimal_value_2rm = env.compute_state_value(optimal_state_2rm, return_separate=True)
+    if env.use_optical_thickness:
+        optimal_state_2rm = convert_state_to_physical(optimal_state_2rm, env)
+    fig, ax = env.plot_stack(optimal_state_2rm)
+    ax.set_title(f" opt val: {optimal_value_2rm}")
+    fig.savefig(os.path.join(config.get("General", "root_dir"),  f"opt_state_2mat_reverse.png"))
 
     trainer = hppo_oml.HPPOTrainer(
         agent, 

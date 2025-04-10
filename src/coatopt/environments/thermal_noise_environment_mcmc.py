@@ -16,10 +16,22 @@ class MCMCCoatingStack(CoatingStack):
             max_thickness, 
             materials, 
             air_material_index=0,
-            thickness_sigma=1e-4,
             substrate_material_index=1,
             variable_layers=False,
-            opt_init=False):
+            opt_init=False,
+            reflectivity_reward_shape="none",
+            thermal_reward_shape="log_thermal_noise",
+            absorption_reward_shape="log_absorption",
+            use_intermediate_reward=False,
+            ignore_air_option=False,
+            ignore_substrate_option=False,
+            use_ligo_reward=False,
+            optimise_parameters = ["reflectivity", "thermal_noise", "absorption","thickness"],
+            optimise_targets = {"reflectivity":0.99999, "thermal_noise":5.394480540642821e-21, "absorption":0.01, "thickness":0.1},
+            light_wavelength=1064e-9,
+            include_random_rare_state=False,
+            use_optical_thickness=True,
+            thickness_sigma=0.1):
         """_summary_
 
         Args:
@@ -32,7 +44,27 @@ class MCMCCoatingStack(CoatingStack):
             variable_layers (bool, optional): _description_. Defaults to False.
         """
         self.thickness_sigma = thickness_sigma
-        super(MCMCCoatingStack, self).__init__(max_layers, min_thickness, max_thickness, materials, air_material_index, substrate_material_index, variable_layers, opt_init)
+        super(MCMCCoatingStack, self).__init__(
+            max_layers, 
+            min_thickness, 
+            max_thickness, 
+            materials, 
+            air_material_index=air_material_index,
+            substrate_material_index=substrate_material_index,
+            variable_layers=variable_layers,
+            opt_init=opt_init,
+            reflectivity_reward_shape=reflectivity_reward_shape,
+            thermal_reward_shape=thermal_reward_shape,
+            absorption_reward_shape=absorption_reward_shape,
+            use_intermediate_reward=use_intermediate_reward,
+            ignore_air_option=ignore_air_option,
+            ignore_substrate_option=ignore_substrate_option,
+            use_ligo_reward=use_ligo_reward,
+            optimise_parameters = optimise_parameters,
+            optimise_targets = optimise_targets,
+            light_wavelength=light_wavelength,
+            include_random_rare_state=include_random_rare_state,
+            use_optical_thickness=use_optical_thickness)
 
     
     def sample_state_space(self, ):
@@ -101,6 +133,63 @@ class MCMCCoatingStack(CoatingStack):
         thicknesses = state[:,0]
         materials = np.argmax(state[:,1:], axis=1)
         return np.hstack((materials, thicknesses))
+    
+    def sigmoid(self, x, mean=0.5, a=0.01):
+        return 1/(1+np.exp(-a*(x-mean)))
+    
+    def compute_reward(self, new_state, max_value=0.0, target_reflectivity=1.0):
+        """reward is the improvement of the state over the previous one
+
+        Args:
+            state (_type_): _description_
+            action (_type_): _description_
+        """
+
+        new_reflectivity, new_thermal_noise, new_absorption, new_total_thickness = self.compute_state_value(new_state, return_separate=True)
+
+        vals = {
+            "reflectivity": new_reflectivity,
+            "thermal_noise": new_thermal_noise,
+            "thickness": new_total_thickness,
+            "absorption": new_absorption
+        }
+
+        rewards = {key:0 for key in vals}
+
+        #new_value = np.log(new_value/(1-new_value))
+        #old_value = self.compute_state_value(old_state) + 5
+        #reward_diff = 0.01/(new_value - target_reflectivity)**2
+        #reward_diff = (new_value - target_reflectivity)**2
+        #reward_diff = np.log(reward_diff/(1-reward_diff))
+        
+        if "reflectivity" in self.optimise_parameters:
+            log_reflect = np.log(1/np.abs(new_reflectivity - 1)+1)
+            target_log_reflect = np.log(1/np.abs(self.optimise_targets["reflectivity"] - 1)+1)
+            rewards["reflectivity"] = -np.log(1-new_reflectivity)#log_reflect * self.sigmoid(log_reflect, mean=target_log_reflect, a=0.1)
+ 
+
+        if "thermal_noise" in self.optimise_parameters and new_thermal_noise is not None:
+            log_therm = -np.log(new_thermal_noise)/10
+            target_log_therm = -np.log(self.optimise_targets["thermal_noise"])/10
+            rewards["thermal_noise"] = log_therm * self.sigmoid(log_therm, mean=target_log_therm, a=0.1)
+
+
+
+        if "thickness" in self.optimise_parameters:
+            rewards["thickeness"] = -new_total_thickness
+        
+        if "absorption" in self.optimise_parameters:
+            log_absorption = -np.log(new_absorption)
+            target_log_absorption = -np.log(self.optimise_targets["absorption"])
+            rewards["absorption"] = log_absorption * self.sigmoid(log_absorption, mean=target_log_absorption, a=0.1)
+   
+
+        total_reward = np.sum([rewards[key] for key in self.optimise_parameters])
+
+
+        rewards["total_reward"] = total_reward
+
+        return total_reward, vals, rewards
 
     def log_probability(self, params):
         # Compute the mean and standard deviation of the state values
@@ -115,16 +204,12 @@ class MCMCCoatingStack(CoatingStack):
         
         
         state = self.convert_params_to_state(params)
-        mean = self.compute_state_value(state)
-
-
+        reward, vals, rewards = self.compute_reward(state)
         
         std_dev = 0.1  # Set the standard deviation as desired
 
-        # Compute the likelihood using the Gaussian distribution
-        likelihood = mean/(1-mean)
 
-        return likelihood
+        return reward
         
 
     
