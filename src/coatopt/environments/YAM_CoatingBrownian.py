@@ -1,12 +1,10 @@
 #from thermal_noise_hong import getCoatBrownian
-from deap import base, creator, tools
-import seaborn as sns
 import matplotlib.pyplot as plt
 import matplotlib.cm as cm
 import numpy as np
 import random
 import os 
-from gwinc import * 
+#from gwinc import * 
 import numpy as np
 import numba 
 import pandas as pd 
@@ -421,8 +419,8 @@ def speedyNoise(nN, dcdp, ySub, yN, pratSub, pratN, kBT, wBeam, w, dGeo, phiN, a
 
 def getCoatingThermalNoise(dOpt, materialLayer, materialParams, materialSub=1, lambda_=1, f=1, wBeam=1, Temp=1,plots=True):
     # Set seaborn style and viridis color palette
-    sns.set_style("whitegrid")
-    sns.set_palette("tab10")
+    #sns.set_style("whitegrid")
+    #sns.set_palette("tab10")
 
     # Extract substrate properties
     nSub = materialParams[materialSub]['n']

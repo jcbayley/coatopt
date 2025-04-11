@@ -31,7 +31,8 @@ class GeneticCoatingStack(CoatingStack):
             light_wavelength=1064e-9,
             include_random_rare_state=False,
             use_optical_thickness=True,
-            thickness_sigma=1e-4,):
+            thickness_sigma=1e-4,
+            combine="logproduct"):
         """_summary_
 
         Args:
@@ -64,7 +65,8 @@ class GeneticCoatingStack(CoatingStack):
             optimise_targets = optimise_targets,
             light_wavelength=light_wavelength,
             include_random_rare_state=include_random_rare_state,
-            use_optical_thickness=use_optical_thickness)
+            use_optical_thickness=use_optical_thickness,
+            combine=combine)
 
     
     def sample_state_space(self, ):
@@ -163,70 +165,42 @@ class GeneticCoatingStack(CoatingStack):
     '''
 
 
-    def old_step(self, state, action, max_state=0, verbose=False):
+
+    def step(self, action, max_state=0, verbose=False, state=None, layer_index=None, always_return_value=False):
         """action[0] - thickness
            action[1:N] - material probability
 
         Args:
             action (_type_): _description_
         """
-        layer = action[2]
-        thickness_change = action[1]
-        material_layer = action[0]
-        material = np.argmax(material_layer)
-        #new_state, full_action = self.update_state(state, thickness_change, material)
-
-        new_state = copy.copy(state)
-        new_state[layer][0] += thickness_change
-        if material == self.air_material_index:
-            repmat = np.tile(material_layer, (len(new_state) - layer,1))
-            new_state[layer:, 1:] = repmat
-        else:
-            new_state[layer][1:] = material_layer
-
-        thickness = new_state[layer][0]
         
+        if state is None:
+            state = self.current_state
+        else:
+            self.current_state = state
 
-        reward = 0
-        neg_reward = -1.0
-        new_value = 0
+        if layer_index is None:
+            layer_index = self.current_index
+        else:
+            self.current_index = layer_index
+
+        material = action[0]
+        thickness = action[1] #* self.light_wavelength /(4*self.materials[material]["n"])
+        new_state, full_action = self.update_state(np.copy(state), thickness, material)
+
+
+        neg_reward = -1000
+        reward = neg_reward
 
         terminated = False
         finished = False
+
         reward, vals, rewards = self.compute_reward(new_state, max_state)
+     
 
-        if thickness < 0:
-            print(action)
-            print(state)
-            print(new_state)
-            sys.exit()
-
-        #print(torch.any((self.current_state[0] + actions[2]) < self.min_thickness))
-        if self.min_thickness > thickness or thickness > self.max_thickness or not np.isfinite(thickness):
-            terminated=True
+        if np.any(np.isinf(new_state)) or np.any(np.isnan(new_state)) or np.isnan(reward) or np.isinf(reward) or self.min_thickness > thickness or thickness > self.max_thickness or not np.isfinite(thickness):
+            #rewards["total_reward"] = neg_reward
             reward = neg_reward
-            #self.current_state = new_state
-            #new_value = neg_reward
-        elif self.current_index == self.max_layers-1 or material == self.air_material_index:
-         #print("out of thickness bounds")
-            finished = True
-            self.current_state = new_state
-            #reward_diff, reward, new_value = self.compute_reward(new_state, max_state)
-        #elif action[1][0] == self.previous_material:
-        #    terminated = True
-        #    reward = -0.01
-        else:
-            self.current_state = new_state
-            #reward_diff, reward, new_value = self.compute_reward(new_state, max_state)
-            #self.current_state_value = reward
-            reward = 0.0
-        
-        # was for adding an extra layer at start and end
-        #if new_state[0, 4] == 1 and new_state[-1, 4] and np.all(new_state[:,4]) == False:
-        #    reward += 1
-
-        if np.any(np.isinf(new_state)) or np.any(np.isnan(new_state)) or np.isnan(reward):
-            reward = 0.0#neg_reward-10
             terminated = True
             new_value = neg_reward
 
@@ -236,11 +210,8 @@ class GeneticCoatingStack(CoatingStack):
         self.length += 1
         self.current_index += 1
 
-        #print("cind:", self.current_index)
-        #print(new_state)
 
-
-        return new_state, reward
+        return new_state, rewards, terminated, finished, reward, full_action
     
 
 

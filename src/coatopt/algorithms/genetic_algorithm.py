@@ -20,13 +20,15 @@ class StatePool():
         Returns:
             array: array of sorted state values
         """
-        #state_values = np.zeros((self.n_states, 2))
-        #for i in range(self.n_states):
-        #    temp_stval, vals, rewards = self.environment.compute_reward(self.current_states[i])
+        state_values = np.zeros((self.n_states, 2))
+        for i in range(self.n_states):
+            temp_stval, vals, rewards = self.environment.compute_reward(self.current_states[i])
 
-        #    state_values[i] = [i,temp_stval]
+            if np.isnan(temp_stval) or np.isinf(temp_stval):
+                temp_stval = -1000
+            state_values[i] = [i,temp_stval]
 
-        sorted_state_values = sorted(self.current_values, key=lambda a: (-np.nan_to_num(a[1], nan=-np.inf)))
+        sorted_state_values = sorted(state_values, key=lambda a: (-np.nan_to_num(a[1], nan=-1001)))
 
         return np.array(sorted_state_values)
     
@@ -65,7 +67,7 @@ class StatePool():
         #new_state = self.environment.get_new_state(state, actions)
         action = self.environment.sample_action_space(state)
         #new_state, reward = self.environment.step(state, action)
-        new_state, rewards, terminated, finished, reward, full_action = self.environment.step(action, state=state, layer_index=action[2])
+        new_state, rewards, terminated, finished, reward, full_action = self.environment.step(action, state=state, layer_index=action[2], always_return_value=True)
         #new_state, rewards = self.environment.step(state, action)
 
         #new_state = self.environment.sample_state_space()

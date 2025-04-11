@@ -9,6 +9,12 @@ There are a number of available algorithms to run
 
 Installation
 
+Create a conda environment for this project (or any other environment of your choosing). Its only been tested on python 3.11
+
+```bash
+conda create -n coatings_optimisation python=3.11
+```
+
 ```bash
     $pip install .
 ``` 

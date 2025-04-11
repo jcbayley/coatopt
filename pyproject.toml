@@ -10,7 +10,11 @@ dependencies = [
     "torch",
     "numpy",
     "scipy",
-    "matplotlib"
+    "matplotlib",
+    "tmm",
+    "pandas",
+    "tmm_fast",
+    "numba"
 ]
 
 [project.optional-dependencies]
