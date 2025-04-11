@@ -4,7 +4,6 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
 import numpy as np
-import gymnasium as gym
 import time
 import matplotlib.pyplot as plt
 #from deepqn_cart import plotLearning
@@ -52,6 +51,7 @@ if __name__ == '__main__':
         include_random_rare_state=config.get("Data", "include_random_rare_state"),
         use_optical_thickness=config.get("Data", "use_optical_thickness"),
         thickness_sigma=config.get("Genetic", "thickness_sigma"),
+        combine= config.get("Data", "combine"),
     )
 
     if not os.path.isdir(config.get("General", "root_dir")):
@@ -84,6 +84,9 @@ if __name__ == '__main__':
         score = np.mean(sort_state_values[:,1])
         scores.append(score)
         max_scores.append(sort_state_values[0,1])
+        with open(os.path.join(config.get("General", "root_dir"), "max_scores.txt"), 'w') as f:
+            np.savetxt(f, max_scores)
+
         if sort_state_values[0,1] > best_state_value:
             best_state_value = sort_state_values[0,1]
             best_state = top_state

@@ -4,13 +4,10 @@ from scipy.optimize import curve_fit, leastsq, least_squares
 from scipy import integrate as TG
 import datetime as dt
 import pandas as pd
-import openpyxl as xl
 import tmm
-import seaborn as sns
 import numpy as np  
 import matplotlib.pyplot as plt 
 import os 
-import plotly.express as px
 import warnings
 import logging
 from tmm_fast import coh_tmm as coh_tmm_fast

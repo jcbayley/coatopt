@@ -539,7 +539,7 @@ class CoatingStack():
 
         return np.array(observation)
 
-    def step(self, action, max_state=0, verbose=False, state=None, layer_index=None):
+    def step(self, action, max_state=0, verbose=False, state=None, layer_index=None, always_return_value=False):
         """action[0] - thickness
            action[1:N] - material probability
 
