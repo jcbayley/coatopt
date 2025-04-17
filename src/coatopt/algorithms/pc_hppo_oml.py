@@ -28,6 +28,7 @@ class ReplayBuffer:
         self.returns = []
         self.layer_number = []
         self.hidden_state = []
+        self.objective_weights = []
 
         self.t_discrete_actions = []
         self.t_continuous_actions = []
@@ -52,6 +53,7 @@ class ReplayBuffer:
         del self.returns[:]
         del self.layer_number[:]
         del self.hidden_state[:]
+        del self.objective_weights[:]
 
     def update(
             self, 
@@ -66,7 +68,8 @@ class ReplayBuffer:
             entropy_discrete,
             entropy_continuous,
             layer_number=0,
-            hidden_state=None):
+            hidden_state=None,
+            objective_weights=None):
         self.discrete_actions.append(discrete_action)
         self.continuous_actions.append(continuous_action)
         self.states.append(state)
@@ -79,6 +82,7 @@ class ReplayBuffer:
         self.entropy_continuous.append(entropy_continuous)
         self.layer_number.append(layer_number)
         self.hidden_state.append(hidden_state)
+        self.objective_weights.append(objective_weights)
 
     def update_returns(self, returns):
         self.returns.extend(returns)
@@ -88,7 +92,7 @@ class ReplayBuffer:
 
 
 
-class HPPO(object):
+class PCHPPO(object):
 
     def __init__(
             self, 
@@ -96,6 +100,7 @@ class HPPO(object):
             num_discrete, 
             num_cont, 
             hidden_size, 
+            num_objectives=3,
             disc_lr_policy=1e-4, 
             cont_lr_policy=1e-4, 
             lr_value=2e-4, 
@@ -134,6 +139,7 @@ class HPPO(object):
         self.air_material_index = air_material_index
         self.ignore_air_option = ignore_air_option
         self.ignore_substrate_option = ignore_substrate_option
+        self.num_objectives = num_objectives
 
         self.pre_output_dim = hidden_size
         self.pre_type = pre_type
@@ -177,7 +183,8 @@ class HPPO(object):
                 lower_bound=lower_bound,
                 upper_bound=upper_bound,
                 include_layer_number=include_layer_number,
-                activation=activation_function))
+                activation=activation_function,
+                n_objectives=self.num_objectives,))
             
             setattr(self, f"policy_continuous{appended_str}",  ContinuousPolicy(
                 self.pre_output_dim, 
@@ -188,7 +195,8 @@ class HPPO(object):
                 upper_bound=upper_bound,
                 include_layer_number=include_layer_number,
                 include_material=include_material_in_policy,
-                activation=activation_function))
+                activation=activation_function,
+                n_objectives=self.num_objectives,))
             
             setattr(self, f"value{appended_str}", Value(
                 self.pre_output_dim, 
@@ -197,7 +205,8 @@ class HPPO(object):
                 lower_bound=lower_bound,
                 upper_bound=upper_bound,
                 include_layer_number=include_layer_number,
-                activation=activation_function))
+                activation=activation_function,
+                n_objectives=self.num_objectives,))
         
         
         self.policy_discrete_old.load_state_dict(self.policy_discrete.state_dict())
@@ -277,7 +286,7 @@ class HPPO(object):
         old_lprobs_discrete = torch.cat(self.replay_buffer.logprobs_discrete).to(torch.float32).detach()
         old_lprobs_continuous = torch.cat(self.replay_buffer.logprobs_continuous).to(torch.float32).detach()
         #advantage = returns.detach() - state_vals.detach()
-
+        objective_weights = torch.cat(self.replay_buffer.objective_weights).to(torch.float32).detach()
         #for log_prob, R in zip(self.replay_buffer.logprobs, returns):
         #    policy_loss.append(-log_prob * R)
         #policy_loss = torch.cat(policy_loss).mean()
@@ -303,7 +312,9 @@ class HPPO(object):
                 layer_numbers, 
                 actionsc, 
                 actionsd, 
-                packed=True)
+                packed=True,
+                objective_weights=objective_weights)
+            
             advantage = returns.detach() - state_value.detach()
 
             # compute discrete PPO clipped objective
@@ -347,7 +358,7 @@ class HPPO(object):
         return policy_loss_discrete.item(), policy_loss_continuous.item(), value_loss.item()
     
 
-    def select_action(self, state, layer_number=None, actionc=None, actiond=None, packed=False):
+    def select_action(self, state, layer_number=None, actionc=None, actiond=None, packed=False, objective_weights=None):
 
         if type(state) in [np.array, np.ndarray]:
             #state = torch.from_numpy(state).flatten().unsqueeze(0).to(torch.float32)
@@ -373,9 +384,9 @@ class HPPO(object):
         pre_output_d = self.pre_network(state_pack, layer_number, packed=True)
         pre_output_c = self.pre_network(state_pack, layer_number, packed=True)
         pre_output_v = self.pre_network(state_pack, layer_number, packed=True)
-        d_probs = self.policy_discrete(pre_output_d, layer_number)
+        d_probs = self.policy_discrete(pre_output_d, layer_number, objective_weights=objective_weights)
 
-        state_value = self.value(pre_output_v, layer_number)
+        state_value = self.value(pre_output_v, layer_number, objective_weights=objective_weights)
         #d_onehot = F.one_hot(d_probs, num_classes=policy.output_dim_discrete)
 
         # mask out the material index which has the same material as this layer
@@ -455,7 +466,7 @@ class HPPO(object):
 
 
 
-        c_means, c_std = self.policy_continuous(pre_output_c, layer_number, actiond.unsqueeze(1))
+        c_means, c_std = self.policy_continuous(pre_output_c, layer_number, actiond.unsqueeze(1), objective_weights=objective_weights)
         
         c = TruncatedNormalDist(
             c_means, 
@@ -601,7 +612,11 @@ class HPPOTrainer:
                 "reflectivity_reward", 
                 "thermal_reward",
                 "thickness_reward",
-                "absorption_reward"])  
+                "absorption_reward",
+                "reflectivity_weight",
+                "thermal_noise_weight",
+                "thickness_weight",
+                "absorption_weight",])  
             self.start_episode = 0
 
     def write_metrics_to_file(self):
@@ -781,6 +796,7 @@ class HPPOTrainer:
                 stds = []
                 mats = []
                 t_rewards = []
+                objective_weights = self.env.sample_reward_weights()
                 for t in range(100):
                     # Select action
                     fl_state = np.array([state.flatten(),])[0]
@@ -790,13 +806,14 @@ class HPPOTrainer:
                     else:
                         obs = state
                     t = np.array([t])
+                    objective_weights_tensor = torch.tensor(objective_weights).unsqueeze(0)
                     
-                    action, actiond, actionc, log_prob_discrete, log_prob_continuous, d_prob, c_means, c_std, value, entropy_discrete, entropy_continuous = self.agent.select_action(obs, t)
+                    action, actiond, actionc, log_prob_discrete, log_prob_continuous, d_prob, c_means, c_std, value, entropy_discrete, entropy_continuous = self.agent.select_action(obs, t, objective_weights=objective_weights_tensor)
 
                     action[1] = action[1]*(self.env.max_thickness - self.env.min_thickness) + self.env.min_thickness
                 
                     # Take action and observe reward and next state
-                    next_state, rewards, done, finished, _, full_action = self.env.step(action)
+                    next_state, rewards, done, finished, _, full_action, vals = self.env.step(action, objective_weights=objective_weights)
 
                     reward = rewards["total_reward"]
 
@@ -812,7 +829,8 @@ class HPPOTrainer:
                         done,
                         entropy_discrete,
                         entropy_continuous,
-                        t
+                        t,
+                        objective_weights=objective_weights_tensor
                     )
                     #log_prob, state_value, entropy = agent.evaluate(fl_state, action[0], action[1])
 
@@ -939,6 +957,50 @@ class HPPOTrainer:
         return self.rewards, max_state
 
 
+    def generate_solutions(self, n_solutions):
+        self.agent.load_networks(self.root_dir)
+
+        all_rewards = []
+        best_states = []
+        all_states = []
+        all_vals = []
+        weights = []
+        for n in range(n_solutions):
+            state = self.env.reset()
+            objective_weights = self.env.sample_reward_weights()
+            for t in range(100):
+                # Select action
+                obs = self.env.get_observation_from_state(state)
+                if self.use_obs:
+                    obs = obs
+                else:
+                    obs = state
+                t = np.array([t])
+
+                objective_weights_tensor = torch.tensor(objective_weights).unsqueeze(0)
+                
+                action, actiond, actionc, log_prob_discrete, log_prob_continuous, d_prob, c_means, c_std, value, entropy_discrete, entropy_continuous = self.agent.select_action(
+                    obs, 
+                    t, 
+                    objective_weights=objective_weights_tensor)
+                
+                action[1] = action[1]*(self.env.max_thickness - self.env.min_thickness) + self.env.min_thickness
+            
+                # Take action and observe reward and next state
+                next_state, rewards, done, finished, _, full_action, vals = self.env.step(action, objective_weights=objective_weights)
+                reward = rewards["total_reward"]
+                state = next_state
+
+                if done or finished:
+                    break
+
+            all_rewards.append(rewards)
+            all_states.append(next_state)
+            weights.append(objective_weights)
+            all_vals.append(vals)
+            best_states = self.update_best_states(state, rewards, best_states, max_length=20)
+
+        return all_states, all_rewards, weights, all_vals
 
 def pad_lists(list_of_lists, padding_value=0, max_length=3):
     if max_length is None:

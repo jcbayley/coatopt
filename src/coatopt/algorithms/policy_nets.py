@@ -10,7 +10,8 @@ class DiscretePolicy(torch.nn.Module):
             lower_bound=0, 
             upper_bound=1,
             include_layer_number=False,
-            activation="relu"):
+            activation="relu",
+            n_objectives=0):
         super(DiscretePolicy, self).__init__()
         self.output_dim_discrete = output_dim_discrete
         self.lower_bound = lower_bound
@@ -19,9 +20,9 @@ class DiscretePolicy(torch.nn.Module):
         self.include_layer_number = include_layer_number
 
         if include_layer_number:
-            self.input = torch.nn.Linear(input_dim + 1, hidden_dim)
+            self.input = torch.nn.Linear(input_dim + 1 + n_objectives, hidden_dim)
         else:
-            self.input = torch.nn.Linear(input_dim, hidden_dim)
+            self.input = torch.nn.Linear(input_dim + n_objectives, hidden_dim)
 
         for i in range(self.n_layers):
             setattr(self, f"affine{i}", torch.nn.Linear(hidden_dim, hidden_dim))
@@ -43,9 +44,11 @@ class DiscretePolicy(torch.nn.Module):
         self.saved_log_probs = []
         self.rewards = []
 
-    def forward(self, x, layer_number=None, zero_idx=None):
+    def forward(self, x, layer_number=None, zero_idx=None, objective_weights=None):
         if layer_number is not None and self.include_layer_number:
             x = torch.cat([x, layer_number], dim=1)
+        if objective_weights is not None:
+            x = torch.cat([x, objective_weights], dim=1)
         x = self.input(x)
         x = self.activation(x)
         for i in range(self.n_layers):
@@ -70,7 +73,8 @@ class ContinuousPolicy(torch.nn.Module):
             upper_bound=1, 
             include_layer_number=False,
             include_material=False,
-            activation="relu"):
+            activation="relu",
+            n_objectives=0):
         super(ContinuousPolicy, self).__init__()
         self.lower_bound = lower_bound
         self.upper_bound = upper_bound
@@ -83,6 +87,8 @@ class ContinuousPolicy(torch.nn.Module):
             indim += 1
         if include_material:
             indim += 1
+        if n_objectives > 0:
+            indim += n_objectives
             
         self.input = torch.nn.Linear(indim, hidden_dim)
         
@@ -105,12 +111,14 @@ class ContinuousPolicy(torch.nn.Module):
         self.saved_log_probs = []
         self.rewards = []
 
-    def forward(self, x, layer_number=None, material=None):
+    def forward(self, x, layer_number=None, material=None, objective_weights=None):
 
         if layer_number is not None and self.include_layer_number:
             x = torch.cat([x, layer_number], dim=1)
         if layer_number is not None and self.include_material:
             x = torch.cat([x, material], dim=1)
+        if objective_weights is not None:
+            x = torch.cat([x, objective_weights], dim=1)
 
         x = self.input(x)
         x = self.activation(x)  
@@ -134,7 +142,8 @@ class Value(torch.nn.Module):
             lower_bound=0, 
             upper_bound=1,
             include_layer_number=False,
-            activation="relu"):
+            activation="relu",
+            n_objectives=0):
         super(Value, self).__init__()
         self.lower_bound = lower_bound
         self.upper_bound = upper_bound
@@ -142,9 +151,9 @@ class Value(torch.nn.Module):
         self.include_layer_number = include_layer_number
 
         if include_layer_number:
-            self.input = torch.nn.Linear(input_dim + 1, hidden_dim)
+            self.input = torch.nn.Linear(input_dim + 1 + n_objectives, hidden_dim)
         else:
-            self.input = torch.nn.Linear(input_dim, hidden_dim)
+            self.input = torch.nn.Linear(input_dim + n_objectives, hidden_dim)
         for i in range(self.n_layers):
             setattr(self, f"affine{i}", torch.nn.Linear(hidden_dim, hidden_dim))
 
@@ -161,9 +170,11 @@ class Value(torch.nn.Module):
         self.dropout = torch.nn.Dropout(p=0.0)
 
 
-    def forward(self, x, layer_number=None):
+    def forward(self, x, layer_number=None, objective_weights=None):
         if layer_number is not None and self.include_layer_number:
             x = torch.cat([x, layer_number], dim=1)
+        if objective_weights is not None:
+            x = torch.cat([x, objective_weights], dim=1)
         x = self.input(x)
         x = self.activation(x)
 
