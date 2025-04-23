@@ -6,6 +6,7 @@ import os
 import argparse
 import numpy as np
 import h5py
+import matplotlib.pyplot as plt
 
 if __name__ == "__main__":
 
@@ -84,7 +85,7 @@ if __name__ == "__main__":
             air_material_index=env.air_material_index,
             ignore_air_option=config.get("Data", "ignore_air_option"),
             ignore_substrate_option=config.get("Data", "ignore_substrate_option"),
-            num_objectives=len(config.get("Data", "optimise_targets"))
+            num_objectives=len(config.get("Data", "optimise_parameters"))
             )
  
     
@@ -176,6 +177,18 @@ if __name__ == "__main__":
 
         for key in sampled_vals[0].keys():
             rewards[f"{key}_vals"] = np.array([sampled_vals[i][key] for i in range(len(sampled_vals))])
+
+        fig, ax = plt.subplots()
+        ax.plot(rewards["reflectivity_vals"][:,0], rewards["absorption_vals"][:,0], "o")
+        ax.set_xlabel("Reflectivity")
+        ax.set_ylabel("Absorption")
+        fig.savefig(os.path.join(config.get("General", "root_dir"),  f"reflectivity_absorption.png"))
+
+        fig, ax = plt.subplots()
+        ax.plot(rewards["reflectivity_vals"][:,0], rewards["thermal_noise_vals"][:,0], "o")
+        ax.set_xlabel("Reflectivity")
+        ax.set_ylabel("Thermal Noise")
+        fig.savefig(os.path.join(config.get("General", "root_dir"),  f"reflectivity_thermal_noise.png"))
 
         with h5py.File("sampled_outputs.h5", "w") as f:
             f.create_dataset("states", data=sampled_states)

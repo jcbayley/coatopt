@@ -5,6 +5,7 @@ import torch.nn.functional as F
 import torch.optim as optim
 import numpy as np
 import time
+import pandas as pd
 import matplotlib.pyplot as plt
 #from deepqn_cart import plotLearning
 import copy 
@@ -18,10 +19,15 @@ from pymoo.core.problem import ElementwiseProblem
 from pymoo.core.variable import Real, Integer, Choice, Binary
 from pymoo.algorithms.moo.nsga2 import NSGA2
 from pymoo.core.mixed import MixedVariableGA
+from pymoo.algorithms.soo.nonconvex.ga import GA
+from pymoo.operators.crossover.sbx import SBX
+from pymoo.operators.mutation.pm import PM
+from pymoo.operators.sampling.rnd import FloatRandomSampling
 
 from pymoo.optimize import minimize
 from pymoo.visualization.scatter import Scatter
 from pymoo.algorithms.moo.nsga2 import RankAndCrowdingSurvival
+from pymoo.core.population import Population
 
 
 
@@ -74,6 +80,15 @@ if __name__ == '__main__':
         def __init__(self, environment, **kwargs):
 
             self.env = environment
+            self.n_var = self.env.max_layers * 2
+            n_obj=2
+            thick_lower = np.repeat(self.env.min_thickness, self.env.max_layers)
+            thick_upper = np.repeat(self.env.max_thickness, self.env.max_layers)
+            material_lower = np.repeat(0, self.env.max_layers)
+            material_upper = np.repeat(self.env.n_materials-1, self.env.max_layers)
+            xl=np.concatenate((thick_lower, material_lower))
+            xu=np.concatenate((thick_upper, material_upper))
+            """
             vars = {}
 
             for i in range(self.env.max_layers):
@@ -86,42 +101,65 @@ if __name__ == '__main__':
                     ),
                 })
             super().__init__(vars=vars, n_obj=1, **kwargs)
+            """
+            super().__init__(n_var=self.n_var, n_obj=n_obj, xl=xl, xu=xu, **kwargs)
 
         def make_state_from_vars(self, vars):
             state = np.zeros((self.env.max_layers, self.env.n_materials+1))
+            layer_thickness = vars[:self.env.max_layers]
+            materials_inds = np.floor(vars[self.env.max_layers:]).astype(int)  
             for i in range(self.env.max_layers):
-                state[i,0] = vars[f"layer_{i}"]
-                state[i,vars[f"layer_{i}_material"]+1] = 1
+                #state[i,0] = vars[f"layer_{i}"]
+                #state[i,vars[f"layer_{i}_material"]+1] = 1
+                state[i,0] = layer_thickness[i]
+                state[i,materials_inds[i]+2] = 1
             return state
 
         def _evaluate(self, X, out, *args, **kwargs):
 
             state = self.make_state_from_vars(X)
             total_reward, vals, rewards = self.env.compute_reward(state)
-
-            out["F"] = -rewards["reflectivity"]#np.column_stack([-rewards["reflectivity"], -rewards["absorption"]])
+            #out["F"] = -rewards["reflectivity"]
+            out["F"] = np.column_stack([-rewards["reflectivity"], -rewards["absorption"]])
 
     coating_problem = CoatingMoo(env)
     
-    #algorithm = NSGA2(pop_size=100)
+    algorithm = NSGA2(pop_size=2000, )
+    #algorithm = GA(
+    #    pop_size=1000,
+    #    eliminate_duplicates=True,)
+    
     #algorithm = MixedVariableGA(pop_size=50, survival=RankAndCrowdingSurvival())
-    algorithm = MixedVariableGA(pop_size=100)
+    #algorithm = MixedVariableGA(pop_size=50)
 
 
     res = minimize(coating_problem,
                 algorithm,
-                ('n_gen', 100),
-                seed=1,
+                ('n_gen', 200),
+                seed=10,
+                save_history=True,
                 verbose=True)
     
-    fig, ax = plt.subplots()
-    #ax.scatter(1 - 10**(-res.F[:, 0]), 10**(-res.F[:, 1] - 10), s=10, c="red", alpha=0.5)
-    ax.plot(1 - 10**(-res.F[:]), c="red", alpha=0.5)
+    all_pop = Population()
 
+    for algorithm in res.history:
+        all_pop = Population.merge(all_pop, algorithm.off)
+
+    df = pd.DataFrame(all_pop.get("X"), columns=[f"X{i+1}" for i in range(coating_problem.n_var)])
+
+    df.to_csv(os.path.join(config.get("General", "root_dir"), "population_data.csv"), index=False)
+
+    fig, ax = plt.subplots()
+    ax.scatter(1 - 10**(-res.F[:, 0]), 10**(-res.F[:, 1] - 10), s=10, c="red", alpha=0.5)
+    #ax.plot(1 - 10**(-res.F[:]), c="red", alpha=0.5)
+    ax.set_xlabel("Reflectivity")
+    ax.set_ylabel("Absorption")
     fig.savefig(os.path.join(config.get("General", "root_dir"),  f"pareto_front.png"))
 
     topstacks = []
-    res.X = [res.X, ]
+    if len(res.X.shape) < 2:
+        res.X = [res.X, ]
+
     for i,t_x in enumerate(res.X):
         state = coating_problem.make_state_from_vars(t_x)
         total_reward, vals, rewards = env.compute_reward(state)
@@ -130,6 +168,8 @@ if __name__ == '__main__':
         #rewards = {"total_reward":total_reward}
         fig, ax = plotting.plot_stack(state, env.materials, rewards=rewards, vals=vals)
         fig.savefig(os.path.join(config.get("General", "root_dir"),  f"stack_{i}.png"))
+        if i > 10:
+            break
     
     plot = Scatter()
     plot.add(coating_problem.pareto_front(), plot_type="line", color="black", alpha=0.7)
