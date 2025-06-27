@@ -1,5 +1,6 @@
 from coatopt.algorithms import pc_hppo_oml
-from coatopt.environments import CoatingStack, coating_utils
+from coatopt.environments.thermal_noise_environment_pareto import ParetoCoatingStack
+import coatopt.environments.coating_utils as coating_utils
 from coatopt.config import read_config, read_materials
 from coatopt.train_coating_hppo import training_loop
 import os
@@ -7,6 +8,8 @@ import argparse
 import numpy as np
 import h5py
 import matplotlib.pyplot as plt
+from pymoo.util.nds.non_dominated_sorting import NonDominatedSorting
+
 
 if __name__ == "__main__":
 
@@ -28,7 +31,7 @@ if __name__ == "__main__":
 
     continue_training = args.continue_training or config.get("General", "continue_training")
 
-    env = CoatingStack(
+    env = ParetoCoatingStack(
         config.get("Data", "n_layers"), 
         config.get("Data", "min_thickness"),
         config.get("Data", "max_thickness"),
@@ -48,6 +51,11 @@ if __name__ == "__main__":
         combine= config.get("Data", "combine"),
         optimise_weight_ranges=config.get("Data", "optimise_weight_ranges"),
         reward_func=config.get("Data", "reward_func"),
+        final_weight_epoch=config.get("Training", "final_weight_epoch"),
+        start_weight_alpha=config.get("Training", "start_weight_alpha"),
+        final_weight_alpha=config.get("Training", "final_weight_alpha"),
+        cycle_weights= config.get("Training", "cycle_weights"),
+        n_weight_cycles=config.get("Training", "n_weight_cycles"),
     )
 
 
@@ -89,7 +97,7 @@ if __name__ == "__main__":
             ignore_substrate_option=config.get("Data", "ignore_substrate_option"),
             num_objectives=len(config.get("Data", "optimise_parameters"))
             )
- 
+    
     
     if config.get("General", "load_model") or continue_training:
         if config.get("General", "load_model_path") == "root" or continue_training:
@@ -103,6 +111,60 @@ if __name__ == "__main__":
             state[l_ind,0] = coating_utils.optical_to_physical(state[l_ind,0], env.light_wavelength, env.materials[np.argmax(state[l_ind][1:])]['n'])
         return state
     
+
+    trainer = pc_hppo_oml.HPPOTrainer(
+        agent, 
+        env, 
+        config.get("Training", "n_iterations"), 
+        config.get("Data", "n_layers"),  
+        root_dir=config.get("General", "root_dir"),
+        use_obs=config.get("Data", "use_observation"),
+        beta_start=config.get("Training", "entropy_beta_start"),
+        beta_end=config.get("Training", "entropy_beta_end"),
+        beta_decay_length=config.get("Training", "entropy_beta_decay_length"),
+        beta_decay_start=config.get("Training", "entropy_beta_decay_start"),
+        scheduler_start=config.get("Training", "scheduler_start"),
+        scheduler_end=config.get("Training", "scheduler_end"),
+        continue_training=continue_training
+    )
+
+    trainer.init_pareto_front(n_solutions=config.get("Training", "n_init_solutions"))
+
+    
+    if args.train:
+        trainer.train()
+
+    if args.test:
+        sampled_states, sampled_rewards, sampled_weights, sampled_vals = trainer.generate_solutions(args.n_samples, random_weights=True)
+
+        rewards = {}
+        for key in sampled_rewards[0].keys():
+            if key in ["updated_pareto_front", "front_updated"]:
+                continue
+            rewards[f"{key}_rewards"] = np.array([sampled_rewards[i][key] for i in range(len(sampled_rewards))])
+
+        for key in sampled_vals[0].keys():
+            rewards[f"{key}_vals"] = np.array([sampled_vals[i][key] for i in range(len(sampled_vals))])
+
+        fig, ax = plt.subplots()
+        ax.plot(rewards["reflectivity_vals"], rewards["absorption_vals"], "o")
+        ax.set_xlabel("Reflectivity")
+        ax.set_ylabel("Absorption")
+        fig.savefig(os.path.join(config.get("General", "root_dir"),  f"reflectivity_absorption.png"))
+
+        fig, ax = plt.subplots()
+        ax.plot(rewards["reflectivity_vals"], rewards["thermal_noise_vals"], "o")
+        ax.set_xlabel("Reflectivity")
+        ax.set_ylabel("Thermal Noise")
+        fig.savefig(os.path.join(config.get("General", "root_dir"),  f"reflectivity_thermal_noise.png"))
+
+        with h5py.File("sampled_outputs.h5", "w") as f:
+            f.create_dataset("states", data=sampled_states)
+            f.create_dataset("weights", data=sampled_weights)
+            for key in rewards.keys():
+                f.create_dataset(key, data=rewards[key])
+    
+
     optimal_state = env.get_optimal_state(inds_alternate=[1,2])
     optimal_value = env.compute_state_value(optimal_state, return_separate=True)
     if env.use_optical_thickness:
@@ -150,51 +212,3 @@ if __name__ == "__main__":
     fig, ax = env.plot_stack(optimal_state_2rm)
     ax.set_title(f" opt val: {optimal_value_2rm}")
     fig.savefig(os.path.join(config.get("General", "root_dir"),  f"opt_state_2mat_reverse.png"))
-
-    trainer = pc_hppo_oml.HPPOTrainer(
-        agent, 
-        env, 
-        config.get("Training", "n_iterations"), 
-        config.get("Data", "n_layers"),  
-        root_dir=config.get("General", "root_dir"),
-        use_obs=config.get("Data", "use_observation"),
-        beta_start=config.get("Training", "entropy_beta_start"),
-        beta_end=config.get("Training", "entropy_beta_end"),
-        beta_decay_length=config.get("Training", "entropy_beta_decay_length"),
-        beta_decay_start=config.get("Training", "entropy_beta_decay_start"),
-        scheduler_start=config.get("Training", "scheduler_start"),
-        scheduler_end=config.get("Training", "scheduler_end"),
-        continue_training=continue_training
-    )
-    
-    if args.train:
-        trainer.train()
-
-    if args.test:
-        sampled_states, sampled_rewards, sampled_weights, sampled_vals = trainer.generate_solutions(args.n_samples, random_weights=True)
-
-        rewards = {}
-        for key in sampled_rewards[0].keys():
-            rewards[f"{key}_rewards"] = np.array([sampled_rewards[i][key] for i in range(len(sampled_rewards))])
-
-        for key in sampled_vals[0].keys():
-            rewards[f"{key}_vals"] = np.array([sampled_vals[i][key] for i in range(len(sampled_vals))])
-
-        fig, ax = plt.subplots()
-        ax.plot(rewards["reflectivity_vals"], rewards["absorption_vals"], "o")
-        ax.set_xlabel("Reflectivity")
-        ax.set_ylabel("Absorption")
-        fig.savefig(os.path.join(config.get("General", "root_dir"),  f"reflectivity_absorption.png"))
-
-        fig, ax = plt.subplots()
-        ax.plot(rewards["reflectivity_vals"], rewards["thermal_noise_vals"], "o")
-        ax.set_xlabel("Reflectivity")
-        ax.set_ylabel("Thermal Noise")
-        fig.savefig(os.path.join(config.get("General", "root_dir"),  f"reflectivity_thermal_noise.png"))
-
-        with h5py.File("sampled_outputs.h5", "w") as f:
-            f.create_dataset("states", data=sampled_states)
-            f.create_dataset("weights", data=sampled_weights)
-            for key in rewards.keys():
-                f.create_dataset(key, data=rewards[key])
-    

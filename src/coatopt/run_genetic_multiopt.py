@@ -12,12 +12,14 @@ import copy
 from coatopt.environments.thermal_noise_environment_genetic import GeneticCoatingStack
 from coatopt.config import read_config, read_materials
 from coatopt.algorithms.genetic_algorithm import StatePool
-from coatopt.environments import coating_utils
+from coatopt.environments import coating_utils, coating_reward_function
 from coatopt.tools import plotting
 import argparse
 from pymoo.core.problem import ElementwiseProblem
 from pymoo.core.variable import Real, Integer, Choice, Binary
 from pymoo.algorithms.moo.nsga2 import NSGA2
+from pymoo.algorithms.moo.moead import MOEAD
+from pymoo.util.ref_dirs import get_reference_directions
 from pymoo.core.mixed import MixedVariableGA
 from pymoo.algorithms.soo.nonconvex.ga import GA
 from pymoo.operators.crossover.sbx import SBX
@@ -70,6 +72,7 @@ if __name__ == '__main__':
         use_optical_thickness=config.get("Data", "use_optical_thickness"),
         thickness_sigma=config.get("Genetic", "thickness_sigma"),
         combine= config.get("Data", "combine"),
+        reward_func=config.get("Data", "reward_func"),
     )
 
     if not os.path.isdir(config.get("General", "root_dir")):
@@ -122,20 +125,32 @@ if __name__ == '__main__':
             #out["F"] = -rewards["reflectivity"]
             out["F"] = np.column_stack([-rewards["reflectivity"], -rewards["absorption"]])
 
+            out["VALS"] = vals
+
     coating_problem = CoatingMoo(env)
     
-    algorithm = NSGA2(pop_size=2000, )
-    #algorithm = GA(
-    #    pop_size=1000,
-    #    eliminate_duplicates=True,)
+    if config.get("General", "algorithm") == "NSGA2":
+        algorithm = NSGA2(pop_size=4000, )
+        #algorithm = GA(
+        #    pop_size=1000,
+        #    eliminate_duplicates=True,)
     
+    elif config.get("General", "algorithm") == "MOEAD":
+        ref_dirs = get_reference_directions("uniform", len(config.get("Data", "optimise_parameters")), n_partitions=1000)
+
+        algorithm = MOEAD(
+            ref_dirs,
+            n_neighbors=10000,
+            prob_neighbor_mating=0.7,
+        )
+
     #algorithm = MixedVariableGA(pop_size=50, survival=RankAndCrowdingSurvival())
     #algorithm = MixedVariableGA(pop_size=50)
 
 
     res = minimize(coating_problem,
                 algorithm,
-                ('n_gen', 200),
+                ('n_gen', config["Training"]["n_iterations"]),
                 seed=10,
                 save_history=True,
                 verbose=True)
@@ -147,7 +162,56 @@ if __name__ == '__main__':
 
     df = pd.DataFrame(all_pop.get("X"), columns=[f"X{i+1}" for i in range(coating_problem.n_var)])
 
+    rewards_comp, vals_comp, _ = coating_reward_function.reward_function(all_pop.get("F")[:, 0], None, None, all_pop.get("F")[:, 1], env.optimise_parameters, env.optimise_targets, combine="product", neg_reward=-1e3, weights=None)
+
+    rfs = []
+    abs = []
+    for i,row in enumerate(all_pop.get("X")):
+        stack = coating_problem.make_state_from_vars(row)
+        new_reflectivity, new_thermal_noise, new_E_integrated, new_total_thickness = env.compute_state_value(stack, return_separate=True)
+        rfs.append(new_reflectivity)
+        abs.append(new_E_integrated)
+
+    df["Reflectivity"] = rfs
+    df["Absorption"] = abs
+    df["ThermalNoise"] = np.repeat(0, len(all_pop.get("F")))
+    df["Thickness"] = np.repeat(0, len(all_pop.get("F")))
+
+    df["Reflectivity_r"] = all_pop.get("F")[:, 0]
+    df["Absorption_r"] = all_pop.get("F")[:, 1]
+    df["ThermalNoise_r"] = np.repeat(0, len(all_pop.get("F")))
+    df["Thickness_r"] = np.repeat(0, len(all_pop.get("F")))
+
+    #df["Reflectivity"] = inverse_vals["reflectivity"]
+    #df["Absorption"] = inverse_vals["absorption"]
+    #df["ThermalNoise"] = np.repeat(0, len(all_pop.get("F")))
+    #df["Thickness"] = np.repeat(0, len(all_pop.get("F")))
+
     df.to_csv(os.path.join(config.get("General", "root_dir"), "population_data.csv"), index=False)
+
+    df2 = pd.DataFrame(res.X, columns=[f"X{i+1}" for i in range(coating_problem.n_var)])
+
+    df2["Reflectivity_r"] = res.F[:, 0]
+    df2["Absorption_r"] = res.F[:, 1]
+    df2["ThermalNoise_r"] = np.repeat(0, len(res.F))
+    df2["Thickness_r"] = np.repeat(0, len(res.F))
+
+    rfs = []
+    abs = []
+    for i, row in enumerate(res.X):
+        stack = coating_problem.make_state_from_vars(row)
+        new_reflectivity, new_thermal_noise, new_E_integrated, new_total_thickness = env.compute_state_value(stack, return_separate=True)
+        rfs.append(new_reflectivity)
+        abs.append(new_E_integrated)
+
+    df2["Reflectivity"] = rfs
+    df2["Absorption"] = abs
+    df2["ThermalNoise"] = np.repeat(0, len(res.F))
+    df2["Thickness"] = np.repeat(0, len(res.F))
+
+
+
+    df2.to_csv(os.path.join(config.get("General", "root_dir"), "optimised_data.csv"), index=False)
 
     fig, ax = plt.subplots()
     ax.scatter(1 - 10**(-res.F[:, 0]), 10**(-res.F[:, 1] - 10), s=10, c="red", alpha=0.5)
@@ -167,7 +231,7 @@ if __name__ == '__main__':
         #vals = {"reflectivity": vals["reflectivity"], "absorption": vals["absorption"], "thermal_noise": vals["thermal_noise"], "thickness": 0}
         #rewards = {"total_reward":total_reward}
         fig, ax = plotting.plot_stack(state, env.materials, rewards=rewards, vals=vals)
-        fig.savefig(os.path.join(config.get("General", "root_dir"),  f"stack_{i}.png"))
+        fig.savefig(os.path.join(config.get("General", "root_dir"),  "states", f"stack_{i}.png"))
         if i > 10:
             break
     

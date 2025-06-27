@@ -129,7 +129,7 @@ class ContinuousPolicy(torch.nn.Module):
         action_mean = self.output_continuous_mean(x)
         action_std = self.output_continuous_std(x)
         amean = torch.sigmoid(action_mean)*(self.upper_bound - self.lower_bound) + self.lower_bound
-        astd = torch.sigmoid(action_std)*(self.upper_bound - self.lower_bound)*0.1 + 1e-6
+        astd = torch.sigmoid(action_std)*(self.upper_bound - self.lower_bound)*0.1 + 1e-8
         return amean, astd
     
 class Value(torch.nn.Module):

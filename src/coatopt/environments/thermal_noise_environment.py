@@ -1,7 +1,7 @@
 import torch
 import numpy as np
 from .coating_utils import getCoatAbsorption, getCoatNoise2, getCoatRefl2, merit_function, merit_function_2
-from .coating_reward_function import reward_function
+from .coating_reward_function import reward_function, reward_function_target, reward_function_raw, reward_function_log_minimise
 import time
 import scipy
 from tmm import coh_tmm
@@ -22,6 +22,7 @@ class CoatingStack():
             reflectivity_reward_shape="none",
             thermal_reward_shape="log_thermal_noise",
             absorption_reward_shape="log_absorption",
+            reward_func="default",
             use_intermediate_reward=False,
             ignore_air_option=False,
             ignore_substrate_option=False,
@@ -32,6 +33,11 @@ class CoatingStack():
             light_wavelength=1064e-9,
             include_random_rare_state=False,
             use_optical_thickness=True,
+            final_weight_epoch = 1,
+            start_weight_alpha = 1.0,
+            final_weight_alpha = 1.0,
+            cycle_weights=False,
+            n_weight_cycles=2,
             combine="product"):
         """_summary_
 
@@ -55,6 +61,12 @@ class CoatingStack():
         self.substrate_material_index = substrate_material_index
         self.combine=combine
         self.optimise_weight_ranges = optimise_weight_ranges
+        self.reward_func = reward_func
+        self.final_weight_epoch = final_weight_epoch
+        self.start_weight_alpha = start_weight_alpha
+        self.final_weight_alpha = final_weight_alpha
+        self.cycle_weights = cycle_weights
+        self.n_weight_cycles = n_weight_cycles
 
         self.opt_init = opt_init
         self.reflectivity_reward_shape = reflectivity_reward_shape
@@ -187,8 +199,78 @@ class CoatingStack():
         layers[:,self.air_material_index+1] = 1
         layers[:,0] = self.min_thickness*np.ones(len(layers[:,0]))
         return layers
+
+    def annealed_dirichlet_weights(self, epoch, total_epochs, base_alpha=0.05, final_alpha=1.0, num_samples=10):
+        """
+        Sample preference weights from an annealed Dirichlet distribution.
+        
+        Parameters:
+        - epoch: current training epoch
+        - total_epochs: total number of epochs
+        - base_alpha: initial concentration (low -> extreme weights)
+        - final_alpha: final concentration (higher -> uniform weights)
+        - num_samples: number of weight vectors to sample
+        
+        Returns:
+        - weights: List of sampled 2D weight vectors summing to 1
+        """
+        # Annealing factor: linear schedule (can be nonlinear if desired)
+        progress = np.min([epoch / total_epochs, 1])
+        alpha = base_alpha + (final_alpha - base_alpha) * progress
+
+        # Dirichlet concentration vector: same alpha for both objectives
+        concentration = [alpha, alpha]
+        
+        weights = np.random.dirichlet(concentration, size=num_samples)
+        # Replace rows with NaN or Inf with [1, 0] or [0, 1] randomly
+        mask = np.isnan(weights).any(axis=1) | np.isinf(weights).any(axis=1)
+        random_choices = np.random.choice([0, 1], size=mask.sum())
+        weights[mask] = np.column_stack((random_choices, 1 - random_choices))
+        return weights
     
-    def sample_reward_weights(self,):
+    def smooth_cycle_weights(self, t, N, T_cycle, T_hold, total_steps, random_anneal = True):
+        """
+        Generate smooth cyclic weights for N classes.
+        At each cycle, the weight is held at [1, 0, ..., 0], [0, 1, ..., 0], etc. for T_hold steps.
+        In between, smooth transitions are applied over the remaining steps.
+        
+        Args:
+            N: Number of classes
+            T_cycle: Total steps for one full cycle through all classes (T_hold * N + transition steps)
+            T_hold: Number of steps to hold each one-hot vector
+            total_steps: Total steps to generate
+
+        Returns:
+            weights: A (total_steps x N) numpy array of weights over time
+        """
+        weights = np.zeros(N)
+        phase_steps = T_cycle // N  # steps per class phase
+        T_transition = phase_steps - T_hold  # transition steps between classes
+
+        if t < total_steps:
+            cycle_pos = t % T_cycle
+            class_idx = cycle_pos // phase_steps
+            pos_in_phase = cycle_pos % phase_steps
+
+            if pos_in_phase < T_hold:
+                # Hold one-hot
+                weights[class_idx] = 1.0
+            else:
+                # Transition between class_idx and next class
+                next_idx = (class_idx + 1) % N
+                alpha = (pos_in_phase - T_hold) / T_transition  # [0,1]
+                weights[class_idx] = 1.0 - alpha
+                weights[next_idx] = alpha
+
+        if t >= total_steps:
+            if random_anneal:
+                weights = self.annealed_dirichlet_weights(self.final_weight_epoch, self.final_weight_epoch, base_alpha=self.start_weight_alpha, final_alpha=self.final_weight_alpha, num_samples=1)
+            else:
+                weights = np.ones(N)/N
+
+        return weights
+    
+    def sample_reward_weights(self,num_samples=1, epoch=None):
         """sample weights for the reward function
 
         Args:
@@ -197,13 +279,42 @@ class CoatingStack():
         Returns:
             _type_: _description_
         """
-        weights = []
-        for key in self.optimise_parameters:
-            weights.append(np.random.uniform(self.optimise_weight_ranges[key][0],self.optimise_weight_ranges[key][1]))
+        N = len(self.optimise_parameters)
+        if self.cycle_weights == "step":
+            if epoch is not None:
+                progress = np.min([epoch / self.final_weight_epoch, 1])
+                if progress < 0.25:
+                    weights = np.array([[1, 0]] * num_samples)
+                elif progress < 0.5:
+                    weights = np.array([[0, 1]] * num_samples)
+                elif progress < 0.75:
+                    weights = np.array([[1, 0]] * num_samples)
+                elif progress < 1.0:
+                    weights = np.array([[0, 1]] * num_samples)
+                else:
+                    weights = self.annealed_dirichlet_weights(epoch, 2*self.final_weight_epoch, base_alpha=self.start_weight_alpha, final_alpha=self.final_weight_alpha, num_samples=num_samples)
+            else:
+                weights = np.array([[0.5,0.5]] * num_samples)
+        elif self.cycle_weights == "smooth":
+            #T_hold = int(0.75*self.final_weight_epoch // (N*self.n_weight_cycles))
+            #T_cycle = self.final_weight_epoch//(N*self.n_weight_cycles)
+            T_hold = 0.75*self.final_weight_epoch/(N*self.n_weight_cycles)
+            T_cycle = self.final_weight_epoch//(self.n_weight_cycles)
+            weights = self.smooth_cycle_weights(epoch, N=2, T_cycle=T_cycle, T_hold=T_hold, total_steps=self.final_weight_epoch)
+            weights = np.tile(weights, (num_samples, 1))
+        else:
+            if epoch is not None:
+                weights = self.annealed_dirichlet_weights(epoch, self.final_weight_epoch, base_alpha=self.start_weight_alpha, final_alpha=self.final_weight_alpha, num_samples=10)
+            else:
+                weights = np.random.dirichlet(alpha=np.ones(N), size=num_samples)
+        #weights2 = []
+        #for key in self.optimise_parameters:
+        #    weights2.append(np.random.uniform(self.optimise_weight_ranges[key][0],self.optimise_weight_ranges[key][1]))
 
-        return weights
+        #print(weights, weights2)
+        return weights[0]#/np.sum(weights)
     
-    def sample_state_space(self, ):
+    def sample_state_space(self, random_material=False):
         """return air with a thickness of 1
 
         Returns:
@@ -215,6 +326,12 @@ class CoatingStack():
             layers = np.zeros((self.max_layers, self.n_materials + 1))
             layers[:,self.air_material_index+1] = 1
             layers[:,0] = np.random.uniform(self.min_thickness, self.max_thickness, size=len(layers[:,0]))
+
+        if random_material:
+            for layer_ind in range(len(layers)):
+                material = np.random.randint(1, self.n_materials)
+                layers[layer_ind][material+1] = 1
+                layers[layer_ind][self.air_material_index+1] = 0
         return layers
 
     def sample_action_space(self, ):
@@ -413,6 +530,52 @@ class CoatingStack():
     def sigmoid(self, x, mean=0.5, a=0.01):
         return 1/(1+np.exp(-a*(x-mean)))
     
+    def select_reward(self, new_reflectivity, new_thermal_noise, new_total_thickness, new_E_integrated, weights=None):
+        if self.reward_func == "default":
+            total_reward, vals, rewards = reward_function(
+                new_reflectivity, 
+                new_thermal_noise, 
+                new_total_thickness, 
+                new_E_integrated, 
+                self.optimise_parameters, 
+                self.optimise_targets, 
+                combine=self.combine, 
+                weights=weights)
+        elif self.reward_func == "target":
+            total_reward, vals, rewards = reward_function_target(
+                new_reflectivity, 
+                new_thermal_noise, 
+                new_total_thickness, 
+                new_E_integrated, 
+                self.optimise_parameters, 
+                self.optimise_targets, 
+                combine=self.combine, 
+                weights=weights)
+        elif self.reward_func == "raw":
+            total_reward, vals, rewards = reward_function_raw(
+                new_reflectivity, 
+                new_thermal_noise, 
+                new_total_thickness, 
+                new_E_integrated, 
+                self.optimise_parameters, 
+                self.optimise_targets, 
+                combine=self.combine, 
+                weights=weights)
+        elif self.reward_func == "log_targets":
+            total_reward, vals, rewards = reward_function_log_minimise(
+                new_reflectivity, 
+                new_thermal_noise, 
+                new_total_thickness, 
+                new_E_integrated, 
+                self.optimise_parameters, 
+                self.optimise_targets, 
+                combine=self.combine, 
+                weights=weights)
+        else:
+            raise Exception(f"Unknown reward function type {self.reward_func}")
+        
+        return total_reward, vals, rewards
+        
     def compute_reward(self, new_state, max_value=0.0, target_reflectivity=1.0, objective_weights=None):
         """reward is the improvement of the state over the previous one
 
@@ -429,14 +592,11 @@ class CoatingStack():
         else:
             weights=None
 
-        total_reward, vals, rewards = reward_function(
+        total_reward, vals, rewards = self.select_reward(
             new_reflectivity, 
             new_thermal_noise, 
             new_total_thickness, 
             new_E_integrated, 
-            self.optimise_parameters, 
-            self.optimise_targets, 
-            combine=self.combine, 
             weights=weights)
 
         return total_reward, vals, rewards
