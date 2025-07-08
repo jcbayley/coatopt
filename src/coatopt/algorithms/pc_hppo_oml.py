@@ -3,7 +3,6 @@ import torch
 from torch.nn import functional as F
 from collections import deque
 from coatopt.networks.truncated_normal import TruncatedNormalDist
-from coatopt.algorithms.policy_nets import DiscretePolicy, ContinuousPolicy, Value
 from coatopt.algorithms.pre_networks import PreNetworkLinear, PreNetworkLSTM, PreNetworkAttention
 from torch.nn.utils.rnn import pack_padded_sequence, pad_sequence
 import os
@@ -132,7 +131,16 @@ class PCHPPO(object):
             substrate_material_index=1,
             air_material_index=0,
             ignore_air_option=False,
-            ignore_substrate_option=False):
+            ignore_substrate_option=False,
+            beta_start=1.0,
+            beta_end=0.001,
+            beta_decay_length=500,
+            hyper_networks=False):
+
+        if hyper_networks:
+            from coatopt.algorithms.hyper_policy_nets import DiscretePolicy, ContinuousPolicy, Value
+        else:
+            from coatopt.algorithms.policy_nets import DiscretePolicy, ContinuousPolicy, Value
 
         print("sd", state_dim)
         self.upper_bound = upper_bound
@@ -143,6 +151,9 @@ class PCHPPO(object):
         self.ignore_air_option = ignore_air_option
         self.ignore_substrate_option = ignore_substrate_option
         self.num_objectives = num_objectives
+        self.beta_start = beta_start
+        self.beta_end = beta_end
+        self.beta_decay_length = beta_decay_length
 
         self.pre_output_dim = hidden_size
         self.pre_type = pre_type
@@ -249,6 +260,8 @@ class PCHPPO(object):
         self.scheduler_continuous = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(self.optimiser_continuous, T_0=lr_step_continuous, T_mult=T_mult_continuous, eta_min=lr_min)
         self.scheduler_value = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(self.optimiser_value, T_0=lr_step_value, T_mult=T_mult_value, eta_min=lr_min)
 
+        #self.scheduler_entropy = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(self.beta_start, T_0=self.beta_decay_length, T_mult=T_mult_value, eta_min=self.beta_end)
+
         self.mse_loss = torch.nn.MSELoss()
         self.replay_buffer = ReplayBuffer()
 
@@ -273,8 +286,10 @@ class PCHPPO(object):
             self.scheduler_discrete.step(step)
             self.scheduler_continuous.step(step)
             self.scheduler_value.step(step)
+            #self.scheduler_entropy.step(step)
+        entropy_val = self.beta_start*self.scheduler_value.get_last_lr()[0]/self.lr_value
         
-        return self.scheduler_discrete.get_last_lr(), self.scheduler_continuous.get_last_lr(), self.scheduler_value.get_last_lr()
+        return self.scheduler_discrete.get_last_lr(), self.scheduler_continuous.get_last_lr(), self.scheduler_value.get_last_lr(), entropy_val #, self.scheduler_entropy.get_last_lr()
 
     def update(self, update_policy=True, update_value=True):
 
@@ -342,15 +357,18 @@ class PCHPPO(object):
             if update_policy:
                 self.optimiser_discrete.zero_grad()
                 policy_loss_discrete.backward()
+                torch.nn.utils.clip_grad_norm_(self.policy_discrete.parameters(), max_norm=1.0)
                 self.optimiser_discrete.step()
 
             self.optimiser_continuous.zero_grad()
             policy_loss_continuous.backward()
+            torch.nn.utils.clip_grad_norm_(self.policy_continuous.parameters(), max_norm=1.0)
             self.optimiser_continuous.step()
 
             if update_value:
                 self.optimiser_value.zero_grad()
                 value_loss.backward()
+                torch.nn.utils.clip_grad_norm_(self.value.parameters(), max_norm=1.0)
                 self.optimiser_value.step()
 
         self.policy_discrete_old.load_state_dict(self.policy_discrete.state_dict())
@@ -661,8 +679,9 @@ class HPPOTrainer:
                 "thermal_noise_weight",
                 "thickness_weight",
                 "absorption_weight",
-                "R_reward_weights",
-                "A_reward_weights",])  
+                "reflectivity_reward_weights",
+                "absorption_reward_weights",
+                "thermalnoise_reward_weights",])  
             self.start_episode = 0
             self.continue_training = False
             self.best_states = []
@@ -723,8 +742,9 @@ class HPPOTrainer:
         reward_ax[6].set_ylabel("Learning Rate")
         reward_ax[6].legend()
 
-        reward_ax[7].plot(self.metrics["episode"], self.metrics["R_reward_weights"], label="w1")
-        reward_ax[7].plot(self.metrics["episode"], self.metrics["A_reward_weights"], label="w2")
+        reward_ax[7].plot(self.metrics["episode"], self.metrics["reflectivity_reward_weights"], label="reflectivity")
+        reward_ax[7].plot(self.metrics["episode"], self.metrics["absorption_reward_weights"], label="absorption")
+        reward_ax[7].plot(self.metrics["episode"], self.metrics["thermalnoise_reward_weights"], label="thermal noise")
         reward_ax[7].set_xlabel("Episode number")
         reward_ax[7].set_ylabel("weighting")
         reward_ax[7].legend()
@@ -826,23 +846,15 @@ class HPPOTrainer:
             else:
                 make_step = True 
 
-            if self.beta_decay_length is not None and episode > self.beta_decay_length:
-                update_value=True
-            else:
-                update_value=True
-
+            """
             if self.beta_decay_length is not None and episode > self.beta_decay_start:
                 self.agent.beta = self.beta_start - (self.beta_start-self.beta_end)*np.min([(episode-self.beta_decay_start)/self.beta_decay_length, 1])
             else:
                 self.agent.beta = self.beta_start
+            """
 
-                #agent.optimiser_discrete.learning_rate = new_lr
-                #agent.optimiser_continuous.learning_rate = new_lr
-                #agent.optimiser_value.learning_rate = new_lr
 
             metric_update = {}
-
-            metric_update["beta"] = self.agent.beta
             #lrs.append(agent.optimiser_discrete.learning_rate)
 
             states = []
@@ -883,16 +895,16 @@ class HPPOTrainer:
 
                     t_rewards.append(reward)
                     self.agent.replay_buffer.update(
-                        actiond,
-                        actionc,
+                        actiond.detach(),
+                        actionc.detach(),
                         obs,
-                        log_prob_discrete,
-                        log_prob_continuous,
+                        log_prob_discrete.detach(),
+                        log_prob_continuous.detach(),
                         reward,
                         value,
                         done,
-                        entropy_discrete,
-                        entropy_continuous,
+                        entropy_discrete.detach(),
+                        entropy_continuous.detach(),
                         t,
                         objective_weights=objective_weights_tensor
                     )
@@ -923,6 +935,7 @@ class HPPOTrainer:
                     fig, ax = self.env.plot_stack(max_state)
                     ax.set_title(f"Optimal rew: {max_reward}, opt val: {opt_value}")
                     fig.savefig(os.path.join(self.root_dir,  f"best_state.png"))
+                    plt.close(fig)
                     with open(os.path.join(self.root_dir,  f"best_state.txt"), "w") as f:
                         np.savetxt(f, max_state)
                     self.agent.save_networks(self.root_dir)
@@ -944,7 +957,9 @@ class HPPOTrainer:
                 #    self.agent.optimiser_continuous.param_groups[0]['lr'] = self.start_learning_rate_continuous
                 #    self.agent.optimiser_value.param_groups[0]['lr'] = self.start_learning_rate_value
                 lr_outs = self.agent.scheduler_step(episode, make_step)
-                lr_outs = lr_outs[0][0], lr_outs[1][0], lr_outs[2][0]
+                lr_outs = lr_outs[0][0], lr_outs[1][0], lr_outs[2][0], lr_outs[3]
+                self.agent.beta = lr_outs[3]
+                metric_update["beta"] = self.agent.beta
                 self.agent.replay_buffer.clear()
             else:
                 lr_outs = self.agent.disc_lr_policy, self.agent.cont_lr_policy, self.agent.lr_value 
@@ -956,8 +971,9 @@ class HPPOTrainer:
             metric_update["loss_policy_discrete"] = loss1
             metric_update["loss_policy_continuous"] = loss2
             metric_update["loss_value"] = loss3
-            metric_update["R_reward_weights"] = objective_weights[0]
-            metric_update["A_reward_weights"] = objective_weights[1]
+            metric_update["reflectivity_reward_weights"] = objective_weights[0]
+            metric_update["absorption_reward_weights"] = objective_weights[1] if len(objective_weights) > 1 else 0.0
+            metric_update["thermalnoise_reward_weights"] = objective_weights[2] if len(objective_weights) > 2 else 0.0
 
             metric_update["episode"] = episode
             metric_update["reward"] = episode_reward
@@ -986,6 +1002,7 @@ class HPPOTrainer:
                 if not os.path.isdir(os.path.join(self.root_dir, "pareto_fronts")):
                     os.makedirs(os.path.join(self.root_dir, "pareto_fronts"))
 
+            
                 fig, ax = plt.subplots()
                 ax.plot(self.env.pareto_front[:, 0], self.env.pareto_front[:, 1], 'o')
                 ax.set_xlabel("Reflectivity")
@@ -993,7 +1010,7 @@ class HPPOTrainer:
                 ax.set_yscale("log")
                 ax.set_xscale("log")
                 fig.savefig(os.path.join(self.root_dir, "pareto_fronts", f"pareto_front_it{episode}.png"))
-
+                plt.close(fig)
                 with open(os.path.join(self.root_dir, "pareto_fronts", f"pareto_front_it{episode}.txt"), "wb") as f:
                     np.savetxt(f, self.env.pareto_front, header="Reflectivity, Absorption")
 
@@ -1003,7 +1020,6 @@ class HPPOTrainer:
                 with open(os.path.join(self.root_dir, "all_points_data.txt"), "w") as f:
                     np.savetxt(f, self.env.saved_data)
 
-                
                 n_layers = self.n_layers
                 loss_fig, loss_ax = plt.subplots(nrows = n_layers)
                 all_mats2 = pad_lists(all_mats, [0.0,]*self.env.n_materials, n_layers)
@@ -1026,8 +1042,8 @@ class HPPOTrainer:
                     loss_ax[i].set_ylabel(f"Layer {i}")
                 loss_ax[-1].set_xlabel("Episode number")
                 loss_fig.savefig(os.path.join(self.root_dir, "running_mats.png"))
-
-
+                plt.close(loss_fig)
+                
                 with open(os.path.join(self.root_dir, "best_states.pkl"), "wb") as f:
                     pickle.dump(self.best_states, f)
 
@@ -1040,6 +1056,7 @@ class HPPOTrainer:
                     t_opt_value = self.env.compute_state_value(state, return_separate=True)
                     ax.set_title(f"Reward: {episode_reward}, val: {t_opt_value}")
                     fig.savefig(os.path.join(self.root_dir,  "states", f"episode_{episode}.png"))
+                    plt.close(fig)
 
                 
 
@@ -1116,7 +1133,7 @@ class HPPOTrainer:
 
             state = self.env.reset()
             if random_weights:
-                objective_weights = self.env.sample_reward_weights()
+                objective_weights = self.env.sample_reward_weights(epoch=self.env.final_weight_epoch+10)
             else:
                 objective_weights = objweights[n]
                 if n >= len(objweights):

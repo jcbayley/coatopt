@@ -3,7 +3,7 @@ import torch
 from torch.nn import functional as F
 from collections import deque
 from coatopt.networks.truncated_normal import TruncatedNormalDist
-from coatopt.algorithms.policy_nets import DiscretePolicy, ContinuousPolicy, Value
+from coatopt.algorithms.hyper_policy_nets import DiscretePolicy, ContinuousPolicy, Value
 from coatopt.algorithms.pre_networks import PreNetworkLinear, PreNetworkLSTM, PreNetworkAttention
 from torch.nn.utils.rnn import pack_padded_sequence, pad_sequence
 import os
@@ -12,6 +12,9 @@ import matplotlib.pyplot as plt
 import pandas as pd
 import time
 import pickle
+from itertools import product
+from pymoo.util.nds.non_dominated_sorting import NonDominatedSorting
+
 
 class ReplayBuffer:
     def __init__(self):
@@ -129,7 +132,10 @@ class PCHPPO(object):
             substrate_material_index=1,
             air_material_index=0,
             ignore_air_option=False,
-            ignore_substrate_option=False):
+            ignore_substrate_option=False,
+            beta_start=1.0,
+            beta_end=0.001,
+            beta_decay_length=500):
 
         print("sd", state_dim)
         self.upper_bound = upper_bound
@@ -140,6 +146,9 @@ class PCHPPO(object):
         self.ignore_air_option = ignore_air_option
         self.ignore_substrate_option = ignore_substrate_option
         self.num_objectives = num_objectives
+        self.beta_start = beta_start
+        self.beta_end = beta_end
+        self.beta_decay_length = beta_decay_length
 
         self.pre_output_dim = hidden_size
         self.pre_type = pre_type
@@ -159,7 +168,8 @@ class PCHPPO(object):
                     self.pre_output_dim,
                     hidden_size,
                     include_layer_number=include_layer_number,
-                    n_layers = n_pre_layers
+                    n_layers = n_pre_layers,
+                    weight_dim = num_objectives
                 )
         elif pre_type == "linear":
             self.pre_network = PreNetworkLinear(
@@ -245,6 +255,8 @@ class PCHPPO(object):
         self.scheduler_continuous = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(self.optimiser_continuous, T_0=lr_step_continuous, T_mult=T_mult_continuous, eta_min=lr_min)
         self.scheduler_value = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(self.optimiser_value, T_0=lr_step_value, T_mult=T_mult_value, eta_min=lr_min)
 
+        #self.scheduler_entropy = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(self.beta_start, T_0=self.beta_decay_length, T_mult=T_mult_value, eta_min=self.beta_end)
+
         self.mse_loss = torch.nn.MSELoss()
         self.replay_buffer = ReplayBuffer()
 
@@ -264,13 +276,15 @@ class PCHPPO(object):
         
         return np.array(temp_r)
 
-    def scheduler_step(self, make_step=True):
+    def scheduler_step(self, step=0, make_step=True):
         if make_step:
-            self.scheduler_discrete.step()
-            self.scheduler_continuous.step()
-            self.scheduler_value.step()
+            self.scheduler_discrete.step(step)
+            self.scheduler_continuous.step(step)
+            self.scheduler_value.step(step)
+            #self.scheduler_entropy.step(step)
+        entropy_val = self.beta_start*self.scheduler_value.get_last_lr()[0]/self.lr_value
         
-        return self.scheduler_discrete.get_last_lr(), self.scheduler_continuous.get_last_lr(), self.scheduler_value.get_last_lr()
+        return self.scheduler_discrete.get_last_lr(), self.scheduler_continuous.get_last_lr(), self.scheduler_value.get_last_lr(), entropy_val #, self.scheduler_entropy.get_last_lr()
 
     def update(self, update_policy=True, update_value=True):
 
@@ -307,7 +321,7 @@ class PCHPPO(object):
             else:
                 layer_numbers = False
 
-            action, actiond, actionc, log_prob_discrete, log_prob_continuous, d_probs, c_means, c_std, state_value, entropy_discrete, entropy_continuous = self.select_action(
+            _,_,_, log_prob_discrete, log_prob_continuous, _,_,_, state_value, entropy_discrete, entropy_continuous = self.select_action(
                 states, 
                 layer_numbers, 
                 actionsc, 
@@ -359,7 +373,19 @@ class PCHPPO(object):
     
 
     def select_action(self, state, layer_number=None, actionc=None, actiond=None, packed=False, objective_weights=None):
-
+        """Selects an action based on the current state and layer number.
+        
+        Args:
+            state (torch.Tensor or np.ndarray): The current state of the environment.
+            layer_number (torch.Tensor or np.ndarray, optional): The current layer number. Defaults to None.
+            actionc (torch.Tensor, optional): The continuous action to be sampled. Defaults to None.
+            actiond (torch.Tensor, optional): The discrete action to be sampled. Defaults to None.
+            packed (bool, optional): Whether the state is packed. Defaults to False.
+            objective_weights (torch.Tensor, optional): Weights for the objectives. Defaults to None.
+        Returns:
+            tuple: A tuple containing the selected action, discrete action, continuous action, log probabilities for discrete and continuous actions,
+            discrete probabilities, continuous means and standard deviations, state value, entropy for discrete and continuous actions.
+        """
         if type(state) in [np.array, np.ndarray]:
             #state = torch.from_numpy(state).flatten().unsqueeze(0).to(torch.float32)
             state = torch.from_numpy(state).unsqueeze(0).to(torch.float32)
@@ -381,15 +407,22 @@ class PCHPPO(object):
 
         #print(state.size(), layer_number.size())
         # run three times to get three different graphs
-        pre_output_d = self.pre_network(state_pack, layer_number, packed=True)
-        pre_output_c = self.pre_network(state_pack, layer_number, packed=True)
-        pre_output_v = self.pre_network(state_pack, layer_number, packed=True)
+        pre_output_d = self.pre_network(state_pack, layer_number, packed=True, weights = objective_weights)
+        pre_output_c = self.pre_network(state_pack, layer_number, packed=True, weights = objective_weights)
+        pre_output_v = self.pre_network(state_pack, layer_number, packed=True, weights = objective_weights)
         d_probs = self.policy_discrete(pre_output_d, layer_number, objective_weights=objective_weights)
 
         state_value = self.value(pre_output_v, layer_number, objective_weights=objective_weights)
         #d_onehot = F.one_hot(d_probs, num_classes=policy.output_dim_discrete)
 
         # mask out the material index which has the same material as this layer
+
+        if np.any(np.isnan(d_probs.detach().cpu().numpy())):
+            print("NaN in d_probs")
+            print("dprobs, nan", print(np.any(np.isnan(d_probs.detach().numpy()))))
+            print("state_pack nan", np.any(np.isnan(state)))
+            print("pre_output_d nan", np.any(np.isnan(pre_output_d.detach().numpy())))
+            raise Exception("NaN in d_probs")
 
 
         if layer_number is not None:
@@ -407,6 +440,8 @@ class PCHPPO(object):
             #mask[torch.arange(d_probs.size(0)), zeroidx] = 1e-10
             #mask[:, 0] *= 1e-2 # add low probabillity of choosing air to start with
             #t_d_probs = t_d_probs * mask
+
+            # creates a mask so that the next layer cannot be the same material as the current layer 
             action_to_index = []
             if isinstance(layer_number, torch.Tensor) and layer_number.ndim > 0:
                 for i, layer_num in enumerate(layer_number.squeeze(0)):
@@ -448,8 +483,24 @@ class PCHPPO(object):
             if len(t_d_probs.size()) == 1:
                 t_d_probs = t_d_probs.unsqueeze(0)
 
+
+            if np.any(np.isnan(t_d_probs.detach().cpu().numpy())):
+                print("NaN in t_d_probs")
+                print(d_probs)
+                print(t_d_probs)
+                print(state)
+                print(layer_number)
+                raise Exception("NaN in t_d_probs")
+            
             d = torch.distributions.Categorical(t_d_probs)
         else:
+            if np.any(np.isnan(t_d_probs.detach().cpu().numpy())):
+                print("NaN in t_d_probs")
+                print(d_probs)
+                print(t_d_probs)
+                print(state)
+                print(layer_number)
+                raise Exception("NaN in t_d_probs")
             d = torch.distributions.Categorical(d_probs)
 
         if actiond is None:
@@ -587,7 +638,7 @@ class HPPOTrainer:
         self.use_obs = use_obs
 
         self.scheduler_start = scheduler_start
-        self.scheduler_end = np.inf if scheduler_end == -1 else scheduler_end
+        self.scheduler_end = n_iterations if scheduler_end == -1 else scheduler_end
 
         if continue_training:
             self.load_metrics_from_file()
@@ -595,6 +646,9 @@ class HPPOTrainer:
             #self.start_learning_rate_discrete = self.metrics["lr_discrete"][-1]
             #self.start_learning_rate_continuous = self.metrics["lr_continuous"][-1]
             #self.start_learning_rate_value = self.metrics["lr_value"][-1]
+            with open(os.path.join(self.root_dir, "best_states.pkl"), "rb") as f:
+                self.best_states = pickle.load(f)
+            self.continue_training = True
         else:
             self.metrics = pd.DataFrame(columns=[
                 "episode", 
@@ -616,8 +670,12 @@ class HPPOTrainer:
                 "reflectivity_weight",
                 "thermal_noise_weight",
                 "thickness_weight",
-                "absorption_weight",])  
+                "absorption_weight",
+                "R_reward_weights",
+                "A_reward_weights",])  
             self.start_episode = 0
+            self.continue_training = False
+            self.best_states = []
 
     def write_metrics_to_file(self):
         self.metrics.to_csv(os.path.join(self.root_dir, "training_metrics.csv"), index=False)
@@ -628,7 +686,7 @@ class HPPOTrainer:
 
     def make_reward_plot(self,):
 
-        reward_fig, reward_ax = plt.subplots(nrows=7, figsize=(7,9))
+        reward_fig, reward_ax = plt.subplots(nrows=8, figsize=(7,12))
         window_size = 20
         #downsamp_rewards = np.mean(np.reshape(self.rewards[:int((len(self.rewards)//window_size)*window_size)], (-1,window_size)), axis=1)
         downsamp_rewards = self.metrics['reward'].rolling(window=window_size, center=False).median()
@@ -674,7 +732,14 @@ class HPPOTrainer:
         reward_ax[6].set_xlabel("Episode number")
         reward_ax[6].set_ylabel("Learning Rate")
         reward_ax[6].legend()
+
+        reward_ax[7].plot(self.metrics["episode"], self.metrics["R_reward_weights"], label="w1")
+        reward_ax[7].plot(self.metrics["episode"], self.metrics["A_reward_weights"], label="w2")
+        reward_ax[7].set_xlabel("Episode number")
+        reward_ax[7].set_ylabel("weighting")
+        reward_ax[7].legend()
         reward_fig.savefig(os.path.join(self.root_dir, "running_rewards.png"))
+        plt.close(reward_fig)
 
     def make_val_plot(self,):
 
@@ -717,6 +782,7 @@ class HPPOTrainer:
         reward_ax[4].set_yscale("log")
 
         reward_fig.savefig(os.path.join(self.root_dir, "running_values.png"))
+        plt.close(reward_fig)
 
 
     def make_loss_plot(self,):
@@ -730,16 +796,21 @@ class HPPOTrainer:
         loss_ax[2].set_yscale("log")
         loss_ax[2].set_xlabel("Episode number")
         loss_fig.savefig(os.path.join(self.root_dir, "running_losses.png"))
+        plt.close(loss_fig)
 
-    def update_best_states(self, state, rewards, best_states, max_length=20):
+    def old_update_best_states(self, state, rewards, best_states, max_length=20, min_score=None):
         if len(best_states) < max_length:
             best_states.append((state, rewards))
         else:
-            min_score = min(best_states, key=lambda x: x[1]["total_reward"])[1]
+            if min_score is None:
+                min_score = min(best_states, key=lambda x: x[1]["total_reward"])[1]
             if rewards["total_reward"] > min_score["total_reward"]:
                 min_index = next(i for i, v in enumerate(best_states) if v[1]["total_reward"] == min_score["total_reward"])
                 best_states[min_index] = (state, rewards)
         return best_states
+    
+    def update_best_states(self, state, rewards, best_states, max_length=20, min_score=None):
+        best_states.append((state, rewards))
 
     def train(self):
 
@@ -754,10 +825,10 @@ class HPPOTrainer:
         if not os.path.isdir(state_dir):
             os.makedirs(state_dir)
 
-        best_states = []
         self.betas = []
         self.lrs = []
         start_time = time.time()
+        # Main training loop for one episode
         for episode in range(self.start_episode, self.n_iterations):
             episode_time = time.time()
             if episode < self.scheduler_start or episode > self.scheduler_end:
@@ -765,23 +836,15 @@ class HPPOTrainer:
             else:
                 make_step = True 
 
-            if self.beta_decay_length is not None and episode > self.beta_decay_length:
-                update_value=True
-            else:
-                update_value=True
-
+            """
             if self.beta_decay_length is not None and episode > self.beta_decay_start:
                 self.agent.beta = self.beta_start - (self.beta_start-self.beta_end)*np.min([(episode-self.beta_decay_start)/self.beta_decay_length, 1])
             else:
                 self.agent.beta = self.beta_start
+            """
 
-                #agent.optimiser_discrete.learning_rate = new_lr
-                #agent.optimiser_continuous.learning_rate = new_lr
-                #agent.optimiser_value.learning_rate = new_lr
 
             metric_update = {}
-
-            metric_update["beta"] = self.agent.beta
             #lrs.append(agent.optimiser_discrete.learning_rate)
 
             states = []
@@ -789,6 +852,8 @@ class HPPOTrainer:
             actions_continuous = []
             returns = []
             advantages = []
+            min_episode_score = (-np.inf, 0, None, None) # (reward, episode, state, rewards)
+            # start the loop for generating peices of data to generate in each epidose
             for n in range(self.n_training_epochs):
                 state = self.env.reset()
                 episode_reward = 0
@@ -796,7 +861,8 @@ class HPPOTrainer:
                 stds = []
                 mats = []
                 t_rewards = []
-                objective_weights = self.env.sample_reward_weights()
+                objective_weights = self.env.sample_reward_weights(epoch=episode)
+                # loop over each step in environment (i.e. each layer in the stack) (max 100, but should update later)
                 for t in range(100):
                     # Select action
                     fl_state = np.array([state.flatten(),])[0]
@@ -806,7 +872,7 @@ class HPPOTrainer:
                     else:
                         obs = state
                     t = np.array([t])
-                    objective_weights_tensor = torch.tensor(objective_weights).unsqueeze(0)
+                    objective_weights_tensor = torch.tensor(objective_weights).unsqueeze(0).to(torch.float32)
                     
                     action, actiond, actionc, log_prob_discrete, log_prob_continuous, d_prob, c_means, c_std, value, entropy_discrete, entropy_continuous = self.agent.select_action(obs, t, objective_weights=objective_weights_tensor)
 
@@ -834,7 +900,6 @@ class HPPOTrainer:
                     )
                     #log_prob, state_value, entropy = agent.evaluate(fl_state, action[0], action[1])
 
-                    best_states = self.update_best_states(state, rewards, best_states, max_length=20)
 
                     means.append(c_means.detach().numpy())
                     stds.append(c_std.detach().numpy())
@@ -850,6 +915,8 @@ class HPPOTrainer:
                     # Check if episode is done
                     if done or finished:
                         break
+                if episode_reward > min_episode_score[0]:
+                    min_episode_score = (episode_reward, n, state, rewards, vals)
 
                 if episode_reward > max_reward:
                     max_reward = episode_reward
@@ -865,9 +932,12 @@ class HPPOTrainer:
                 returns = self.agent.get_returns(t_rewards)
                 self.agent.replay_buffer.update_returns(returns)
                 
+            self.best_states.append(min_episode_score)
+
             all_means.append(means)
             all_stds.append(stds)
             all_mats.append(mats)
+
 
             if episode > 10:
                 loss1, loss2, loss3 = self.agent.update(update_policy=True, update_value=True)
@@ -875,8 +945,10 @@ class HPPOTrainer:
                 #    self.agent.optimiser_discrete.param_groups[0]['lr'] = self.start_learning_rate_discrete
                 #    self.agent.optimiser_continuous.param_groups[0]['lr'] = self.start_learning_rate_continuous
                 #    self.agent.optimiser_value.param_groups[0]['lr'] = self.start_learning_rate_value
-                lr_outs = self.agent.scheduler_step(make_step)
-                lr_outs = lr_outs[0][0], lr_outs[1][0], lr_outs[2][0]
+                lr_outs = self.agent.scheduler_step(episode, make_step)
+                lr_outs = lr_outs[0][0], lr_outs[1][0], lr_outs[2][0], lr_outs[3]
+                self.agent.beta = lr_outs[3]
+                metric_update["beta"] = self.agent.beta
                 self.agent.replay_buffer.clear()
             else:
                 lr_outs = self.agent.disc_lr_policy, self.agent.cont_lr_policy, self.agent.lr_value 
@@ -888,6 +960,8 @@ class HPPOTrainer:
             metric_update["loss_policy_discrete"] = loss1
             metric_update["loss_policy_continuous"] = loss2
             metric_update["loss_value"] = loss3
+            metric_update["R_reward_weights"] = objective_weights[0]
+            metric_update["A_reward_weights"] = objective_weights[1]
 
             metric_update["episode"] = episode
             metric_update["reward"] = episode_reward
@@ -913,6 +987,26 @@ class HPPOTrainer:
                 self.make_val_plot()
                 self.make_loss_plot()
 
+                if not os.path.isdir(os.path.join(self.root_dir, "pareto_fronts")):
+                    os.makedirs(os.path.join(self.root_dir, "pareto_fronts"))
+
+                fig, ax = plt.subplots()
+                ax.plot(self.env.pareto_front[:, 0], self.env.pareto_front[:, 1], 'o')
+                ax.set_xlabel("Reflectivity")
+                ax.set_ylabel("Absorption")
+                ax.set_yscale("log")
+                ax.set_xscale("log")
+                fig.savefig(os.path.join(self.root_dir, "pareto_fronts", f"pareto_front_it{episode}.png"))
+
+                with open(os.path.join(self.root_dir, "pareto_fronts", f"pareto_front_it{episode}.txt"), "wb") as f:
+                    np.savetxt(f, self.env.pareto_front, header="Reflectivity, Absorption")
+
+                with open(os.path.join(self.root_dir, "all_points.txt"), "w") as f:
+                    np.savetxt(f, self.env.saved_points)
+                
+                with open(os.path.join(self.root_dir, "all_points_data.txt"), "w") as f:
+                    np.savetxt(f, self.env.saved_data)
+
                 
                 n_layers = self.n_layers
                 loss_fig, loss_ax = plt.subplots(nrows = n_layers)
@@ -937,8 +1031,9 @@ class HPPOTrainer:
                 loss_ax[-1].set_xlabel("Episode number")
                 loss_fig.savefig(os.path.join(self.root_dir, "running_mats.png"))
 
+
                 with open(os.path.join(self.root_dir, "best_states.pkl"), "wb") as f:
-                    pickle.dump(best_states, f)
+                    pickle.dump(self.best_states, f)
 
                 
                 # Print episode information
@@ -949,15 +1044,62 @@ class HPPOTrainer:
                     t_opt_value = self.env.compute_state_value(state, return_separate=True)
                     ax.set_title(f"Reward: {episode_reward}, val: {t_opt_value}")
                     fig.savefig(os.path.join(self.root_dir,  "states", f"episode_{episode}.png"))
+
                 
 
         print("Max_state: ", max_reward)
         print(max_state)
 
-        return self.rewards, max_state
+        return rewards, max_state
+    
+
+    def init_pareto_front(self,n_solutions=1000):
+        """initialise a set of samples randomly and compute the pareto front from these samples.
+
+        Args:
+            n_solutions (int, optional): _description_. Defaults to 1000.
+        """
+        #sol_states, sol_rewards, sol_weights, sol_vals = self.generate_solutions(n_solutions, random_weights=True)
+
+        sol_states = []
+        sol_vals = {"reflectivity": [], "thermal_noise": [], "absorption": [], "thickness": []}
+        for i in range(n_solutions):
+            state = self.env.sample_state_space(random_material=True)
+            new_reflectivity, new_thermal_noise, new_E_integrated, new_total_thickness = self.env.compute_state_value(state, return_separate=True)
+            _,_, rewards = self.env.select_reward(
+                new_reflectivity, 
+                new_thermal_noise, 
+                new_total_thickness, 
+                new_E_integrated, 
+                weights=None)
+            for key in sol_vals.keys():
+                sol_vals[key].append(rewards[key])
+    
+
+        vals = np.array([sol_vals[key] for key in self.env.optimise_parameters]).T
+
+    
+        # Perform non-dominated sorting
+        nds = NonDominatedSorting()
+        fronts = nds.do(vals)
+
+        # Extract the updated Pareto front (the first front)
+        self.env.pareto_front = vals[fronts[0]]
+
+        self.env.reference_point = np.max(self.env.pareto_front, axis=0)*1.1
+        
 
 
-    def generate_solutions(self, n_solutions):
+    def generate_solutions(self, n_solutions, random_weights=True):
+        """Generate a set of solutions by sampling the environment and using the agent to select actions.
+
+        Args:
+            n_solutions (_type_): _description_
+            random_weights (bool, optional): _description_. Defaults to True.
+
+        Returns:
+            _type_: _description_
+        """
         self.agent.load_networks(self.root_dir)
 
         all_rewards = []
@@ -965,9 +1107,24 @@ class HPPOTrainer:
         all_states = []
         all_vals = []
         weights = []
+        if not random_weights:
+            num_points = int((n_solutions) ** (1 / self.agent.num_objectives))
+            objweights = np.array(np.meshgrid(*[np.linspace(0, 1, num_points) for _ in range(self.agent.num_objectives)]))
+            objweights = objweights.reshape(self.agent.num_objectives, -1).T
+            objweights = np.round(objweights / objweights.sum(axis=1, keepdims=True), 2)
+            objweights = np.unique(objweights, axis=0)
+            objweights = objweights[~np.isnan(objweights).any(axis=1)]
+   
+
         for n in range(n_solutions):
+
             state = self.env.reset()
-            objective_weights = self.env.sample_reward_weights()
+            if random_weights:
+                objective_weights = self.env.sample_reward_weights()
+            else:
+                objective_weights = objweights[n]
+                if n >= len(objweights):
+                    break
             for t in range(100):
                 # Select action
                 obs = self.env.get_observation_from_state(state)
@@ -977,7 +1134,7 @@ class HPPOTrainer:
                     obs = state
                 t = np.array([t])
 
-                objective_weights_tensor = torch.tensor(objective_weights).unsqueeze(0)
+                objective_weights_tensor = torch.tensor(objective_weights).unsqueeze(0).to(torch.float32)
                 
                 action, actiond, actionc, log_prob_discrete, log_prob_continuous, d_prob, c_means, c_std, value, entropy_discrete, entropy_continuous = self.agent.select_action(
                     obs, 
@@ -998,7 +1155,7 @@ class HPPOTrainer:
             all_states.append(next_state)
             weights.append(objective_weights)
             all_vals.append(vals)
-            best_states = self.update_best_states(state, rewards, best_states, max_length=20)
+            #best_states = self.update_best_states(state, rewards, best_states, max_length=20)
 
         return all_states, all_rewards, weights, all_vals
 

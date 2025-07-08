@@ -18,6 +18,7 @@ import argparse
 from pymoo.core.problem import ElementwiseProblem
 from pymoo.core.variable import Real, Integer, Choice, Binary
 from pymoo.algorithms.moo.nsga2 import NSGA2
+from pymoo.algorithms.moo.nsga3 import NSGA3
 from pymoo.algorithms.moo.moead import MOEAD
 from pymoo.util.ref_dirs import get_reference_directions
 from pymoo.core.mixed import MixedVariableGA
@@ -134,14 +135,21 @@ if __name__ == '__main__':
         #algorithm = GA(
         #    pop_size=1000,
         #    eliminate_duplicates=True,)
+
+    elif config.get("General", "algorithm") == "NSGA3":
+        ref_dirs = get_reference_directions("uniform", len(config.get("Data", "optimise_parameters")), n_partitions=1000)
+        algorithm = NSGA3(pop_size=4000, ref_dirs=ref_dirs, eliminate_duplicates=True)
+        #algorithm = GA(
+        #    pop_size=1000,
+        #    eliminate_duplicates=True,)
     
     elif config.get("General", "algorithm") == "MOEAD":
-        ref_dirs = get_reference_directions("uniform", len(config.get("Data", "optimise_parameters")), n_partitions=1000)
+        ref_dirs = get_reference_directions("uniform", len(config.get("Data", "optimise_parameters")), n_partitions=5000)
 
         algorithm = MOEAD(
             ref_dirs,
-            n_neighbors=10000,
-            prob_neighbor_mating=0.7,
+            n_neighbors=20000,
+            prob_neighbor_mating=0.6,
         )
 
     #algorithm = MixedVariableGA(pop_size=50, survival=RankAndCrowdingSurvival())

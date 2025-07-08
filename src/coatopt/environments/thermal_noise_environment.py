@@ -219,7 +219,7 @@ class CoatingStack():
         alpha = base_alpha + (final_alpha - base_alpha) * progress
 
         # Dirichlet concentration vector: same alpha for both objectives
-        concentration = [alpha, alpha]
+        concentration = [alpha,] * len(self.optimise_parameters)
         
         weights = np.random.dirichlet(concentration, size=num_samples)
         # Replace rows with NaN or Inf with [1, 0] or [0, 1] randomly
@@ -249,7 +249,7 @@ class CoatingStack():
 
         if t < total_steps:
             cycle_pos = t % T_cycle
-            class_idx = cycle_pos // phase_steps
+            class_idx = (cycle_pos // phase_steps) % N  # Ensure class_idx is always in 0..N-1
             pos_in_phase = cycle_pos % phase_steps
 
             if pos_in_phase < T_hold:
@@ -300,13 +300,17 @@ class CoatingStack():
             #T_cycle = self.final_weight_epoch//(N*self.n_weight_cycles)
             T_hold = 0.75*self.final_weight_epoch/(N*self.n_weight_cycles)
             T_cycle = self.final_weight_epoch//(self.n_weight_cycles)
-            weights = self.smooth_cycle_weights(epoch, N=2, T_cycle=T_cycle, T_hold=T_hold, total_steps=self.final_weight_epoch)
+            weights = self.smooth_cycle_weights(epoch, N=len(self.optimise_parameters), T_cycle=T_cycle, T_hold=T_hold, total_steps=self.final_weight_epoch)
             weights = np.tile(weights, (num_samples, 1))
-        else:
+        elif self.cycle_weights == "annealed_random":
             if epoch is not None:
                 weights = self.annealed_dirichlet_weights(epoch, self.final_weight_epoch, base_alpha=self.start_weight_alpha, final_alpha=self.final_weight_alpha, num_samples=10)
             else:
                 weights = np.random.dirichlet(alpha=np.ones(N), size=num_samples)
+        elif self.cycle_weights == "random":
+            weights = np.random.dirichlet(alpha=np.ones(N), size=num_samples)
+        else:
+            raise ValueError(f"Unknown cycle_weights type: {self.cycle_weights}")
         #weights2 = []
         #for key in self.optimise_parameters:
         #    weights2.append(np.random.uniform(self.optimise_weight_ranges[key][0],self.optimise_weight_ranges[key][1]))

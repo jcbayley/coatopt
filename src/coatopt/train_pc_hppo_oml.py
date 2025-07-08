@@ -87,7 +87,10 @@ if __name__ == "__main__":
             air_material_index=env.air_material_index,
             ignore_air_option=config.get("Data", "ignore_air_option"),
             ignore_substrate_option=config.get("Data", "ignore_substrate_option"),
-            num_objectives=len(config.get("Data", "optimise_parameters"))
+            num_objectives=len(config.get("Data", "optimise_parameters")),
+            beta_start=config.get("Training", "entropy_beta_start"),
+            beta_end=config.get("Training", "entropy_beta_end"),
+            beta_decay_length=config.get("Training", "entropy_beta_decay_length"),
             )
  
     
