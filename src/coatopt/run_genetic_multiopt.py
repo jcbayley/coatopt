@@ -131,14 +131,24 @@ if __name__ == '__main__':
     coating_problem = CoatingMoo(env)
     
     if config.get("General", "algorithm") == "NSGA2":
-        algorithm = NSGA2(pop_size=4000, )
+        algorithm = NSGA2(
+            pop_size=4000, 
+            sampling=FloatRandomSampling(),
+            crossover=SBX(prob=0.9, eta=30),
+            mutation=PM(prob=0.1, eta=30),
+            eliminate_duplicates=True,
+            survival=RankAndCrowdingSurvival(),
+            )
         #algorithm = GA(
         #    pop_size=1000,
         #    eliminate_duplicates=True,)
 
     elif config.get("General", "algorithm") == "NSGA3":
-        ref_dirs = get_reference_directions("uniform", len(config.get("Data", "optimise_parameters")), n_partitions=1000)
-        algorithm = NSGA3(pop_size=4000, ref_dirs=ref_dirs, eliminate_duplicates=True)
+        ref_dirs = get_reference_directions("uniform", len(config.get("Data", "optimise_parameters")), n_partitions=3000)
+        algorithm = NSGA3(pop_size=4000, 
+            sampling=FloatRandomSampling(),
+            ref_dirs=ref_dirs, 
+            eliminate_duplicates=True)
         #algorithm = GA(
         #    pop_size=1000,
         #    eliminate_duplicates=True,)

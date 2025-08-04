@@ -309,6 +309,23 @@ class CoatingStack():
                 weights = np.random.dirichlet(alpha=np.ones(N), size=num_samples)
         elif self.cycle_weights == "random":
             weights = np.random.dirichlet(alpha=np.ones(N), size=num_samples)
+        elif self.cycle_weights == "linear":
+            # Create an N-dimensional grid of weights (each dimension from 0 to 1, sum to 1)
+            # For simplicity, use a discretization step
+            steps = 5  # Number of steps per dimension (increase for finer grid)
+            grid_axes = [np.linspace(0, 1, steps) for _ in range(N)]
+            mesh = np.meshgrid(*grid_axes)
+            flat = [m.flatten() for m in mesh]
+            weight_grid = np.stack(flat, axis=-1)
+            # Only keep weights that sum to 1 (within a tolerance)
+            weight_grid = weight_grid[np.isclose(weight_grid.sum(axis=1), 1.0)]
+            # Iterate through the grid
+            # Keep the index the same for self.n_weight_cycles epochs, then increment by one
+            index = (epoch // self.n_weight_cycles) % len(weight_grid)
+            
+            weights = [weight_grid[index]]  # For compatibility with the rest of the function
+            #print(np.shape(weight_grid), weights)
+
         else:
             raise ValueError(f"Unknown cycle_weights type: {self.cycle_weights}")
         #weights2 = []

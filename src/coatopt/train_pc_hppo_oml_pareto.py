@@ -129,7 +129,8 @@ if __name__ == "__main__":
         beta_decay_start=config.get("Training", "entropy_beta_decay_start"),
         scheduler_start=config.get("Training", "scheduler_start"),
         scheduler_end=config.get("Training", "scheduler_end"),
-        continue_training=continue_training
+        continue_training=continue_training,
+        weight_network_save=config.get("Training", "weight_network_save"),
     )
 
     trainer.init_pareto_front(n_solutions=config.get("Training", "n_init_solutions"))

@@ -231,6 +231,7 @@ class PCHPPO(object):
         self.lr_value = lr_value
         self.disc_lr_policy = disc_lr_policy
         self.cont_lr_policy = cont_lr_policy
+
         if optimiser == "adam":
             self.optimiser_discrete = torch.optim.Adam(self.policy_discrete.parameters(), lr=self.disc_lr_policy)
             self.optimiser_continuous = torch.optim.Adam(self.policy_continuous.parameters(), lr=self.cont_lr_policy)
@@ -242,6 +243,7 @@ class PCHPPO(object):
         else:
             raise Exception(f"Optimiser not supported: {optimiser}")
         
+        self.lr_step = lr_step
         if type(lr_step) in [list, tuple]:
             lr_step_discrete, lr_step_continuous, lr_step_value = lr_step
         else:
@@ -631,7 +633,8 @@ class HPPOTrainer:
             use_obs=True,
             scheduler_start=0,
             scheduler_end=np.inf,
-            continue_training=False
+            continue_training=False,
+            weight_network_save=False
             ):
         self.agent = agent
         self.env = env
@@ -644,6 +647,13 @@ class HPPOTrainer:
         self.beta_decay_start = beta_decay_start
         self.n_training_epochs = n_training_epochs
         self.use_obs = use_obs
+        self.weight_network_save = weight_network_save
+
+        if self.weight_network_save:
+            self.network_weights_dir = os.path.join(self.root_dir, "network_weights")
+            if not os.path.exists(self.network_weights_dir):
+                os.makedirs(self.network_weights_dir)
+            
 
         self.scheduler_start = scheduler_start
         self.scheduler_end = n_iterations if scheduler_end == -1 else scheduler_end
@@ -931,6 +941,7 @@ class HPPOTrainer:
                 if episode_reward > max_reward:
                     max_reward = episode_reward
                     max_state = state
+                    """
                     opt_value = self.env.compute_state_value(max_state, return_separate=True)
                     fig, ax = self.env.plot_stack(max_state)
                     ax.set_title(f"Optimal rew: {max_reward}, opt val: {opt_value}")
@@ -939,6 +950,7 @@ class HPPOTrainer:
                     with open(os.path.join(self.root_dir,  f"best_state.txt"), "w") as f:
                         np.savetxt(f, max_state)
                     self.agent.save_networks(self.root_dir)
+                    """
 
                 returns = self.agent.get_returns(t_rewards)
                 self.agent.replay_buffer.update_returns(returns)
@@ -949,6 +961,17 @@ class HPPOTrainer:
             all_stds.append(stds)
             all_mats.append(mats)
 
+            if self.weight_network_save:
+                if (episode + 1) % self.agent.lr_step == 0:
+                    weights_str = "_".join([str(round(float(w), 3)) for w in objective_weights])
+                    fname = os.path.join(self.network_weights_dir, f"weights_{weights_str}.pt")
+                    torch.save({
+                        "discrete_policy": self.agent.policy_discrete.state_dict(),
+                        "continuous_policy": self.agent.policy_continuous.state_dict(),
+                        "value": self.agent.value.state_dict(),
+                        "objective_weights": objective_weights,
+                        "weights":objective_weights
+                    }, fname)
 
             if episode > 10:
                 loss1, loss2, loss3 = self.agent.update(update_policy=True, update_value=True)
@@ -1002,7 +1025,7 @@ class HPPOTrainer:
                 if not os.path.isdir(os.path.join(self.root_dir, "pareto_fronts")):
                     os.makedirs(os.path.join(self.root_dir, "pareto_fronts"))
 
-            
+                """
                 fig, ax = plt.subplots()
                 ax.plot(self.env.pareto_front[:, 0], self.env.pareto_front[:, 1], 'o')
                 ax.set_xlabel("Reflectivity")
@@ -1011,6 +1034,7 @@ class HPPOTrainer:
                 ax.set_xscale("log")
                 fig.savefig(os.path.join(self.root_dir, "pareto_fronts", f"pareto_front_it{episode}.png"))
                 plt.close(fig)
+                """
                 with open(os.path.join(self.root_dir, "pareto_fronts", f"pareto_front_it{episode}.txt"), "wb") as f:
                     np.savetxt(f, self.env.pareto_front, header="Reflectivity, Absorption")
 
