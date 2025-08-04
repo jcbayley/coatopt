@@ -1,34 +1,100 @@
-This repo contains a set of algorithms to design coating stacks for gravitational wave detectors mirror coatings. There is a mixture of reinforcement learning, genetic algorithms and mcmc methods which are compared.
+# CoatOpt: Multi-Objective Coating Optimization
 
-There are a number of available algorithms to run
- - DQN
- - HPPO
- - HPPO OML ** recommended **
- - genetic algorithm
- - MCMC
+A reinforcement learning framework for optimizing gravitational wave detector mirror coatings using PC-HPPO (Parameter Constrained Hybrid Proximal Policy Optimization).
+Taken ideas from https://iopscience.iop.org/article/10.1088/2632-2153/abc327, https://arxiv.org/abs/1903.01344 and 
+## Overview
 
-Installation
+CoatOpt uses multi-objective reinforcement learning to design optimal coating stacks that simultaneously optimize:
+- **Reflectivity**: Maximize mirror reflectance
+- **Thermal Noise**: Minimize Brownian thermal noise
+- **Absorption**: Minimize optical absorption
 
-Create a conda environment for this project (or any other environment of your choosing). Its only been tested on python 3.11
+The algorithm maintains a Pareto front of non-dominated solutions, allowing exploration of trade-offs between competing objectives.
+
+## Installation
+
+Create a conda environment (tested on Python 3.11):
 
 ```bash
-conda create -n coatings_optimisation python=3.11
+conda create -n coatopt python=3.11
+conda activate coatopt
 ```
+
+Install the package:
 
 ```bash
-    $pip install .
-``` 
-
-Run instructions (for HPPO OML)
-
-```bash 
-    $python -m coatopt.train_hppo_oml -c ./config.ini --train
+pip install .
 ```
 
-There are example configs in the /examples/ folder, this also includes the choice of materials in a json file. The above script will then put a set of outputs into the chosen root directory in the config file
+## Quick Start
 
-You should see an evolution of the reward and values similar to below
-![rewards](https://raw.githubusercontent.com/jcbayley/coatopt/refs/heads/main/examples/running_values.png)
+### Training a Model
 
-Where the optimal coating stack from this run looks like:
-![rewards](https://raw.githubusercontent.com/jcbayley/coatopt/refs/heads/main/examples/best_state.png)
+Train the PC-HPPO-OML algorithm for multi-objective Pareto optimization:
+
+```bash
+python -m coatopt.train_pc_hppo_oml_pareto -c src/coatopt/config/default.ini --train
+```
+
+### Testing/Evaluation
+
+Generate solutions using a trained model:
+
+```bash
+python -m coatopt.train_pc_hppo_oml_pareto -c src/coatopt/config/default.ini --test -n 1000
+```
+
+### Continue Training
+
+Resume training from a checkpoint:
+
+```bash
+python -m coatopt.train_pc_hppo_oml_pareto -c src/coatopt/config/default.ini --train --continue-training
+```
+
+## Configuration
+
+Key parameters in `default.ini`:
+
+**Data Section:**
+- `n_layers`: Number of coating layers (default: 8)
+- `optimise_parameters`: Objectives to optimize (reflectivity, thermal_noise, absorption)
+- `min_thickness`/`max_thickness`: Layer thickness bounds
+
+**Network Section:**
+- `pre_network_type`: Feature extraction network (lstm, linear, attn)
+- `hidden_size`: Network hidden dimensions
+- `hyper_networks`: Enable hypernetwork architecture
+
+**Training Section:**
+- `n_iterations`: Training iterations (default: 8000)
+- `lr_*_policy`: Learning rates for discrete/continuous policies
+- `clip_ratio`: PPO clipping parameter
+
+## Outputs
+
+Training generates:
+- **Training metrics**: `training_metrics.csv` with loss, reward, and objective values
+- **Pareto fronts**: Non-dominated solutions at each iteration
+- **Visualizations**: Reward plots, coating stack diagrams, Pareto front plots
+- **Model checkpoints**: Trained neural network weights
+- **HDF5 results**: Complete evaluation results for analysis
+
+## Algorithm Details
+
+PC-HPPO-OML uses:
+- **Hierarchical action space**: Discrete material selection + continuous thickness
+- **Multi-objective rewards**: Dynamic weight cycling to explore Pareto front
+- **Pareto front maintenance**: Non-dominated sorting to find pareto front
+- **LSTM pre-networks**: Sequential processing of coating layer information
+- **PPO updates**: Stable policy gradient optimization with clipping
+
+## Requirements
+
+Core dependencies:
+- `torch`: Neural networks
+- `numpy`, `scipy`: Numerical computation  
+- `tmm`, `tmm_fast`: Transfer Matrix Method for optics
+- `matplotlib`: Visualization
+- `pandas`: Data handling
+- `pymoo`: Multi-objective optimization utilities
