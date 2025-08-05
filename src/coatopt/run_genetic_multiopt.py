@@ -180,7 +180,19 @@ if __name__ == '__main__':
 
     df = pd.DataFrame(all_pop.get("X"), columns=[f"X{i+1}" for i in range(coating_problem.n_var)])
 
-    rewards_comp, vals_comp, _ = coating_reward_function.reward_function(all_pop.get("F")[:, 0], None, None, all_pop.get("F")[:, 1], env.optimise_parameters, env.optimise_targets, combine="product", neg_reward=-1e3, weights=None)
+    F0 = all_pop.get("F")[:, 0]
+    F1 = all_pop.get("F")[:, 1]
+    rewards_comp, vals_comp, _ = coating_reward_function.reward_function(
+        F0,
+        None,
+        None,
+        F1,
+        env.optimise_parameters,
+        env.optimise_targets,
+        combine="product",
+        neg_reward=-1e3,
+        weights=None
+    )
 
     rfs = []
     abs = []
