@@ -22,6 +22,7 @@ class GeneticCoatingStack(CoatingStack):
             reflectivity_reward_shape="none",
             thermal_reward_shape="log_thermal_noise",
             absorption_reward_shape="log_absorption",
+            reward_func="default",
             use_intermediate_reward=False,
             ignore_air_option=False,
             ignore_substrate_option=False,
@@ -66,7 +67,8 @@ class GeneticCoatingStack(CoatingStack):
             light_wavelength=light_wavelength,
             include_random_rare_state=include_random_rare_state,
             use_optical_thickness=use_optical_thickness,
-            combine=combine)
+            combine=combine,
+            reward_func=reward_func,)
 
     
     def sample_state_space(self, ):

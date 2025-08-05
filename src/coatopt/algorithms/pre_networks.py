@@ -111,12 +111,17 @@ class PreNetworkLSTM(torch.nn.Module):
             lower_bound=0, 
             upper_bound=1,
             include_layer_number=False,
-            n_layers=2):
+            n_layers=2,
+            weight_dim=None):
         super(PreNetworkLSTM, self).__init__()
         self.output_dim = output_dim
         self.lower_bound = lower_bound
         self.upper_bound = upper_bound
         self.include_layer_number = include_layer_number
+        self.weight_dim = weight_dim
+
+        if self.weight_dim is not None:
+            self.embedding = torch.nn.Linear(self.weight_dim, input_dim)
         
         # LSTM layer
         self.lstm = torch.nn.LSTM(input_dim, hidden_dim, batch_first=True, num_layers = n_layers)
@@ -127,9 +132,18 @@ class PreNetworkLSTM(torch.nn.Module):
 
         self.output = torch.nn.Linear(hidden_dim, output_dim)
 
-    def forward(self, x, layer_number=None, packed=False):
+    def forward(self, x, layer_number=None, packed=False, weights = None):
         # x shape: (B, N, I)
         
+        if self.weight_dim is not None and weights is not None:
+            # If weights are provided, apply embedding
+            if packed:
+                x, lengths = pad_packed_sequence(x, batch_first=True)
+                x = x + self.embedding(weights).unsqueeze(1).expand_as(x)
+                x = torch.nn.utils.rnn.pack_padded_sequence(x, lengths, batch_first=True, enforce_sorted=False)
+            else:
+                x = x + self.embedding(weights).unsqueeze(1).expand_as(x)
+
         # LSTM expects input shape (B, N, I) and we use batch_first=True
         lstm_out, (h_n, c_n) = self.lstm(x)  # lstm_out shape: (B, N, hidden_dim)
 

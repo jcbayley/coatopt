@@ -1,7 +1,7 @@
 import torch
 import numpy as np
 from .coating_utils import getCoatAbsorption, getCoatNoise2, getCoatRefl2, merit_function, merit_function_2
-from .coating_reward_function import reward_function
+from .coating_reward_function import reward_function, reward_function_target, reward_function_raw, reward_function_log_minimise
 import time
 import scipy
 from tmm import coh_tmm
@@ -22,15 +22,22 @@ class CoatingStack():
             reflectivity_reward_shape="none",
             thermal_reward_shape="log_thermal_noise",
             absorption_reward_shape="log_absorption",
+            reward_func="default",
             use_intermediate_reward=False,
             ignore_air_option=False,
             ignore_substrate_option=False,
             use_ligo_reward=False,
             optimise_parameters = ["reflectivity", "thermal_noise", "absorption","thickness"],
             optimise_targets = {"reflectivity":0.99999, "thermal_noise":5.394480540642821e-21, "absorption":0.01, "thickness":0.1},
+            optimise_weight_ranges = {"reflectivity":[0,1], "thermal_noise":[0,1], "absorption":[0,1], "thickness":[0,1]},
             light_wavelength=1064e-9,
             include_random_rare_state=False,
             use_optical_thickness=True,
+            final_weight_epoch = 1,
+            start_weight_alpha = 1.0,
+            final_weight_alpha = 1.0,
+            cycle_weights=False,
+            n_weight_cycles=2,
             combine="product"):
         """_summary_
 
@@ -53,6 +60,13 @@ class CoatingStack():
         self.air_material_index = air_material_index
         self.substrate_material_index = substrate_material_index
         self.combine=combine
+        self.optimise_weight_ranges = optimise_weight_ranges
+        self.reward_func = reward_func
+        self.final_weight_epoch = final_weight_epoch
+        self.start_weight_alpha = start_weight_alpha
+        self.final_weight_alpha = final_weight_alpha
+        self.cycle_weights = cycle_weights
+        self.n_weight_cycles = n_weight_cycles
 
         self.opt_init = opt_init
         self.reflectivity_reward_shape = reflectivity_reward_shape
@@ -173,18 +187,155 @@ class CoatingStack():
 
         return opt_state2
     
-    def get_air_only_state(self,):
+    def get_air_only_state(self,n_layers = None):
         """return air with a thickness of 1
 
         Returns:
             _type_: _description_
         """
-        layers = np.zeros((self.max_layers, self.n_materials + 1))
+        if n_layers is None:
+            n_layers = self.max_layers
+        layers = np.zeros((n_layers, self.n_materials + 1))
         layers[:,self.air_material_index+1] = 1
         layers[:,0] = self.min_thickness*np.ones(len(layers[:,0]))
         return layers
+
+    def annealed_dirichlet_weights(self, epoch, total_epochs, base_alpha=0.05, final_alpha=1.0, num_samples=10):
+        """
+        Sample preference weights from an annealed Dirichlet distribution.
+        
+        Parameters:
+        - epoch: current training epoch
+        - total_epochs: total number of epochs
+        - base_alpha: initial concentration (low -> extreme weights)
+        - final_alpha: final concentration (higher -> uniform weights)
+        - num_samples: number of weight vectors to sample
+        
+        Returns:
+        - weights: List of sampled 2D weight vectors summing to 1
+        """
+        # Annealing factor: linear schedule (can be nonlinear if desired)
+        progress = np.min([epoch / total_epochs, 1])
+        alpha = base_alpha + (final_alpha - base_alpha) * progress
+
+        # Dirichlet concentration vector: same alpha for both objectives
+        concentration = [alpha,] * len(self.optimise_parameters)
+        
+        weights = np.random.dirichlet(concentration, size=num_samples)
+        # Replace rows with NaN or Inf with [1, 0] or [0, 1] randomly
+        mask = np.isnan(weights).any(axis=1) | np.isinf(weights).any(axis=1)
+        random_choices = np.random.choice([0, 1], size=mask.sum())
+        weights[mask] = np.column_stack((random_choices, 1 - random_choices))
+        return weights
     
-    def sample_state_space(self, ):
+    def smooth_cycle_weights(self, t, N, T_cycle, T_hold, total_steps, random_anneal = True):
+        """
+        Generate smooth cyclic weights for N classes.
+        At each cycle, the weight is held at [1, 0, ..., 0], [0, 1, ..., 0], etc. for T_hold steps.
+        In between, smooth transitions are applied over the remaining steps.
+        
+        Args:
+            N: Number of classes
+            T_cycle: Total steps for one full cycle through all classes (T_hold * N + transition steps)
+            T_hold: Number of steps to hold each one-hot vector
+            total_steps: Total steps to generate
+
+        Returns:
+            weights: A (total_steps x N) numpy array of weights over time
+        """
+        weights = np.zeros(N)
+        phase_steps = T_cycle // N  # steps per class phase
+        T_transition = phase_steps - T_hold  # transition steps between classes
+
+        if t < total_steps:
+            cycle_pos = t % T_cycle
+            class_idx = (cycle_pos // phase_steps) % N  # Ensure class_idx is always in 0..N-1
+            pos_in_phase = cycle_pos % phase_steps
+
+            if pos_in_phase < T_hold:
+                # Hold one-hot
+                weights[class_idx] = 1.0
+            else:
+                # Transition between class_idx and next class
+                next_idx = (class_idx + 1) % N
+                alpha = (pos_in_phase - T_hold) / T_transition  # [0,1]
+                weights[class_idx] = 1.0 - alpha
+                weights[next_idx] = alpha
+
+        if t >= total_steps:
+            if random_anneal:
+                weights = self.annealed_dirichlet_weights(self.final_weight_epoch, self.final_weight_epoch, base_alpha=self.start_weight_alpha, final_alpha=self.final_weight_alpha, num_samples=1)
+            else:
+                weights = np.ones(N)/N
+
+        return weights
+    
+    def sample_reward_weights(self,num_samples=1, epoch=None):
+        """sample weights for the reward function
+
+        Args:
+            n_weights (_type_): _description_
+
+        Returns:
+            _type_: _description_
+        """
+        N = len(self.optimise_parameters)
+        if self.cycle_weights == "step":
+            if epoch is not None:
+                progress = np.min([epoch / self.final_weight_epoch, 1])
+                if progress < 0.25:
+                    weights = np.array([[1, 0]] * num_samples)
+                elif progress < 0.5:
+                    weights = np.array([[0, 1]] * num_samples)
+                elif progress < 0.75:
+                    weights = np.array([[1, 0]] * num_samples)
+                elif progress < 1.0:
+                    weights = np.array([[0, 1]] * num_samples)
+                else:
+                    weights = self.annealed_dirichlet_weights(epoch, 2*self.final_weight_epoch, base_alpha=self.start_weight_alpha, final_alpha=self.final_weight_alpha, num_samples=num_samples)
+            else:
+                weights = np.array([[0.5,0.5]] * num_samples)
+        elif self.cycle_weights == "smooth":
+            #T_hold = int(0.75*self.final_weight_epoch // (N*self.n_weight_cycles))
+            #T_cycle = self.final_weight_epoch//(N*self.n_weight_cycles)
+            T_hold = 0.75*self.final_weight_epoch/(N*self.n_weight_cycles)
+            T_cycle = self.final_weight_epoch//(self.n_weight_cycles)
+            weights = self.smooth_cycle_weights(epoch, N=len(self.optimise_parameters), T_cycle=T_cycle, T_hold=T_hold, total_steps=self.final_weight_epoch)
+            weights = np.tile(weights, (num_samples, 1))
+        elif self.cycle_weights == "annealed_random":
+            if epoch is not None:
+                weights = self.annealed_dirichlet_weights(epoch, self.final_weight_epoch, base_alpha=self.start_weight_alpha, final_alpha=self.final_weight_alpha, num_samples=10)
+            else:
+                weights = np.random.dirichlet(alpha=np.ones(N), size=num_samples)
+        elif self.cycle_weights == "random":
+            weights = np.random.dirichlet(alpha=np.ones(N), size=num_samples)
+        elif self.cycle_weights == "linear":
+            # Create an N-dimensional grid of weights (each dimension from 0 to 1, sum to 1)
+            # For simplicity, use a discretization step
+            steps = 5  # Number of steps per dimension (increase for finer grid)
+            grid_axes = [np.linspace(0, 1, steps) for _ in range(N)]
+            mesh = np.meshgrid(*grid_axes)
+            flat = [m.flatten() for m in mesh]
+            weight_grid = np.stack(flat, axis=-1)
+            # Only keep weights that sum to 1 (within a tolerance)
+            weight_grid = weight_grid[np.isclose(weight_grid.sum(axis=1), 1.0)]
+            # Iterate through the grid
+            # Keep the index the same for self.n_weight_cycles epochs, then increment by one
+            index = (epoch // self.n_weight_cycles) % len(weight_grid)
+            
+            weights = [weight_grid[index]]  # For compatibility with the rest of the function
+            #print(np.shape(weight_grid), weights)
+
+        else:
+            raise ValueError(f"Unknown cycle_weights type: {self.cycle_weights}")
+        #weights2 = []
+        #for key in self.optimise_parameters:
+        #    weights2.append(np.random.uniform(self.optimise_weight_ranges[key][0],self.optimise_weight_ranges[key][1]))
+
+        #print(weights, weights2)
+        return weights[0]#/np.sum(weights)
+    
+    def sample_state_space(self, random_material=False):
         """return air with a thickness of 1
 
         Returns:
@@ -196,6 +347,12 @@ class CoatingStack():
             layers = np.zeros((self.max_layers, self.n_materials + 1))
             layers[:,self.air_material_index+1] = 1
             layers[:,0] = np.random.uniform(self.min_thickness, self.max_thickness, size=len(layers[:,0]))
+
+        if random_material:
+            for layer_ind in range(len(layers)):
+                material = np.random.randint(1, self.n_materials)
+                layers[layer_ind][material+1] = 1
+                layers[layer_ind][self.air_material_index+1] = 0
         return layers
 
     def sample_action_space(self, ):
@@ -235,14 +392,17 @@ class CoatingStack():
             _type_: _description_
         """
         # trim out the duplicate air layers and inverse order
-        state_trim = self.get_air_only_state()
+        state_trim = self.get_air_only_state(n_layers = len(state))
+        trimind = -1
         for ind, layer in enumerate(state):
             material_ind = np.argmax(layer[1:])
             if material_ind == self.air_material_index:
+                trimind = ind
                 break
             else:
                 state_trim[ind] = layer
         
+        state_trim = state_trim[:trimind]
         if len(state_trim) == 0:
             state_trim = np.array([[self.min_thickness, 0, 1, 0], ])
 
@@ -274,8 +434,10 @@ class CoatingStack():
 
         
         # trim out the duplicate air layers and inverse order
-        state_trim = self.trim_state(state[::-1])
-        
+        state_trim = self.trim_state(state)
+        # reverse state
+        state_trim = state_trim[::-1]
+    
 
         r, thermal_noise, e_integrated, total_thickness = merit_function(
             np.array(state_trim),
@@ -389,7 +551,53 @@ class CoatingStack():
     def sigmoid(self, x, mean=0.5, a=0.01):
         return 1/(1+np.exp(-a*(x-mean)))
     
-    def compute_reward(self, new_state, max_value=0.0, target_reflectivity=1.0):
+    def select_reward(self, new_reflectivity, new_thermal_noise, new_total_thickness, new_E_integrated, weights=None):
+        if self.reward_func == "default":
+            total_reward, vals, rewards = reward_function(
+                new_reflectivity, 
+                new_thermal_noise, 
+                new_total_thickness, 
+                new_E_integrated, 
+                self.optimise_parameters, 
+                self.optimise_targets, 
+                combine=self.combine, 
+                weights=weights)
+        elif self.reward_func == "target":
+            total_reward, vals, rewards = reward_function_target(
+                new_reflectivity, 
+                new_thermal_noise, 
+                new_total_thickness, 
+                new_E_integrated, 
+                self.optimise_parameters, 
+                self.optimise_targets, 
+                combine=self.combine, 
+                weights=weights)
+        elif self.reward_func == "raw":
+            total_reward, vals, rewards = reward_function_raw(
+                new_reflectivity, 
+                new_thermal_noise, 
+                new_total_thickness, 
+                new_E_integrated, 
+                self.optimise_parameters, 
+                self.optimise_targets, 
+                combine=self.combine, 
+                weights=weights)
+        elif self.reward_func == "log_targets":
+            total_reward, vals, rewards = reward_function_log_minimise(
+                new_reflectivity, 
+                new_thermal_noise, 
+                new_total_thickness, 
+                new_E_integrated, 
+                self.optimise_parameters, 
+                self.optimise_targets, 
+                combine=self.combine, 
+                weights=weights)
+        else:
+            raise Exception(f"Unknown reward function type {self.reward_func}")
+        
+        return total_reward, vals, rewards
+        
+    def compute_reward(self, new_state, max_value=0.0, target_reflectivity=1.0, objective_weights=None):
         """reward is the improvement of the state over the previous one
 
         Args:
@@ -398,85 +606,20 @@ class CoatingStack():
         """
 
         new_reflectivity, new_thermal_noise, new_E_integrated, new_total_thickness = self.compute_state_value(new_state, return_separate=True)
+        if objective_weights is not None:
+            weights = {
+                key:objective_weights[i] for i,key in enumerate(self.optimise_parameters)
+            }
+        else:
+            weights=None
 
-        total_reward, vals, rewards = reward_function(new_reflectivity, new_thermal_noise, new_total_thickness, new_E_integrated, self.optimise_parameters, self.optimise_targets, combine=self.combine)
-        """
-        vals = {
-            "reflectivity": new_reflectivity,
-            "thermal_noise": new_thermal_noise,
-            "thickness": new_total_thickness,
-            "absorption": new_E_integrated
-        }
+        total_reward, vals, rewards = self.select_reward(
+            new_reflectivity, 
+            new_thermal_noise, 
+            new_total_thickness, 
+            new_E_integrated, 
+            weights=weights)
 
-        rewards = {key:0 for key in vals}
-
-        #new_value = np.log(new_value/(1-new_value))
-        #old_value = self.compute_state_value(old_state) + 5
-        #reward_diff = 0.01/(new_value - target_reflectivity)**2
-        #reward_diff = (new_value - target_reflectivity)**2
-        #reward_diff = np.log(reward_diff/(1-reward_diff))
-        
-        if "reflectivity" in self.optimise_parameters:
-
-
-            if self.reflectivity_reward_shape == "inv_sigmoid_cut":
-                if new_reflectivity > 0.5:
-                    rewards["reflectivity"] = self.inv_sigmoid(new_reflectivity) + 0.5
-                else:
-                    rewards["reflectivity"] = new_reflectivity
-            elif self.reflectivity_reward_shape == "inv_diff":
-                rewards["reflectivity"] = 0.01/np.abs(new_reflectivity - target_reflectivity)
-            elif self.reflectivity_reward_shape == "smooth_asymptote":
-                #reward = self.smooth_reward_function(new_reflectivity, a=0.01)
-                rewards["reflectivity"] = self.smooth_reflectivity_function(new_reflectivity, a=0.01)
-            elif self.reflectivity_reward_shape == "none":
-                rewards["reflectivity"] = new_reflectivity
-            else:
-                raise Exception(f"reward shape not supported {self.reward_shape}")
-
-
-
-        if "thermal_noise" in self.optimise_parameters and new_thermal_noise is not None:
-            if self.thermal_reward_shape == "scaled_thermal_noise":
-                rewards["thermal_noise"] = self.smooth_thermal_reward(new_thermal_noise)
-            elif self.thermal_reward_shape == "log_thermal_noise":
-                rewards["thermal_noise"] = -np.log(new_thermal_noise)/10
-            else:
-                raise Exception(f"thermal noise reward shape not supported {self.thermal_reward_shape}")
-
-
-        if "thickness" in self.optimise_parameters:
-            rewards["thickeness"] = -new_total_thickness
-        
-        if "absorption" in self.optimise_parameters:
-            if self.absorption_reward_shape == "log_absorption":
-                rewards["absorption"] = -np.log(new_E_integrated)*10
-            else:
-                rewards["absorption"] = -new_E_integrated
-
-
-    
-        # design requirements shaping
-        if self.optimise_targets is not None:
-            for key in self.optimise_targets:
-                if key in self.optimise_parameters:
-                    if key in ["thermal_noise", "absorption", "thickness"]:
-                        if vals[key] < self.optimise_targets[key]:
-                            rewards[key] += 5
-                    else:
-                        continue
-
-        total_reward = np.sum([rewards[key] for key in self.optimise_parameters])
-
-        if np.any([vals["reflectivity"]<0.9, vals["absorption"] > 500, vals["thermal_noise"] > 1e-20]):
-            total_reward -= 100
-
-        # rare state shaping (not to be used outside of testing)
-        if self.include_random_rare_state:
-            total_reward += self.include_random_rare_state(new_state)
-
-        rewards["total_reward"] = total_reward
-        """
         return total_reward, vals, rewards
     
     def include_random_rare_state(self, new_state):
@@ -539,7 +682,7 @@ class CoatingStack():
 
         return np.array(observation)
 
-    def step(self, action, max_state=0, verbose=False, state=None, layer_index=None, always_return_value=False):
+    def step(self, action, max_state=0, verbose=False, state=None, layer_index=None, always_return_value=False, objective_weights=None):
         """action[0] - thickness
            action[1:N] - material probability
 
@@ -572,6 +715,11 @@ class CoatingStack():
             "absorption": 0,
             "total_reward": 0
         }
+        vals = {
+            "reflectivity": 0,
+            "thermal_noise": 0,
+            "thickness": 0,
+            "absorption": 0,}
 
         terminated = False
         finished = False
@@ -592,7 +740,7 @@ class CoatingStack():
          #print("out of thickness bounds")
             finished = True
             self.current_state = new_state
-            reward, vals, rewards = self.compute_reward(new_state, max_state)
+            reward, vals, rewards = self.compute_reward(new_state, max_state, objective_weights=objective_weights)
             #print("finished")
             #reward_diff, reward, new_value = self.compute_reward(new_state, max_state)
         #elif material == self.previous_material:
@@ -606,7 +754,7 @@ class CoatingStack():
             #reward_diff, reward, new_value = self.compute_reward(new_state, max_state)
             #self.current_state_value = reward
             if self.use_intermediate_reward:
-                reward, vals, rewards = self.compute_reward(new_state, max_state)
+                reward, vals, rewards = self.compute_reward(new_state, max_state, objective_weights=objective_weights)
         
         # was for adding an extra layer at start and end
         #if new_state[0, 4] == 1 and new_state[-1, 4] and np.all(new_state[:,4]) == False:
@@ -618,6 +766,7 @@ class CoatingStack():
             terminated = True
             new_value = neg_reward
 
+    
         self.previous_material = material
         #print(new_value)
 
@@ -627,7 +776,7 @@ class CoatingStack():
 
 
 
-        return new_state, rewards, terminated, finished, reward, full_action
+        return new_state, rewards, terminated, finished, reward, full_action, vals
 
     def plot_stack(self, data):
         #data = self.current_state
