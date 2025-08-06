@@ -140,7 +140,7 @@ The UI integrates seamlessly with existing PC-HPPO-OML workflows:
 ## Example Workflow
 
 1. **Prepare Configuration**: Create or modify existing INI file
-2. **Launch UI**: Run `python launch_ui.py`
+2. **Launch UI**: Run `coatopt-ui`
 3. **Load Config**: Browse to your INI file and load
 4. **Monitor Training**: Start training and observe real-time progress
 5. **Analyze Results**: Use generated outputs with existing analysis tools
