@@ -164,6 +164,7 @@ class TrainingConfig(BaseConfig):
     scheduler_end: int
     lr_step: int
     lr_min: float
+    t_mult: float
     
     # Pareto optimization
     n_init_solutions: int
