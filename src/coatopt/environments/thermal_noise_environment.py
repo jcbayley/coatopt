@@ -1,7 +1,7 @@
 import torch
 import numpy as np
 from .coating_utils import getCoatAbsorption, getCoatNoise2, getCoatRefl2, merit_function, merit_function_2
-from .coating_reward_function import reward_function, reward_function_target, reward_function_raw, reward_function_log_minimise
+from .coating_reward_function import reward_function, reward_function_target, reward_function_raw, reward_function_log_minimise, reward_function_area, reward_function_hypervolume
 import time
 import scipy
 from tmm import coh_tmm
@@ -22,7 +22,7 @@ class CoatingStack():
             reflectivity_reward_shape="none",
             thermal_reward_shape="log_thermal_noise",
             absorption_reward_shape="log_absorption",
-            reward_func="default",
+            reward_function=None,
             use_intermediate_reward=False,
             ignore_air_option=False,
             ignore_substrate_option=False,
@@ -30,6 +30,7 @@ class CoatingStack():
             optimise_parameters = ["reflectivity", "thermal_noise", "absorption","thickness"],
             optimise_targets = {"reflectivity":0.99999, "thermal_noise":5.394480540642821e-21, "absorption":0.01, "thickness":0.1},
             optimise_weight_ranges = {"reflectivity":[0,1], "thermal_noise":[0,1], "absorption":[0,1], "thickness":[0,1]},
+            design_criteria = {"reflectivity":0.99999, "thermal_noise":5.394480540642821e-21, "absorption":0.01},
             light_wavelength=1064e-9,
             include_random_rare_state=False,
             use_optical_thickness=True,
@@ -61,12 +62,13 @@ class CoatingStack():
         self.substrate_material_index = substrate_material_index
         self.combine=combine
         self.optimise_weight_ranges = optimise_weight_ranges
-        self.reward_func = reward_func
+        self.reward_function = reward_function
         self.final_weight_epoch = final_weight_epoch
         self.start_weight_alpha = start_weight_alpha
         self.final_weight_alpha = final_weight_alpha
         self.cycle_weights = cycle_weights
         self.n_weight_cycles = n_weight_cycles
+        self.design_criteria = design_criteria
 
         self.opt_init = opt_init
         self.reflectivity_reward_shape = reflectivity_reward_shape
@@ -552,7 +554,7 @@ class CoatingStack():
         return 1/(1+np.exp(-a*(x-mean)))
     
     def select_reward(self, new_reflectivity, new_thermal_noise, new_total_thickness, new_E_integrated, weights=None):
-        if self.reward_func == "default":
+        if self.reward_function == "default":
             total_reward, vals, rewards = reward_function(
                 new_reflectivity, 
                 new_thermal_noise, 
@@ -562,7 +564,7 @@ class CoatingStack():
                 self.optimise_targets, 
                 combine=self.combine, 
                 weights=weights)
-        elif self.reward_func == "target":
+        elif self.reward_function == "target":
             total_reward, vals, rewards = reward_function_target(
                 new_reflectivity, 
                 new_thermal_noise, 
@@ -572,7 +574,7 @@ class CoatingStack():
                 self.optimise_targets, 
                 combine=self.combine, 
                 weights=weights)
-        elif self.reward_func == "raw":
+        elif self.reward_function == "raw":
             total_reward, vals, rewards = reward_function_raw(
                 new_reflectivity, 
                 new_thermal_noise, 
@@ -582,7 +584,7 @@ class CoatingStack():
                 self.optimise_targets, 
                 combine=self.combine, 
                 weights=weights)
-        elif self.reward_func == "log_targets":
+        elif self.reward_function == "log_targets":
             total_reward, vals, rewards = reward_function_log_minimise(
                 new_reflectivity, 
                 new_thermal_noise, 
@@ -592,8 +594,26 @@ class CoatingStack():
                 self.optimise_targets, 
                 combine=self.combine, 
                 weights=weights)
+        elif self.reward_function == "area":
+            total_reward, vals, rewards = reward_function_area(
+                new_reflectivity, 
+                new_thermal_noise, 
+                new_total_thickness, 
+                new_E_integrated, 
+                self.optimise_parameters, 
+                self.optimise_targets, 
+                self)
+        elif self.reward_function == "hypervolume":
+            total_reward, vals, rewards = reward_function_hypervolume(
+                new_reflectivity, 
+                new_thermal_noise, 
+                new_total_thickness, 
+                new_E_integrated, 
+                self.optimise_parameters, 
+                self.optimise_targets, 
+                self)
         else:
-            raise Exception(f"Unknown reward function type {self.reward_func}")
+            raise Exception(f"Unknown reward function type {self.reward_function}")
         
         return total_reward, vals, rewards
         

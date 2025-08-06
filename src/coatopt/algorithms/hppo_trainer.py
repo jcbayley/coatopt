@@ -31,11 +31,11 @@ class HPPOTrainer:
         n_iterations: int = 1000,  
         n_layers: int = 4, 
         root_dir: str = "./",
-        beta_start: float = 1.0,
-        beta_end: float = 0.001,
-        beta_decay_length: Optional[int] = None,
-        beta_decay_start: int = 0,
-        n_training_epochs: int = 10,
+        entropy_beta_start: float = 1.0,
+        entropy_beta_end: float = 0.001,
+        entropy_beta_decay_length: Optional[int] = None,
+        entropy_beta_decay_start: int = 0,
+        n_epochs_per_update: int = 10,
         use_obs: bool = True,
         scheduler_start: int = 0,
         scheduler_end: int = np.inf,
@@ -51,11 +51,11 @@ class HPPOTrainer:
             n_iterations: Number of training iterations
             n_layers: Number of layers in coating
             root_dir: Root directory for outputs
-            beta_start: Initial entropy coefficient
-            beta_end: Final entropy coefficient
-            beta_decay_length: Entropy decay length
-            beta_decay_start: Episode to start entropy decay
-            n_training_epochs: Episodes per training iteration
+            entropy_beta_start: Initial entropy coefficient
+            entropy_beta_end: Final entropy coefficient
+            entropy_beta_decay_length: Entropy decay length
+            entropy_beta_decay_start: Episode to start entropy decay
+            n_epochs_per_update: Episodes per training iteration
             use_obs: Whether to use observations vs raw states
             scheduler_start: Episode to start learning rate scheduling
             scheduler_end: Episode to end learning rate scheduling
@@ -67,11 +67,11 @@ class HPPOTrainer:
         self.n_iterations = n_iterations
         self.root_dir = root_dir
         self.n_layers = n_layers
-        self.beta_start = beta_start
-        self.beta_end = beta_end
-        self.beta_decay_length = beta_decay_length
-        self.beta_decay_start = beta_decay_start
-        self.n_training_epochs = n_training_epochs
+        self.entropy_beta_start = entropy_beta_start
+        self.entropy_beta_end = entropy_beta_end
+        self.entropy_beta_decay_length = entropy_beta_decay_length
+        self.entropy_beta_decay_start = entropy_beta_decay_start
+        self.n_epochs_per_update = n_epochs_per_update
         self.use_obs = use_obs
         self.weight_network_save = weight_network_save
 
@@ -138,15 +138,6 @@ class HPPOTrainer:
         make_val_plot(self.metrics, self.root_dir)
         make_loss_plot(self.metrics, self.root_dir)
 
-    def update_best_states(self, state: np.ndarray, rewards: Dict[str, float]) -> None:
-        """
-        Update list of best states encountered during training.
-        
-        Args:
-            state: Coating state
-            rewards: Reward dictionary
-        """
-        self.best_states.append((state, rewards))
 
     def train(self) -> Tuple[Dict[str, float], np.ndarray]:
         """
@@ -217,7 +208,7 @@ class HPPOTrainer:
         means_list, stds_list, materials_list = [], [], []
         
         # Run multiple rollouts per episode
-        for rollout in range(self.n_training_epochs):
+        for rollout in range(self.n_epochs_per_update):
             rollout_data = self._run_single_rollout(episode)
             
             # Track rollout data
@@ -386,9 +377,14 @@ class HPPOTrainer:
             episode_metrics[f"{key}_reward"] = rewards.get(key, 0.0)
         
         # Store objective weights (use last rollout's weights)
-        episode_metrics["reflectivity_reward_weights"] = episode_data['objective_weights'][0]
-        episode_metrics["thermalnoise_reward_weights"] = episode_data['objective_weights'][1]
-        episode_metrics["absorption_reward_weights"] = episode_data['objective_weights'][2]
+        objective_weights = episode_data['objective_weights']
+        objective_names = self.env.optimise_parameters if hasattr(self.env, 'optimise_parameters') else ['reflectivity', 'thermal_noise', 'absorption']
+        
+        for i, obj_name in enumerate(objective_names):
+            if i < len(objective_weights):
+                episode_metrics[f"{obj_name}_reward_weights"] = objective_weights[i]
+            else:
+                episode_metrics[f"{obj_name}_reward_weights"] = 0.0
 
         
         # Add to metrics dataframe
@@ -420,6 +416,10 @@ class HPPOTrainer:
         # Save episode state visualization
         if episode % HPPOConstants.SAVE_INTERVAL == 0:
             self._save_episode_visualization(episode, final_state, episode_reward)
+        
+        # Save model checkpoints periodically
+        if episode % HPPOConstants.SAVE_INTERVAL == 0:
+            self._save_model_checkpoint(episode)
 
     def _save_pareto_front_data(self, episode: int) -> None:
         """Save Pareto front data."""
@@ -449,7 +449,12 @@ class HPPOTrainer:
         fig.savefig(episode_file)
         plt.close(fig)
 
-    def init_pareto_front(self, n_solutions: int = 1000) -> None:
+    def _save_model_checkpoint(self, episode: int) -> None:
+        """Save model checkpoint to output directory."""
+        print(f"Saving model checkpoint at episode {episode}")
+        self.agent.save_networks(self.root_dir, episode=episode)
+
+    def init_pareto_front(self, n_solutions: int = 5) -> None:
         """
         Initialize Pareto front with random solutions.
         
@@ -464,20 +469,24 @@ class HPPOTrainer:
             state = self.env.sample_state_space(random_material=True)
             reflectivity, thermal_noise, absorption, thickness = self.env.compute_state_value(state, return_separate=True)
             
-            _, _, rewards = self.env.select_reward(reflectivity, thermal_noise, thickness, absorption, weights=None)
-            
-            for key in sol_vals.keys():
-                sol_vals[key].append(rewards[key])
+            if self.env.reward_function in ["area", "hypervolume"]:
+                sol_vals["reflectivity"].append(reflectivity)
+                sol_vals["thermal_noise"].append(thermal_noise)
+                sol_vals["absorption"].append(absorption)
+                sol_vals["thickness"].append(thickness)
+            else:
+                _, _, rewards = self.env.select_reward(reflectivity, thermal_noise, thickness, absorption, weights=None)
+                
+                for key in sol_vals.keys():
+                    sol_vals[key].append(rewards[key])
 
         # Create Pareto front from objective values
         vals = np.array([sol_vals[key] for key in self.env.optimise_parameters]).T
         
-        # Perform non-dominated sorting
-        nds = NonDominatedSorting()
-        fronts = nds.do(vals)
+        pareto_front = self.env.compute_pareto_front(vals)
         
         # Set Pareto front and reference point
-        self.env.pareto_front = vals[fronts[0]]
+        self.env.pareto_front = pareto_front
         self.env.reference_point = np.max(self.env.pareto_front, axis=0) * 1.1
         
         print(f"Initialized Pareto front with {len(self.env.pareto_front)} solutions")

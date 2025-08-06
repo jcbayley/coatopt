@@ -337,13 +337,18 @@ class PCHPPO:
         state_tensor = prepare_state_input(state, self.pre_type)
         layer_number, layer_numbers_validated = prepare_layer_number(layer_number)
         
-        # Pack state sequence for RNN processing
-        state_pack = pack_state_sequence(state_tensor, layer_numbers_validated)
+        # Pack state sequence only for LSTM processing
+        if self.pre_type == "lstm":
+            state_input = pack_state_sequence(state_tensor, layer_numbers_validated)
+            use_packed = True
+        else:
+            state_input = state_tensor
+            use_packed = False
         
         # Get pre-network outputs (optimized based on gradient needs)
         is_training = actionc is not None or actiond is not None  # If actions provided, likely training
         pre_output_d, pre_output_c, pre_output_v = self._get_pre_network_outputs(
-            state_pack, layer_number, objective_weights, needs_gradients=is_training
+            state_input, layer_number, objective_weights, needs_gradients=is_training, packed=use_packed
         )
         
         # Get discrete action probabilities
@@ -392,29 +397,40 @@ class PCHPPO:
             entropy_discrete, entropy_continuous
         )
 
-    def _get_pre_network_outputs(self, state_pack, layer_number, objective_weights, needs_gradients=True):
+    def _get_pre_network_outputs(self, state_input, layer_number, objective_weights, needs_gradients=True, packed=False):
         """
         Get pre-network outputs for different network heads.
         
         Args:
-            state_pack: Packed state sequence
+            state_input: State input (packed sequence for LSTM, regular tensor for others)
             layer_number: Layer number tensor
             objective_weights: Multi-objective weights
             needs_gradients: Whether gradients are needed (training vs inference)
+            packed: Whether the input is a packed sequence
             
         Returns:
             Tuple of (discrete_output, continuous_output, value_output)
         """
         if needs_gradients:
             # During training: separate forward passes for gradient computation
-            pre_output_d = self.pre_network(state_pack, layer_number, packed=True, weights=objective_weights)
-            pre_output_c = self.pre_network(state_pack, layer_number, packed=True, weights=objective_weights)
-            pre_output_v = self.pre_network(state_pack, layer_number, packed=True, weights=objective_weights)
+            if self.pre_type == "lstm":
+                pre_output_d = self.pre_network(state_input, layer_number, packed=packed, weights=objective_weights)
+                pre_output_c = self.pre_network(state_input, layer_number, packed=packed, weights=objective_weights)
+                pre_output_v = self.pre_network(state_input, layer_number, packed=packed, weights=objective_weights)
+            else:
+                # For non-LSTM networks, don't pass packed or weights parameters
+                pre_output_d = self.pre_network(state_input, layer_number)
+                pre_output_c = self.pre_network(state_input, layer_number)
+                pre_output_v = self.pre_network(state_input, layer_number)
             return pre_output_d, pre_output_c, pre_output_v
         else:
             # During inference: single forward pass, detach for efficiency
             with torch.no_grad():
-                pre_output = self.pre_network(state_pack, layer_number, packed=True, weights=objective_weights)
+                if self.pre_type == "lstm":
+                    pre_output = self.pre_network(state_input, layer_number, packed=packed, weights=objective_weights)
+                else:
+                    # For non-LSTM networks, don't pass packed or weights parameters
+                    pre_output = self.pre_network(state_input, layer_number)
                 return pre_output.detach(), pre_output.detach(), pre_output.detach()
 
     def _apply_material_constraints(self, discrete_probs, state_tensor, layer_number):

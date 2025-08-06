@@ -73,7 +73,7 @@ if __name__ == '__main__':
         use_optical_thickness=config.get("Data", "use_optical_thickness"),
         thickness_sigma=config.get("Genetic", "thickness_sigma"),
         combine= config.get("Data", "combine"),
-        reward_func=config.get("Data", "reward_func"),
+        reward_function=config.get("Data", "reward_function"),
     )
 
     if not os.path.isdir(config.get("General", "root_dir")):

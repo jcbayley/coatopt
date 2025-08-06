@@ -35,11 +35,12 @@ class DataConfig:
     optimise_parameters: List[str]
     optimise_targets: Dict[str, float]
     optimise_weight_ranges: Dict[str, List[float]]
+    design_criteria: Dict[str, float] 
     use_ligo_reward: bool
     include_random_rare_state: bool
     use_optical_thickness: bool
     combine: str
-    reward_func: str
+    reward_function: str
 
 
 @dataclass
@@ -133,12 +134,13 @@ class CoatingOptimizationConfig:
             ignore_substrate_option=config.get("Data", "ignore_substrate_option"),
             optimise_parameters=config.get("Data", "optimise_parameters"),
             optimise_targets=config.get("Data", "optimise_targets"),
+            design_criteria=config.get("Data", "design_criteria"),
             optimise_weight_ranges=config.get("Data", "optimise_weight_ranges", fallback={}),
             use_ligo_reward=config.get("Data", "use_ligo_reward"),
             include_random_rare_state=config.get("Data", "include_random_rare_state"),
             use_optical_thickness=config.get("Data", "use_optical_thickness", fallback=True),
             combine=config.get("Data", "combine", fallback="logproduct"),
-            reward_func=config.get("Data", "reward_func")
+            reward_function=config.get("Data", "reward_function")
         )
         
         network = NetworkConfig(
