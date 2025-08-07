@@ -88,7 +88,7 @@ class ParetoCoatingStack(CoatingStack):
             cycle_weights=cycle_weights,
             n_weight_cycles=n_weight_cycles)
         
-        self.pareto_front = []
+        self.pareto_front = np.empty((0, len(self.optimise_parameters)))  # Initialize as empty numpy array with correct shape
         self.reference_point = []
         self.saved_points = []
         self.saved_data = []
@@ -118,16 +118,34 @@ class ParetoCoatingStack(CoatingStack):
         Update the Pareto front with a new point and check if it updates the front.
 
         Parameters:
-            pareto_front (numpy.ndarray): Current Pareto front points (shape: [n_points, n_dimensions]).
+            pareto_front (numpy.ndarray or list): Current Pareto front points (shape: [n_points, n_dimensions]).
             new_point (numpy.ndarray): New point to be added (shape: [n_dimensions]).
 
         Returns:
             numpy.ndarray: Updated Pareto front.
             bool: Whether the Pareto front was updated or not.
         """
+        # Handle empty Pareto front case
+        if len(pareto_front) == 0 or (isinstance(pareto_front, np.ndarray) and pareto_front.size == 0):
+            # Warning when Pareto front is empty - this might indicate missing data from previous training
+            print("WARNING: Pareto front is empty. This may occur when:")
+            print("  - Starting fresh training (normal)")
+            print("  - Continuing training but previous Pareto front wasn't loaded (check save/load logic)")
+            
+            # If pareto front is empty, the new point becomes the first point
+            new_point_array = np.array([new_point]) if new_point.ndim == 1 else new_point
+            updated_pareto_front = self.compute_pareto_front(new_point_array)
+            return updated_pareto_front, True
+        
+        # Convert pareto_front to numpy array if it's a list
+        if isinstance(pareto_front, list):
+            pareto_front = np.array(pareto_front)
+        
+        # Ensure new_point is properly shaped (1D -> 2D)
+        if new_point.ndim == 1:
+            new_point = new_point.reshape(1, -1)
+        
         # Combine the current Pareto front with the new point
-        
-        
         combined_points = np.vstack([pareto_front, new_point])
 
         updated_pareto_front = self.compute_pareto_front(combined_points)

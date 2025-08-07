@@ -55,6 +55,11 @@ class TrainingMonitorUI:
         self.saved_states = []   # Store all sampled coating states
         self.historical_pareto_data = {}  # Store Pareto data by episode for slider
         
+        # Store objective information for consistent labeling
+        self.objective_labels = []
+        self.objective_scales = []
+        self.optimization_parameters = []
+        
         # Event handler tracking
         self.click_event_connection = None  # Store event connection to prevent multiple handlers
         
@@ -148,11 +153,7 @@ class TrainingMonitorUI:
         self.pareto_frame = ttk.Frame(self.notebook)
         self.notebook.add(self.pareto_frame, text="Pareto Front Evolution")
         
-        self.pareto_fig = Figure(figsize=(10, 8), dpi=100)
-        self.pareto_canvas = FigureCanvasTkAgg(self.pareto_fig, self.pareto_frame)
-        self.pareto_canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
-        
-        # Epoch slider for Pareto plot
+        # Epoch slider and controls for Pareto plot - placed at top
         self.pareto_controls_frame = ttk.Frame(self.pareto_frame)
         self.pareto_controls_frame.pack(fill=tk.X, padx=5, pady=5)
         
@@ -167,9 +168,85 @@ class TrainingMonitorUI:
         self.epoch_label = ttk.Label(self.pareto_controls_frame, text="Episode: 0")
         self.epoch_label.pack(side=tk.RIGHT)
         
+        # Visualization mode selection
+        self.viz_mode_frame = ttk.Frame(self.pareto_controls_frame)
+        self.viz_mode_frame.pack(side=tk.RIGHT, padx=(10, 0))
+        
+        ttk.Label(self.viz_mode_frame, text="View:").pack(side=tk.LEFT)
+        self.viz_mode = tk.StringVar(value="2D_pairs")
+        self.viz_mode_combo = ttk.Combobox(self.viz_mode_frame, textvariable=self.viz_mode, 
+                                          values=["2D_pairs", "parallel_coords", "3D_scatter"], 
+                                          state="readonly", width=12)
+        self.viz_mode_combo.pack(side=tk.LEFT, padx=(5, 0))
+        self.viz_mode_combo.bind('<<ComboboxSelected>>', self.on_viz_mode_change)
+        
+        # Create dynamic figure that adapts to number of objectives
+        self.pareto_fig = Figure(figsize=(14, 10), dpi=100)  # Larger for multiple subplots
+        self.pareto_canvas = FigureCanvasTkAgg(self.pareto_fig, self.pareto_frame)
+        self.pareto_canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
+        
         # Initialize empty plots
         self.init_plots()
     
+    def on_viz_mode_change(self, event=None):
+        """Handle visualization mode change."""
+        try:
+            if hasattr(self, 'pareto_data') and self.pareto_data:
+                # Ensure objective info is current before switching viz mode
+                if not hasattr(self, 'objective_labels') or not self.objective_labels:
+                    self.update_objective_info()
+                self.update_pareto_plot()
+        except Exception as e:
+            print(f"Error changing visualization mode: {e}")
+
+    def update_objective_info(self):
+        """Update stored objective information based on current environment."""
+        if not self.env or not hasattr(self.env, 'optimise_parameters'):
+            self.objective_labels = []
+            self.objective_scales = []
+            return
+        
+        self.objective_labels = self.get_objective_labels()
+        self.objective_scales = self.get_objective_scales()
+
+    def get_objective_labels(self):
+        """Get human-readable labels for objectives."""
+        # First try to use stored parameters
+        if hasattr(self, 'optimization_parameters') and self.optimization_parameters:
+            objectives = self.optimization_parameters
+        elif self.env and hasattr(self.env, 'optimise_parameters'):
+            objectives = self.env.optimise_parameters
+        else:
+            return []
+        
+        label_mapping = {
+            'reflectivity': '1 - Reflectivity',
+            'absorption': 'Absorption [ppm]', 
+            'thermal_noise': 'Thermal Noise [m/√Hz]',
+            'thickness': 'Total Thickness [nm]'
+        }
+        
+        return [label_mapping.get(param, param.replace('_', ' ').title()) for param in objectives]
+
+    def get_objective_scales(self):
+        """Get appropriate scales (linear/log) for each objective."""
+        # First try to use stored parameters
+        if hasattr(self, 'optimization_parameters') and self.optimization_parameters:
+            objectives = self.optimization_parameters
+        elif self.env and hasattr(self.env, 'optimise_parameters'):
+            objectives = self.env.optimise_parameters
+        else:
+            return []
+        
+        scale_mapping = {
+            'reflectivity': 'log',
+            'absorption': 'log', 
+            'thermal_noise': 'log',
+            'thickness': 'linear'
+        }
+        
+        return [scale_mapping.get(param, 'linear') for param in objectives]
+
     def on_epoch_change(self, value):
         """Handle epoch slider change."""
         try:
@@ -220,28 +297,28 @@ class TrainingMonitorUI:
         self.values_fig.tight_layout()
         self.values_canvas.draw_idle()
         
-        # Pareto front plot with two subplots
+        # Pareto front plot - will be dynamically created based on objectives
         self.pareto_fig.clear()
-        self.pareto_axes = self.pareto_fig.subplots(1, 2)
-        
-        # Left subplot: Pareto front
-        self.pareto_ax = self.pareto_axes[0]
-        self.pareto_ax.set_title("Pareto Front: Reflectivity vs Absorption")
-        self.pareto_ax.set_xlabel("1 - Reflectivity")
-        self.pareto_ax.set_ylabel("Absorption [ppm]")
-        self.pareto_ax.set_xscale("log")
-        self.pareto_ax.set_yscale("log")
-        self.pareto_ax.grid(True, alpha=0.3)
-        
-        # Right subplot: Coating stack visualization
-        self.coating_ax = self.pareto_axes[1]
-        self.coating_ax.set_title("Coating Stack (Click point to view)")
-        self.coating_ax.set_xlabel("Layer")
-        self.coating_ax.set_ylabel("Thickness")
-        self.coating_ax.grid(True, alpha=0.3)
+        ax = self.pareto_fig.add_subplot(1, 1, 1)
+        ax.text(0.5, 0.5, 'Load configuration to see Pareto front visualization', 
+                transform=ax.transAxes, ha='center', va='center', fontsize=12)
+        ax.set_title("Pareto Front Visualization")
         
         self.pareto_fig.tight_layout()
         self.pareto_canvas.draw_idle()
+        
+    def on_epoch_change(self, value):
+        """Handle epoch slider change."""
+        try:
+            episode = int(value)
+            self.epoch_label.config(text=f"Episode: {episode}")
+            
+            # Update Pareto plot with data from selected episode
+            if episode in self.historical_pareto_data:
+                self.update_pareto_plot_for_episode(episode)
+        except Exception as e:
+            print(f"Error in epoch change: {e}")
+    
     
     def browse_config(self):
         """Browse for configuration file."""
@@ -276,17 +353,26 @@ class TrainingMonitorUI:
             continue_training = not self.retrain_var.get()  # If retrain is checked, don't continue
             
             self.env, self.agent, self.trainer = setup_optimization_pipeline(
-                self.config, self.materials, continue_training=continue_training
+                self.config, self.materials, continue_training=continue_training, init_pareto_front=False
             )
 
             print(f"Agent num_objectives: {self.agent.num_objectives}")
             print(f"Environment optimise_parameters: {self.env.optimise_parameters}")
             
+            # Store objective information for consistent UI labeling
+            self.optimization_parameters = self.env.optimise_parameters.copy()
+            self.update_objective_info()
+            
             # Load historical training data if not retraining
             if continue_training:
                 self.load_historical_data()
             
-            self.status_var.set(f"Configuration loaded successfully. {len(self.materials)} materials loaded.")
+            # Update status with Pareto front information
+            pareto_info = ""
+            if hasattr(self.env, 'pareto_front') and len(self.env.pareto_front) > 0:
+                pareto_info = f" Loaded Pareto front: {len(self.env.pareto_front)} points."
+            
+            self.status_var.set(f"Configuration loaded successfully. {len(self.materials)} materials loaded.{pareto_info}")
             self.start_button.config(state=tk.NORMAL)
             
         except Exception as e:
@@ -297,6 +383,7 @@ class TrainingMonitorUI:
     def load_historical_data(self):
         """Load historical training data for the epoch slider."""
         try:
+            # Load historical Pareto data
             if hasattr(self.trainer, 'best_states') and self.trainer.best_states:
                 print(f"Loading {len(self.trainer.best_states)} historical best states...")
                 
@@ -319,9 +406,50 @@ class TrainingMonitorUI:
                     self.epoch_var.set(max_episode)  # Start at the latest episode
                     self.epoch_label.config(text=f"Episode: {max_episode}")
                     
-                    print(f"Loaded historical data for {len(self.historical_pareto_data)} time points")
+                    print(f"Loaded historical Pareto data for {len(self.historical_pareto_data)} time points")
                     # Update plot with the latest data
                     self.update_pareto_plot_for_episode(max_episode)
+            
+            # Load historical training/rewards data
+            if hasattr(self.trainer, 'metrics') and not self.trainer.metrics.empty:
+                print(f"Loading historical training metrics with {len(self.trainer.metrics)} episodes...")
+                
+                # Convert metrics DataFrame to training_data format
+                self.training_data = []
+                for _, row in self.trainer.metrics.iterrows():
+                    episode_data = {
+                        'episode': int(row.get('episode', 0)),
+                        'reward': float(row.get('reward', 0.0)),
+                        'metrics': {}
+                    }
+                    
+                    # Add all available metrics
+                    for col in row.index:
+                        if col != 'episode' and not pd.isna(row[col]):
+                            try:
+                                episode_data['metrics'][col] = float(row[col])
+                            except (ValueError, TypeError):
+                                # Skip non-numeric values
+                                pass
+                    
+                    self.training_data.append(episode_data)
+                
+                print(f"Loaded {len(self.training_data)} training data points")
+                
+                # Update reward and values plots
+                self.update_rewards_plot()
+                self.update_values_plot()
+                
+                # Update status to show data was loaded
+                total_episodes = len(self.training_data)
+                latest_reward = self.training_data[-1]['reward'] if self.training_data else 0.0
+                
+                # Include Pareto front information if environment is available
+                pareto_info = ""
+                if hasattr(self, 'env') and hasattr(self.env, 'pareto_front') and len(self.env.pareto_front) > 0:
+                    pareto_info = f", Pareto front: {len(self.env.pareto_front)} points"
+                
+                self.status_var.set(f"Historical data loaded: {total_episodes} episodes, latest reward: {latest_reward:.4f}{pareto_info}")
                 
         except Exception as e:
             print(f"Error loading historical data: {e}")
@@ -334,32 +462,73 @@ class TrainingMonitorUI:
         best_state_data = []
         best_vals_list = []
         
+        if not best_states:
+            return {
+                'episode': episode,
+                'pareto_front': np.array([]),
+                'best_points': [],
+                'best_state_data': [],
+                'pareto_indices': [],
+                'pareto_states': [],
+            }
+        
+        # Get objectives from stored parameters or environment
+        if hasattr(self, 'optimization_parameters') and self.optimization_parameters:
+            objectives = self.optimization_parameters
+        elif hasattr(self, 'env') and self.env and hasattr(self.env, 'optimise_parameters'):
+            objectives = self.env.optimise_parameters
+        else:
+            # Fallback: inspect first state to determine available objectives
+            first_vals = best_states[0][4] if len(best_states) > 0 else {}
+            objectives = list(first_vals.keys())
+        
         for tot_reward, epoch, state, rewards, vals in best_states:
-            # Extract relevant metrics for Pareto front (use vals, not rewards)
-            reflectivity = vals.get('reflectivity', 0)
-            absorption = vals.get('absorption', 0)
-            # Convert reflectivity to 1-R for plotting
-            ref_loss = 1 - reflectivity
-            best_points.append([ref_loss, absorption])
-            best_state_data.append(state)
-            best_vals_list.append([reflectivity, absorption])  # Store original vals for Pareto computation
+            # Extract relevant metrics for Pareto front based on actual objectives
+            objective_values = []
+            plot_values = []
+            
+            for obj in objectives:
+                if obj in vals:
+                    val = vals[obj]
+                    objective_values.append(val)
+                    
+                    # Apply transformations for plotting (minimize all objectives)
+                    if obj == 'reflectivity':
+                        plot_values.append(1 - val)  # Convert to loss (1-R)
+                    else:
+                        plot_values.append(val)  # Use as-is for absorption, thermal_noise, thickness
+                else:
+                    # Skip this state if missing required objective data
+                    objective_values = None
+                    break
+            
+            if objective_values is not None:
+                best_points.append(plot_values)
+                best_state_data.append(state)
+                best_vals_list.append(objective_values)
         
         # Recompute Pareto front from best points using vals
         recomputed_pareto_front = []
         pareto_indices = []
+        
         if len(best_vals_list) > 0:
             # Use non-dominated sorting on the actual values
             vals_array = np.array(best_vals_list)
-            # For minimization: we want to minimize (1-reflectivity) and absorption
-            # So we need to flip reflectivity to make it a minimization problem
-            minimization_objectives = np.column_stack([1 - vals_array[:, 0], vals_array[:, 1]])
+            
+            # Convert to minimization objectives for all parameters
+            minimization_objectives = np.zeros_like(vals_array)
+            for i, obj in enumerate(objectives):
+                if obj == 'reflectivity':
+                    minimization_objectives[:, i] = 1 - vals_array[:, i]  # Minimize (1-R)
+                else:
+                    minimization_objectives[:, i] = vals_array[:, i]  # Minimize directly
             
             nds = NonDominatedSorting()
             fronts = nds.do(minimization_objectives)
             
             if len(fronts) > 0 and len(fronts[0]) > 0:
                 pareto_indices = fronts[0]
-                # Convert back to plotting format (1-R, absorption)
+                # Convert to plotting format
                 recomputed_pareto_front = [best_points[i] for i in pareto_indices]
         
         return {
@@ -368,7 +537,7 @@ class TrainingMonitorUI:
             'best_points': best_points,
             'best_state_data': best_state_data,
             'pareto_indices': pareto_indices,
-            'pareto_states': [best_state_data[i] for i in pareto_indices] ,
+            'pareto_states': [best_state_data[i] for i in pareto_indices]
         }
     
     def update_pareto_plot_for_episode(self, episode):
@@ -599,8 +768,9 @@ class TrainingMonitorUI:
                 continue_training=self.continue_training
             )
             
-            # Initialize Pareto front for monitored trainer
-            monitored_trainer.init_pareto_front(n_solutions=1000)
+            if not self.continue_training:
+                # Initialize Pareto front for monitored trainer
+                monitored_trainer.init_pareto_front(n_solutions=1000)
             
             # Run training with periodic checks for stop signal
             try:
@@ -647,6 +817,8 @@ class TrainingMonitorUI:
             if episode - self.last_reward_plot_update >= self.plot_update_interval:
                 self.update_rewards_plot()
                 self.update_values_plot()  # Update physical values plot too
+                # Save plots after updating
+                self.save_plots_to_disk()
                 self.last_reward_plot_update = episode
         
         elif update['type'] == 'pareto_data':
@@ -673,6 +845,10 @@ class TrainingMonitorUI:
             
             # Update plot more frequently to show changes
             if episode - self.last_pareto_plot_update >= 20:  # More frequent updates for Pareto plots
+                # Ensure objective information is up to date before plotting
+                if not hasattr(self, 'objective_labels') or not self.objective_labels:
+                    self.update_objective_info()
+                
                 # Update the current plot if we're viewing the latest episode
                 current_episode = self.epoch_var.get()
                 if current_episode == episode or current_episode >= episode - 20:
@@ -681,10 +857,14 @@ class TrainingMonitorUI:
         
         elif update['type'] == 'complete':
             self.stop_training()
-            # Final plot update
+            # Final plot update - ensure objective info is current
+            if not hasattr(self, 'objective_labels') or not self.objective_labels:
+                self.update_objective_info()
             self.update_rewards_plot()
             self.update_values_plot()
             self.update_pareto_plot()
+            # Save final plots
+            self.save_plots_to_disk()
             messagebox.showinfo("Training Complete", update['message'])
         
         elif update['type'] == 'error':
@@ -720,11 +900,36 @@ class TrainingMonitorUI:
             # 1. Total Reward
             self._plot_metric_with_smoothing(self.rewards_axes[0], df, 'reward', 'Total Reward', window_size)
             
-            # 2. Individual Reward Components
-            reward_components = ['reflectivity_reward', 'thermal_noise_reward', 'absorption_reward', 'thickness_reward']
+            # 2. Individual Reward Components - Dynamic based on optimize_parameters
+            if hasattr(self, 'optimization_parameters') and self.optimization_parameters:
+                # Use stored optimization parameters for consistency
+                optimise_params = self.optimization_parameters
+            elif hasattr(self, 'env') and self.env and hasattr(self.env, 'optimise_parameters'):
+                # Get dynamic reward component names based on actual objectives
+                optimise_params = self.env.optimise_parameters
+            else:
+                # Final fallback
+                optimise_params = ['reflectivity', 'thermal_noise', 'absorption', 'thickness']
+            
+            reward_components = []
+            
+            # Map parameter names to potential reward column names
+            for param in optimise_params:
+                possible_names = [
+                    f'{param}_reward',
+                    f'{param.replace("thermal_noise", "thermalnoise")}_reward'  # Handle specific naming
+                ]
+                
+                for name in possible_names:
+                    if name in df.columns:
+                        reward_components.append(name)
+                        break
+            
             for component in reward_components:
                 if component in df.columns:
-                    self.rewards_axes[1].plot(episodes, df[component], alpha=0.6, label=component.replace('_reward', '').replace('_', ' ').title())
+                    label = component.replace('_reward', '').replace('thermalnoise', 'thermal_noise').replace('_', ' ').title()
+                    self.rewards_axes[1].plot(episodes, df[component], alpha=0.6, label=label)
+                    
             self.rewards_axes[1].set_title('Individual Reward Components')
             self.rewards_axes[1].set_ylabel('Reward')
             self.rewards_axes[1].legend(fontsize=8)
@@ -745,12 +950,39 @@ class TrainingMonitorUI:
             self.rewards_axes[3].legend(fontsize=8)
             self.rewards_axes[3].set_yscale('log')
             
-            # 5. Objective Weights
-            weight_components = ['reflectivity_reward_weights', 'absorption_reward_weights', 'thermalnoise_reward_weights']
-            for weight_comp in weight_components:
-                if weight_comp in df.columns:
-                    label = weight_comp.replace('_reward_weights', '').replace('thermalnoise', 'thermal_noise').replace('_', ' ').title()
-                    self.rewards_axes[4].plot(episodes, df[weight_comp], alpha=0.8, label=label)
+            # 5. Objective Weights - Dynamic based on optimize_parameters
+            if hasattr(self, 'optimization_parameters') and self.optimization_parameters:
+                # Use stored optimization parameters for consistency
+                optimise_params = self.optimization_parameters
+            elif hasattr(self, 'env') and self.env and hasattr(self.env, 'optimise_parameters'):
+                # Get dynamic weight component names based on actual objectives
+                optimise_params = self.env.optimise_parameters
+            else:
+                # Final fallback
+                optimise_params = ['reflectivity', 'thermal_noise', 'absorption', 'thickness']
+            
+            weight_components = []
+            
+            # Map parameter names to potential weight column names
+            for param in optimise_params:
+                # Try different possible naming conventions for weights
+                possible_names = [
+                    f'{param}_reward_weights',
+                    f'{param}_weights', 
+                    f'{param.replace("_", "")}_reward_weights',
+                    f'{param.replace("thermal_noise", "thermalnoise")}_reward_weights'  # Handle specific case
+                ]
+                
+                for name in possible_names:
+                    if name in df.columns:
+                        weight_components.append((name, param))
+                        break
+            
+            # Plot the weights
+            for weight_comp, param in weight_components:
+                label = param.replace('_', ' ').title()
+                self.rewards_axes[4].plot(episodes, df[weight_comp], alpha=0.8, label=label)
+                        
             self.rewards_axes[4].set_title('Objective Weights')
             self.rewards_axes[4].set_ylabel('Weight')
             self.rewards_axes[4].legend(fontsize=8)
@@ -885,150 +1117,347 @@ class TrainingMonitorUI:
             print(f"Error updating values plot: {e}")
     
     def update_pareto_plot(self):
-        """Update the interactive Pareto front plot with coating visualization."""
+        """Update the Pareto front plot with dynamic visualization based on number of objectives."""
         if not self.pareto_data:
             return
         
         try:
-            # Clear both subplots
-            self.pareto_ax.clear()
-            self.coating_ax.clear()
+            # Clear the figure
+            self.pareto_fig.clear()
             
             # Get the latest data
-            if not self.pareto_data:
-                print("No Pareto data available yet")
-                return
-                
             latest_data = self.pareto_data[-1]
             pareto_front = latest_data['pareto_front'] 
-            best_points = latest_data.get('best_points', None)  # Use best_points instead of saved_points
-            
+            best_points = latest_data.get('best_points', None)
             current_episode = latest_data.get('episode', 'unknown')
-            #print(f"Updating Pareto plot - Episode: {current_episode}")
-            #print(f"Recomputed Pareto front size: {len(pareto_front) if pareto_front is not None else 0}")
-            #print(f"Total best points size: {len(best_points) if best_points is not None else 0}")
-            pareto_indices = latest_data.get('pareto_indices', [])
-            #print(f"Pareto efficiency: {len(pareto_indices)}/{len(best_points) if best_points else 0} = {len(pareto_indices)/len(best_points)*100:.1f}%" if best_points and len(best_points) > 0 else "No efficiency data")
             
             if pareto_front is None or len(pareto_front) == 0:
-                self.pareto_ax.text(0.5, 0.5, 'No Pareto front data available\nyet', 
-                                  transform=self.pareto_ax.transAxes, ha='center', va='center')
+                ax = self.pareto_fig.add_subplot(1, 1, 1)
+                ax.text(0.5, 0.5, 'No Pareto front data available yet', 
+                       transform=ax.transAxes, ha='center', va='center')
                 self.pareto_canvas.draw_idle()
                 return
             
-            # === Left subplot: Pareto front with all points ===
-            # Plot all best points in background with low alpha
-            if best_points is not None and len(best_points) > 0:
-                try:
-                    best_points_array = np.array(best_points)
-                    if len(best_points_array.shape) == 2 and best_points_array.shape[1] >= 2:
-                        ref_values = best_points_array[:, 0]  # Already converted to 1-R
-                        abs_values = best_points_array[:, 1]
-                        
-                        self.pareto_ax.scatter(
-                            ref_values, abs_values,
-                            c='lightblue', alpha=0.3, s=10, label='All Best Solutions'
-                        )
-                except Exception as e:
-                    print(f"Error plotting best points: {e}")
-            
-            # Plot current Pareto front with clickable points
-            pareto_scatter = None
-            if len(pareto_front) > 0:
-                pareto_scatter = self.pareto_ax.scatter(
-                    pareto_front[:, 0], pareto_front[:, 1],
-                    c='red', s=50, alpha=0.8, label='Recomputed Pareto Front',
-                    edgecolors='black', linewidths=1, picker=True
-                )
+            if (not hasattr(self, 'objective_labels') or 
+                not self.objective_labels or 
+                len(self.objective_labels) != pareto_front.shape[1]):
                 
-                # Connect Pareto points with line
-                sorted_indices = np.argsort(pareto_front[:, 0])
-                sorted_front = pareto_front[sorted_indices]
-                self.pareto_ax.plot(
-                    sorted_front[:, 0], sorted_front[:, 1],
-                    'r-', alpha=0.5, linewidth=1, label='Pareto Front Line'
-                )
+                # Force refresh from environment and stored parameters
+                if self.env and hasattr(self.env, 'optimise_parameters'):
+                    self.optimization_parameters = self.env.optimise_parameters.copy()
+                self.update_objective_info()
             
-            # Add target lines if available
-            if self.env and hasattr(self.env, 'design_criteria'):
-                targets = self.env.design_criteria
-                if 'reflectivity' in targets and 'absorption' in targets:
-                    ref_target = 1 - targets['reflectivity']
-                    abs_target = targets['absorption']
-                    
-                    self.pareto_ax.axhline(abs_target, color='green', linestyle='--', alpha=0.7, linewidth=2, label='Absorption Criteria')
-                    self.pareto_ax.axvline(ref_target, color='green', linestyle='--', alpha=0.7, linewidth=2, label='Reflectivity Criteria')
-            else:
-                logging.warning("Environment design criteria not available for target lines")
-            # Setup Pareto plot
-            self.pareto_ax.set_title(f"Recomputed Pareto Front - Episode {current_episode}\n(Click point to view coating)")
-            self.pareto_ax.set_xlabel("1 - Reflectivity")
-            self.pareto_ax.set_ylabel("Absorption [ppm]")
-            self.pareto_ax.set_xscale("log")
-            self.pareto_ax.set_yscale("log")
-            self.pareto_ax.grid(True, alpha=0.3)
-            self.pareto_ax.legend(fontsize=8)
+            # Use stored objective information
+            obj_labels = self.objective_labels.copy() if hasattr(self, 'objective_labels') else []
+            obj_scales = self.objective_scales.copy() if hasattr(self, 'objective_scales') else []
             
-            # === Right subplot: Coating stack placeholder ===
-            self.coating_ax.text(0.5, 0.5, 'Click a Pareto point\nto view coating stack', 
-                               transform=self.coating_ax.transAxes, ha='center', va='center',
-                               fontsize=12, bbox=dict(boxstyle='round', facecolor='lightgray', alpha=0.5))
-            self.coating_ax.set_title("Coating Stack Visualization")
-            self.coating_ax.set_xlabel("Position")
-            self.coating_ax.set_ylabel("Thickness")
-            self.coating_ax.grid(True, alpha=0.3)
+            # Final validation - ensure we have valid objective information
+            if not obj_labels or len(obj_labels) != pareto_front.shape[1]:
+                # Emergency fallback: create from stored parameters or generic
+                if hasattr(self, 'optimization_parameters') and self.optimization_parameters:
+                    if len(self.optimization_parameters) == pareto_front.shape[1]:
+                        label_mapping = {
+                            'reflectivity': '1 - Reflectivity',
+                            'absorption': 'Absorption [ppm]', 
+                            'thermal_noise': 'Thermal Noise [m/√Hz]',
+                            'thickness': 'Total Thickness [nm]'
+                        }
+                        obj_labels = [label_mapping.get(param, param.replace('_', ' ').title()) 
+                                     for param in self.optimization_parameters]
+                        obj_scales = ['log' if param in ['reflectivity', 'absorption', 'thermal_noise'] 
+                                     else 'linear' for param in self.optimization_parameters]
+                    else:
+                        obj_labels = [f'Objective {i+1}' for i in range(pareto_front.shape[1])]
+                        obj_scales = ['linear'] * pareto_front.shape[1]
+                else:
+                    obj_labels = [f'Objective {i+1}' for i in range(pareto_front.shape[1])]
+                    obj_scales = ['linear'] * pareto_front.shape[1]
             
-            # Set up click event handler (only once to avoid multiple handlers)
-            def on_click(event):
-                if event.inaxes == self.pareto_ax and pareto_scatter is not None and len(pareto_front) > 0:
-                    # Find closest Pareto point
-                    if event.xdata is not None and event.ydata is not None:
-                        # Get click coordinates
-                        click_x, click_y = event.xdata, event.ydata
-                        
-                        # Find closest point (accounting for log scales)
-                        # Transform to log space for distance calculation
-                        log_click_x, log_click_y = np.log10(max(click_x, 1e-10)), np.log10(max(click_y, 1e-10))
-                        log_front_x = np.log10(np.maximum(pareto_front[:, 0], 1e-10))
-                        log_front_y = np.log10(np.maximum(pareto_front[:, 1], 1e-10))
-                        
-                        distances = np.sqrt((log_front_x - log_click_x)**2 + (log_front_y - log_click_y)**2)
-                        closest_idx = np.argmin(distances)
-                        
-                        #print(f"Clicked on Pareto point {closest_idx}: {pareto_front[closest_idx]}")
-                        
-                        # Update coating visualization
-                        self.plot_coating_stack(closest_idx, pareto_front[closest_idx])
+            # Ensure scales list matches labels
+            if not obj_scales or len(obj_scales) != len(obj_labels):
+                obj_scales = ['linear'] * len(obj_labels)
             
-            # Disconnect any existing click event handler to prevent multiple handlers
-            if self.click_event_connection is not None:
-                self.pareto_canvas.mpl_disconnect(self.click_event_connection)
+            n_objectives = len(obj_labels)
             
-            # Connect new click event handler
-            self.click_event_connection = self.pareto_canvas.mpl_connect('button_press_event', on_click)
+            if n_objectives < 2:
+                ax = self.pareto_fig.add_subplot(1, 1, 1)
+                ax.text(0.5, 0.5, 'Need at least 2 objectives for Pareto visualization', 
+                       transform=ax.transAxes, ha='center', va='center')
+                self.pareto_canvas.draw_idle()
+                return
             
-            # Add statistics text box
-            if len(pareto_front) > 0:
-                n_pareto_points = len(pareto_front)
-                n_total_points = len(best_points) if best_points is not None else 0
-                
-                stats_text = f'Pareto Optimal: {n_pareto_points}'
-                if n_total_points > 0:
-                    stats_text += f'\nTotal Solutions: {n_total_points}'
-                    stats_text += f'\nEfficiency: {n_pareto_points/n_total_points*100:.1f}%'
-                
-                self.pareto_ax.text(0.02, 0.98, stats_text, transform=self.pareto_ax.transAxes,
-                                   verticalalignment='top', horizontalalignment='left',
-                                   bbox=dict(boxstyle='round', facecolor='white', alpha=0.8),
-                                   fontsize=9)
+            viz_mode = self.viz_mode.get()
+            
+            if viz_mode == "parallel_coords":
+                self.plot_parallel_coordinates(pareto_front, best_points, obj_labels, current_episode)
+            elif viz_mode == "3D_scatter" and n_objectives >= 3:
+                self.plot_3d_scatter(pareto_front, best_points, obj_labels, obj_scales, current_episode)
+            else:  # Default to 2D pairs - this should use the same logic as initialization
+                self.plot_2d_pairs(pareto_front, best_points, obj_labels, obj_scales, current_episode)
             
             self.pareto_fig.tight_layout()
             self.pareto_canvas.draw_idle()
             self.root.update_idletasks()
             
+            # Save plots to disk after updating
+            self.save_plots_to_disk()
+            
         except Exception as e:
-            print(f"Error updating pareto plot: {e}")
-    
+            print(f"Error updating Pareto plot: {e}")
+            import traceback
+            traceback.print_exc()
+
+    def plot_2d_pairs(self, pareto_front, best_points, obj_labels, obj_scales, episode):
+        """Plot all pairs of objectives in 2D subplots."""
+        n_objectives = len(obj_labels)
+        
+        if n_objectives == 2:
+            # Single 2D plot with coating visualization
+            gs = self.pareto_fig.add_gridspec(1, 2, width_ratios=[2, 1])
+            self.pareto_ax = self.pareto_fig.add_subplot(gs[0])
+            self.coating_ax = self.pareto_fig.add_subplot(gs[1])
+            
+            self.plot_single_2d_pair(self.pareto_ax, pareto_front, best_points, 
+                                   0, 1, obj_labels, obj_scales, episode, enable_click=True)
+            
+            # Coating visualization placeholder
+            self.coating_ax.text(0.5, 0.5, 'Click a Pareto point\nto view coating stack', 
+                               transform=self.coating_ax.transAxes, ha='center', va='center',
+                               fontsize=10, bbox=dict(boxstyle='round', facecolor='lightgray', alpha=0.5))
+            self.coating_ax.set_title("Coating Stack")
+            
+        else:
+            # Multiple 2D plots for all pairs + coating stack subplot
+            n_pairs = n_objectives * (n_objectives - 1) // 2
+            total_subplots = n_pairs + 1  # Add 1 for coating stack
+            n_cols = min(3, total_subplots)  # Max 3 columns
+            n_rows = (total_subplots + n_cols - 1) // n_cols
+            
+            # Store subplot info for click handling
+            self.subplot_info = []
+            
+            # Create 2D pair plots
+            pair_idx = 0
+            for i in range(n_objectives):
+                for j in range(i + 1, n_objectives):
+                    if pair_idx < n_pairs:
+                        ax = self.pareto_fig.add_subplot(n_rows, n_cols, pair_idx + 1)
+                        self.plot_single_2d_pair(ax, pareto_front, best_points, 
+                                               i, j, obj_labels, obj_scales, episode, enable_click=False)
+                        # Store info for click handling
+                        self.subplot_info.append((ax, i, j, obj_scales))
+                        pair_idx += 1
+            
+            # Add coating stack subplot in the next available position
+            self.coating_ax = self.pareto_fig.add_subplot(n_rows, n_cols, total_subplots)
+            self.coating_ax.text(0.5, 0.5, 'Click a Pareto point\nto view coating stack', 
+                               transform=self.coating_ax.transAxes, ha='center', va='center',
+                               fontsize=10, bbox=dict(boxstyle='round', facecolor='lightgray', alpha=0.5))
+            self.coating_ax.set_title("Coating Stack")
+            
+            # Set up global click handler for all subplots
+            def on_click_multi(event):
+                if hasattr(self, 'subplot_info') and len(pareto_front) > 0:
+                    for ax, i, j, scales in self.subplot_info:
+                        if event.inaxes == ax and event.xdata is not None and event.ydata is not None:
+                            # Find closest point
+                            click_x, click_y = event.xdata, event.ydata
+                            
+                            # Handle log scale distances
+                            if i < len(scales) and j < len(scales) and scales[i] == 'log' and scales[j] == 'log':
+                                log_click_x = np.log10(max(click_x, 1e-10))
+                                log_click_y = np.log10(max(click_y, 1e-10))
+                                log_front_x = np.log10(np.maximum(pareto_front[:, i], 1e-10))
+                                log_front_y = np.log10(np.maximum(pareto_front[:, j], 1e-10))
+                                distances = np.sqrt((log_front_x - log_click_x)**2 + (log_front_y - log_click_y)**2)
+                            else:
+                                distances = np.sqrt((pareto_front[:, i] - click_x)**2 + (pareto_front[:, j] - click_y)**2)
+                            
+                            closest_idx = np.argmin(distances)
+                            self.plot_coating_stack(closest_idx, pareto_front[closest_idx])
+                            break
+            
+            # Disconnect any existing handler and connect new one
+            if self.click_event_connection is not None:
+                self.pareto_canvas.mpl_disconnect(self.click_event_connection)
+            self.click_event_connection = self.pareto_canvas.mpl_connect('button_press_event', on_click_multi)
+
+    def plot_single_2d_pair(self, ax, pareto_front, best_points, i, j, obj_labels, obj_scales, episode, enable_click=False):
+        """Plot a single 2D pair of objectives."""
+        # Plot all best points in background
+        if best_points is not None and len(best_points) > 0:
+            try:
+                best_points_array = np.array(best_points)
+                if len(best_points_array.shape) == 2 and best_points_array.shape[1] > max(i, j):
+                    ax.scatter(best_points_array[:, i], best_points_array[:, j],
+                             c='lightblue', alpha=0.3, s=10, label='All Solutions')
+            except Exception as e:
+                print(f"Error plotting background points: {e}")
+        
+        # Plot Pareto front
+        pareto_scatter = ax.scatter(pareto_front[:, i], pareto_front[:, j],
+                                  c='red', s=40, alpha=0.8, label='Pareto Front',
+                                  edgecolors='black', linewidths=1)
+        
+        # Connect Pareto points if feasible
+        if len(pareto_front) < 20:  # Only connect if not too many points
+            try:
+                # Sort by first objective for line connection
+                sorted_indices = np.argsort(pareto_front[:, i])
+                sorted_front_i = pareto_front[sorted_indices, i]
+                sorted_front_j = pareto_front[sorted_indices, j]
+                ax.plot(sorted_front_i, sorted_front_j, 'r-', alpha=0.5, linewidth=1)
+            except:
+                pass  # Skip line if it causes issues
+        
+        # Add target lines if available
+        if self.env and hasattr(self.env, 'design_criteria'):
+            targets = self.env.design_criteria
+            param_i = self.env.optimise_parameters[i] if hasattr(self.env, 'optimise_parameters') else None
+            param_j = self.env.optimise_parameters[j] if hasattr(self.env, 'optimise_parameters') else None
+            
+            if param_i in targets:
+                target_val = targets[param_i]
+                if param_i == 'reflectivity':
+                    target_val = 1 - target_val  # Convert to 1-R
+                ax.axvline(target_val, color='green', linestyle='--', alpha=0.7, linewidth=1)
+            
+            if param_j in targets:
+                target_val = targets[param_j]
+                if param_j == 'reflectivity':
+                    target_val = 1 - target_val  # Convert to 1-R
+                ax.axhline(target_val, color='green', linestyle='--', alpha=0.7, linewidth=1)
+        
+        # Set labels and scales
+        ax.set_xlabel(obj_labels[i] if i < len(obj_labels) else f'Objective {i+1}')
+        ax.set_ylabel(obj_labels[j] if j < len(obj_labels) else f'Objective {j+1}')
+        
+        if i < len(obj_scales) and obj_scales[i] == 'log':
+            ax.set_xscale('log')
+        if j < len(obj_scales) and obj_scales[j] == 'log':
+            ax.set_yscale('log')
+        
+        ax.set_title(f'Episode {episode}')
+        ax.grid(True, alpha=0.3)
+        ax.legend(fontsize=8)
+        
+        # Set up click handler for main plot only
+        if enable_click:
+            def on_click(event):
+                if event.inaxes == ax and len(pareto_front) > 0:
+                    if event.xdata is not None and event.ydata is not None:
+                        # Find closest point
+                        click_x, click_y = event.xdata, event.ydata
+                        
+                        # Handle log scale distances
+                        if obj_scales[i] == 'log' and obj_scales[j] == 'log':
+                            log_click_x = np.log10(max(click_x, 1e-10))
+                            log_click_y = np.log10(max(click_y, 1e-10))
+                            log_front_x = np.log10(np.maximum(pareto_front[:, i], 1e-10))
+                            log_front_y = np.log10(np.maximum(pareto_front[:, j], 1e-10))
+                            distances = np.sqrt((log_front_x - log_click_x)**2 + (log_front_y - log_click_y)**2)
+                        else:
+                            distances = np.sqrt((pareto_front[:, i] - click_x)**2 + (pareto_front[:, j] - click_y)**2)
+                        
+                        closest_idx = np.argmin(distances)
+                        self.plot_coating_stack(closest_idx, pareto_front[closest_idx])
+            
+            # Disconnect any existing handler and connect new one
+            if self.click_event_connection is not None:
+                self.pareto_canvas.mpl_disconnect(self.click_event_connection)
+            self.click_event_connection = self.pareto_canvas.mpl_connect('button_press_event', on_click)
+
+    def plot_parallel_coordinates(self, pareto_front, best_points, obj_labels, episode):
+        """Plot parallel coordinates visualization for high-dimensional data."""
+        ax = self.pareto_fig.add_subplot(1, 1, 1)
+        
+        n_objectives = pareto_front.shape[1]
+        
+        # Normalize data for parallel coordinates
+        pareto_normalized = np.zeros_like(pareto_front)
+        for i in range(n_objectives):
+            col_min, col_max = pareto_front[:, i].min(), pareto_front[:, i].max()
+            if col_max > col_min:
+                pareto_normalized[:, i] = (pareto_front[:, i] - col_min) / (col_max - col_min)
+            else:
+                pareto_normalized[:, i] = 0.5
+        
+        # Plot background points if available
+        if best_points is not None and len(best_points) > 0:
+            try:
+                best_points_array = np.array(best_points)
+                if best_points_array.shape[1] == n_objectives:
+                    best_normalized = np.zeros_like(best_points_array)
+                    for i in range(n_objectives):
+                        col_min, col_max = best_points_array[:, i].min(), best_points_array[:, i].max()
+                        if col_max > col_min:
+                            best_normalized[:, i] = (best_points_array[:, i] - col_min) / (col_max - col_min)
+                        else:
+                            best_normalized[:, i] = 0.5
+                    
+                    # Plot background lines
+                    for idx in range(len(best_normalized)):
+                        ax.plot(range(n_objectives), best_normalized[idx], 'b-', alpha=0.1, linewidth=0.5)
+            except Exception as e:
+                print(f"Error plotting background parallel coords: {e}")
+        
+        # Plot Pareto front lines
+        for idx in range(len(pareto_normalized)):
+            ax.plot(range(n_objectives), pareto_normalized[idx], 'r-', alpha=0.7, linewidth=2)
+        
+        # Customize plot
+        ax.set_xlim(-0.5, n_objectives - 0.5)
+        ax.set_ylim(-0.1, 1.1)
+        ax.set_xticks(range(n_objectives))
+        ax.set_xticklabels([label.replace(' ', '\n') for label in obj_labels], rotation=0, fontsize=10)
+        ax.set_ylabel('Normalized Value')
+        ax.set_title(f'Parallel Coordinates - Episode {episode}\n{len(pareto_front)} Pareto Points')
+        ax.grid(True, alpha=0.3)
+
+    def plot_3d_scatter(self, pareto_front, best_points, obj_labels, obj_scales, episode):
+        """Plot 3D scatter plot for 3+ dimensional data (shows first 3 dimensions)."""
+        try:
+            from mpl_toolkits.mplot3d import Axes3D
+        except ImportError:
+            print("Warning: mpl_toolkits.mplot3d not available, 3D plots will be disabled")
+        
+        ax = self.pareto_fig.add_subplot(1, 1, 1, projection='3d')
+        
+        # Use first 3 dimensions
+        if pareto_front.shape[1] >= 3:
+            # Plot background points
+            if best_points is not None and len(best_points) > 0:
+                try:
+                    best_points_array = np.array(best_points)
+                    if best_points_array.shape[1] >= 3:
+                        ax.scatter(best_points_array[:, 0], best_points_array[:, 1], best_points_array[:, 2],
+                                 c='lightblue', alpha=0.3, s=10, label='All Solutions')
+                except Exception as e:
+                    print(f"Error plotting 3D background: {e}")
+            
+            # Plot Pareto front
+            ax.scatter(pareto_front[:, 0], pareto_front[:, 1], pareto_front[:, 2],
+                      c='red', s=40, alpha=0.8, label='Pareto Front', edgecolors='black')
+            
+            # Set labels and scales
+            ax.set_xlabel(obj_labels[0] if len(obj_labels) > 0 else 'Objective 1')
+            ax.set_ylabel(obj_labels[1] if len(obj_labels) > 1 else 'Objective 2') 
+            ax.set_zlabel(obj_labels[2] if len(obj_labels) > 2 else 'Objective 3')
+            
+            # Handle log scales (3D log scale is tricky, so we note it in title)
+            log_note = ""
+            if len(obj_scales) >= 3:
+                log_axes = [i for i, scale in enumerate(obj_scales[:3]) if scale == 'log']
+                if log_axes:
+                    log_note = f" (Log scale: {[obj_labels[i] for i in log_axes]})"
+            
+            ax.set_title(f'3D Pareto Front - Episode {episode}{log_note}')
+            ax.legend()
+        
+        else:
+            ax.text(0.5, 0.5, 0.5, 'Need at least 3 objectives for 3D visualization', 
+                   transform=ax.transAxes, ha='center', va='center')
+
     def plot_coating_stack(self, pareto_idx, pareto_point):
         """Plot the coating stack for a selected Pareto point."""
         try:
@@ -1143,6 +1572,31 @@ class TrainingMonitorUI:
             import traceback
             traceback.print_exc()
             return []
+
+    def save_plots_to_disk(self):
+        """Save all current plots to disk in the root directory."""
+        try:
+            if not hasattr(self, 'config') or not self.config:
+                return
+                
+            root_dir = self.config.optimization.root_dir
+            if not root_dir or not os.path.exists(root_dir):
+                return
+                
+            # Save Pareto plot
+            pareto_path = os.path.join(root_dir, "pareto_plot.png")
+            self.pareto_fig.savefig(pareto_path, dpi=150, bbox_inches='tight')
+            
+            # Save rewards plot
+            rewards_path = os.path.join(root_dir, "rewards_plot.png")
+            self.rewards_fig.savefig(rewards_path, dpi=150, bbox_inches='tight')
+            
+            # Save values plot
+            values_path = os.path.join(root_dir, "values_plot.png")
+            self.values_fig.savefig(values_path, dpi=150, bbox_inches='tight')
+            
+        except Exception as e:
+            print(f"Warning: Failed to save plots to disk: {e}")
 
 
 def main():

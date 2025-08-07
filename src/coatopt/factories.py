@@ -6,6 +6,9 @@ from typing import Dict, Any
 from coatopt.algorithms import pc_hppo_oml
 from coatopt.environments.thermal_noise_environment_pareto import ParetoCoatingStack
 from coatopt.config.structured_config import CoatingOptimizationConfig
+from typing import Tuple
+
+
 
 
 def create_pareto_environment(config: CoatingOptimizationConfig, materials: Dict[int, Dict[str, Any]]) -> ParetoCoatingStack:
@@ -154,7 +157,7 @@ def load_model_if_needed(agent: pc_hppo_oml.PCHPPO, config: CoatingOptimizationC
         print(f"Loaded model from: {config.general.load_model_path if config.general.load_model_path != 'root' else config.general.root_dir}")
 
 
-def setup_optimization_pipeline(config: CoatingOptimizationConfig, materials: Dict[int, Dict[str, Any]], continue_training: bool = False):
+def setup_optimization_pipeline(config: CoatingOptimizationConfig, materials: Dict[int, Dict[str, Any]], continue_training: bool = False, init_pareto_front: bool = True) -> Tuple[ParetoCoatingStack, pc_hppo_oml.PCHPPO, pc_hppo_oml.HPPOTrainer]:
     """
     Complete setup of the optimization pipeline.
     
@@ -177,7 +180,9 @@ def setup_optimization_pipeline(config: CoatingOptimizationConfig, materials: Di
     
     print("Setting up trainer...")
     trainer = create_trainer(config, agent, env, continue_training)
-    trainer.init_pareto_front(n_solutions=config.training.n_init_solutions)
+    if init_pareto_front:
+        print("Initializing Pareto front...")
+        trainer.init_pareto_front(n_solutions=config.training.n_init_solutions)
     
     print("Pipeline setup complete.")
     return env, agent, trainer

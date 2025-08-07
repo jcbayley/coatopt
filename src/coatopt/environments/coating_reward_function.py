@@ -450,10 +450,10 @@ def reward_function_hypervolume(reflectivity, thermal_noise, total_thickness, ab
                                optimise_parameters, optimise_targets, env, 
                                combine="product", neg_reward=-1e3, weights=None, 
                                ref_point=None, adaptive_ref=True):
-    """Hypervolume-based reward function that rewards both Pareto front quality and diversity.
+    """Hypervolume-based reward function with log-space normalization.
     
-    Hypervolume measures the area/volume above the Pareto front, which naturally combines
-    both front quality (closer to origin is better) and diversity (wider spread is better).
+    This version transforms objectives to log-space and normalizes them to handle
+    different scales properly, then computes hypervolume for multi-objective optimization.
 
     Args:
         reflectivity: Reflectivity value (typically 1-R)
@@ -483,7 +483,7 @@ def reward_function_hypervolume(reflectivity, thermal_noise, total_thickness, ab
     rewards = {key: 0 for key in vals}
     
     # Check for invalid values
-    if any(np.isnan(val) or np.isinf(val) for val in vals.values() if val is not None):
+    if any(np.isnan(val) or np.isinf(val) or val is None for val in vals.values() if val is not None):
         total_reward = neg_reward
         rewards["total_reward"] = total_reward
         return total_reward, vals, rewards
@@ -502,63 +502,98 @@ def reward_function_hypervolume(reflectivity, thermal_noise, total_thickness, ab
     
     if len(updated_pareto_front) > 0:
         try:
-            # Determine reference point
-            if ref_point is None:
-                if adaptive_ref:
-                    # Use adaptive reference point: slightly worse than worst point in each objective
-                    max_vals = np.max(updated_pareto_front, axis=0)
-                    # Add 10% margin to ensure reference point dominates all points
-                    ref_point_calc = max_vals * 1.1
+            # Initialize objective bounds if not present
+            if not hasattr(env, 'objective_bounds'):
+                env.objective_bounds = {
+                    'reflectivity': {'min': 1e-8, 'max': 1e-2},      # Typical coating values
+                    'absorption': {'min': 1e-6, 'max': 1000.0},         # Physical bounds
+                    'thermal_noise': {'min': 1e-25, 'max': 1e-15},   # Typical noise values  
+                    'thickness': {'min': 100, 'max': 50000}          # nm range
+                }
+            
+            # Update bounds based on current data (with safety margins)
+            pareto_array = np.array(updated_pareto_front)
+            for i, param in enumerate(optimise_parameters):
+                current_min = np.min(pareto_array[:, i])
+                current_max = np.max(pareto_array[:, i])
+                
+                bounds = env.objective_bounds[param]
+                bounds['min'] = min(bounds['min'], current_min * 0.5)  # Expand with safety margin
+                bounds['max'] = max(bounds['max'], current_max * 2.0)  # Expand with safety margin
+                
+                # Ensure positive bounds for log transformation
+                bounds['min'] = max(bounds['min'], 1e-12)
+            
+            # Transform to log space and normalize
+            log_normalized_front = []
+            
+            for point in updated_pareto_front:
+                log_normalized_point = []
+                for i, param in enumerate(optimise_parameters):
+                    bounds = env.objective_bounds[param]
+                    if param == "reflectivity":
+                        # Reflectivity is typically 1-R, so we want to transform it to log space
+                        value = 1 - point[i]
+                    else:
+                        value = point[i]
                     
-                    # For objectives that should be minimized, ensure ref point is positive
-                    # and reasonable (e.g., for log-scale values like 1-R)
-                    for i, param in enumerate(optimise_parameters):
-                        if param == "reflectivity":
-                            # For 1-R values, cap reference point at reasonable value
-                            ref_point_calc[i] = min(ref_point_calc[i], 1e-3)
-                        elif param == "absorption":
-                            # For absorption, reasonable upper bound
-                            ref_point_calc[i] = min(ref_point_calc[i], 1.0)
-                        elif param == "thermal_noise":
-                            # For thermal noise, use reasonable upper bound
-                            ref_point_calc[i] = min(ref_point_calc[i], 1e-15)
-                        elif param == "thickness":
-                            # For thickness, reasonable upper bound
-                            ref_point_calc[i] = min(ref_point_calc[i], 1000.0)
+                    # Ensure value is within bounds and positive for log
+                    value = max(value, bounds['min'])
+                    value = min(value, bounds['max'])
                     
-                    ref_point_calc = np.maximum(ref_point_calc, np.max(updated_pareto_front, axis=0) * 1.01)
-                else:
-                    # Use fixed reference point based on targets
-                    ref_point_calc = np.array([optimise_targets.get(param, 1.0) for param in optimise_parameters])
-                    ref_point_calc *= 2  # Make it clearly dominated
-            else:
-                ref_point_calc = np.array(ref_point)
+                    # Transform to log space
+                    log_value = np.log10(value)
+                    log_min = np.log10(bounds['min'])
+                    log_max = np.log10(bounds['max'])
+                    
+                    # Normalize to [0,1] in log space
+                    if log_max > log_min:
+                        normalized_val = (log_value - log_min) / (log_max - log_min)
+                    else:
+                        normalized_val = 0.5  # Default if no range
+                    
+                    # Clip to ensure [0,1] range
+                    normalized_val = np.clip(normalized_val, 0, 1)
+                    log_normalized_point.append(normalized_val)
+                
+                log_normalized_front.append(log_normalized_point)
             
-            # Ensure reference point dominates all points
-            ref_point_calc = np.maximum(ref_point_calc, np.max(updated_pareto_front, axis=0) * 1.001)
+            log_normalized_front = np.array(log_normalized_front)
             
-            # Calculate hypervolume using pymoo's HV indicator
-            hv_indicator = HV(ref_point=ref_point_calc)
-            hypervolume = hv_indicator(updated_pareto_front)
+            # Reference point in normalized log space (slightly worse than worst point)
+            ref_point_normalized = np.ones(len(optimise_parameters)) * 1.1
             
-            # Scale hypervolume to reasonable reward range
-            # Normalize by the maximum possible hypervolume (reference point volume)
-            max_volume = np.prod(ref_point_calc) if len(ref_point_calc) > 0 else 1.0
-            normalized_hypervolume = hypervolume / (max_volume + 1e-12)
+            # Calculate hypervolume in normalized log space
+            hv_indicator = HV(ref_point=ref_point_normalized)
+            hypervolume = hv_indicator(log_normalized_front)
             
-            # Scale to reward range (multiply by large factor to make it significant)
-            hypervolume_reward = normalized_hypervolume * 1000
+            # Scale hypervolume to reward range
+            base_hypervolume_reward = hypervolume * 1000
+            
+            # Additional reward components
+            diversity_bonus = 0
+            if len(updated_pareto_front) > 1:
+                # Reward front diversity (spread in each dimension)
+                front_ranges = np.ptp(log_normalized_front, axis=0)  # Range in each normalized dimension
+                diversity_bonus = np.sum(front_ranges) * 100  # Bonus for diversity
+            
+            # Size bonus for larger fronts
+            size_bonus = len(updated_pareto_front) * 10
+            
+            hypervolume_reward = base_hypervolume_reward + diversity_bonus + size_bonus
             
         except Exception as e:
             print(f"Error calculating hypervolume: {e}")
+            import traceback
+            traceback.print_exc()
             hypervolume_reward = neg_reward / 10  # Small penalty, not full negative reward
     
-    # Additional small reward for improving the front
+    # Additional reward for improving the front
     front_improvement_reward = 0
     if front_updated:
-        front_improvement_reward = 50  # Bonus for adding to Pareto front
+        front_improvement_reward = 100  # Bonus for adding to Pareto front
     
-    # Total reward is hypervolume + improvement bonus
+    # Total reward
     total_reward = hypervolume_reward + front_improvement_reward
     
     if np.isnan(total_reward) or np.isinf(total_reward):
@@ -568,6 +603,8 @@ def reward_function_hypervolume(reflectivity, thermal_noise, total_thickness, ab
     rewards["total_reward"] = total_reward
     rewards["hypervolume_reward"] = hypervolume_reward
     rewards["front_improvement_reward"] = front_improvement_reward
+    rewards["diversity_bonus"] = diversity_bonus if 'diversity_bonus' in locals() else 0
+    rewards["size_bonus"] = size_bonus if 'size_bonus' in locals() else 0
     rewards["reflectivity"] = 0  # Not used in hypervolume approach
     rewards["thermal_noise"] = 0  # Not used in hypervolume approach  
     rewards["thickness"] = 0  # Not used in hypervolume approach

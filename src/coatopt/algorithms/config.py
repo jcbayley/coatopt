@@ -62,3 +62,4 @@ class HPPOConstants:
     BEST_STATE_PLOT = "best_state.png"
     ALL_POINTS_FILE = "all_points.txt"
     ALL_POINTS_DATA_FILE = "all_points_data.txt"
+    PARETO_FRONT_FILE = "pareto_front_latest.txt"

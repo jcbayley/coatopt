@@ -120,7 +120,57 @@ class HPPOTrainer:
         with open(best_states_path, "rb") as f:
             self.best_states = pickle.load(f)
         
+        # Load Pareto front into environment
+        self._load_pareto_front()
+        
         self.continue_training = True
+
+    def _load_pareto_front(self) -> None:
+        """Load Pareto front from saved file into environment."""
+        pareto_file = os.path.join(self.root_dir, HPPOConstants.PARETO_FRONT_FILE)
+        all_points_file = os.path.join(self.root_dir, HPPOConstants.ALL_POINTS_FILE)
+        all_data_file = os.path.join(self.root_dir, HPPOConstants.ALL_POINTS_DATA_FILE)
+        
+        try:
+            if os.path.exists(pareto_file):
+                pareto_front = np.loadtxt(pareto_file)
+                # Handle case where only one point exists (1D array)
+                if pareto_front.ndim == 1:
+                    pareto_front = pareto_front.reshape(1, -1)
+                self.env.pareto_front = pareto_front
+                
+                # Update reference point based on loaded Pareto front
+                if len(pareto_front) > 0:
+                    self.env.reference_point = np.max(self.env.pareto_front, axis=0) * 1.1
+                
+                print(f"Loaded Pareto front with {len(pareto_front)} points")
+            else:
+                print("No Pareto front file found, initializing empty Pareto front")
+                self.env.pareto_front = np.empty((0, len(self.env.optimise_parameters)))
+            
+            # Load saved points and data if they exist
+            if os.path.exists(all_points_file):
+                saved_points = np.loadtxt(all_points_file)
+                if saved_points.ndim == 1 and len(saved_points) > 0:
+                    saved_points = saved_points.reshape(1, -1)
+                self.env.saved_points = saved_points.tolist() if saved_points.size > 0 else []
+            else:
+                self.env.saved_points = []
+                
+            if os.path.exists(all_data_file):
+                saved_data = np.loadtxt(all_data_file)
+                if saved_data.ndim == 1 and len(saved_data) > 0:
+                    saved_data = saved_data.reshape(1, -1)
+                self.env.saved_data = saved_data.tolist() if saved_data.size > 0 else []
+            else:
+                self.env.saved_data = []
+                
+        except Exception as e:
+            print(f"Warning: Failed to load Pareto front data: {e}")
+            print("Initializing empty Pareto front")
+            self.env.pareto_front = np.empty((0, len(self.env.optimise_parameters)))
+            self.env.saved_points = []
+            self.env.saved_data = []
 
     def write_metrics_to_file(self) -> None:
         """Save training metrics to CSV file."""
@@ -426,9 +476,13 @@ class HPPOTrainer:
         pareto_dir = os.path.join(self.root_dir, HPPOConstants.PARETO_FRONTS_DIR)
         os.makedirs(pareto_dir, exist_ok=True)
         
-        # Save Pareto front
+        # Save Pareto front with episode number
         pareto_file = os.path.join(pareto_dir, f"pareto_front_it{episode}.txt")
         np.savetxt(pareto_file, self.env.pareto_front, header="Reflectivity, Absorption")
+        
+        # Save latest Pareto front for continuation
+        latest_pareto_file = os.path.join(self.root_dir, HPPOConstants.PARETO_FRONT_FILE)
+        np.savetxt(latest_pareto_file, self.env.pareto_front, header="Reflectivity, Absorption")
         
         # Save all points
         all_points_file = os.path.join(self.root_dir, HPPOConstants.ALL_POINTS_FILE)
