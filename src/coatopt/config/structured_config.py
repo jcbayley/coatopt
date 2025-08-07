@@ -1,5 +1,5 @@
 """
-Structured configuration management for coating optimization.
+Structured configuration management for coating optimisation.
 Provides type-safe configuration objects to replace repetitive config.get() calls.
 """
 from dataclasses import dataclass, field, fields, MISSING
@@ -166,7 +166,7 @@ class TrainingConfig(BaseConfig):
     lr_min: float
     t_mult: float
     
-    # Pareto optimization
+    # Pareto optimisation
     n_init_solutions: int
     final_weight_epoch: int
     start_weight_alpha: float
@@ -177,15 +177,15 @@ class TrainingConfig(BaseConfig):
 
 
 @dataclass
-class CoatingOptimizationConfig:
-    """Complete configuration for coating optimization."""
+class CoatingoptimisationConfig:
+    """Complete configuration for coating optimisation."""
     general: GeneralConfig
     data: DataConfig
     network: NetworkConfig
     training: TrainingConfig
     
     @classmethod
-    def from_config_parser(cls, config: CoatingConfigParser) -> 'CoatingOptimizationConfig':
+    def from_config_parser(cls, config: CoatingConfigParser) -> 'CoatingoptimisationConfig':
         """Create structured config from ConfigParser using automatic field mapping."""
         
         # Define defaults for optional fields

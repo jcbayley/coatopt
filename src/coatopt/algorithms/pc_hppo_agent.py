@@ -1,5 +1,5 @@
 """
-PC-HPPO (Proximal Constrained Hierarchical Proximal Policy Optimization) Agent.
+PC-HPPO (Proximal Constrained Hierarchical Proximal Policy optimisation) Agent.
 Refactored from pc_hppo_oml.py for improved readability and maintainability.
 """
 from typing import Union, Optional, Tuple, List
@@ -21,10 +21,10 @@ from coatopt.algorithms.action_utils import (
 
 class PCHPPO:
     """
-    Proximal Constrained Hierarchical Proximal Policy Optimization agent.
+    Proximal Constrained Hierarchical Proximal Policy optimisation agent.
     
     Implements a multi-objective reinforcement learning agent with separate
-    discrete and continuous action spaces for coating optimization.
+    discrete and continuous action spaces for coating optimisation.
     """
 
     def __init__(
@@ -76,7 +76,7 @@ class PCHPPO:
             num_discrete: Number of discrete actions
             num_cont: Number of continuous actions
             hidden_size: Hidden layer size for networks
-            num_objectives: Number of optimization objectives
+            num_objectives: Number of optimisation objectives
             disc_lr_policy: Learning rate for discrete policy
             cont_lr_policy: Learning rate for continuous policy
             lr_value: Learning rate for value function
@@ -328,7 +328,7 @@ class PCHPPO:
             actionc: Continuous action to evaluate (if None, sample new)
             actiond: Discrete action to evaluate (if None, sample new)  
             packed: Whether state is already packed
-            objective_weights: Multi-objective optimization weights
+            objective_weights: Multi-objective optimisation weights
             
         Returns:
             Tuple containing action components, probabilities, and values

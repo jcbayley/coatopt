@@ -1,5 +1,5 @@
 """
-Real-time Training UI for PC-HPPO-OML Coating Optimization
+Real-time Training UI for PC-HPPO-OML Coating optimisation
 
 A simple GUI for loading configuration files and monitoring training progress
 with live plots of rewards and Pareto front evolution.
@@ -22,9 +22,9 @@ import pandas as pd
 from pymoo.util.nds.non_dominated_sorting import NonDominatedSorting
 
 from coatopt.config import read_config, read_materials
-from coatopt.config.structured_config import CoatingOptimizationConfig
-from coatopt.factories import setup_optimization_pipeline
-from coatopt.algorithms.hppo_trainer import HPPOTrainer
+from coatopt.config.structured_config import CoatingoptimisationConfig
+from coatopt.factories import setup_optimisation_pipeline
+from coatopt.algorithms.hppo_trainer import HPPOTrainer, create_ui_callbacks
 
 import traceback
 import logging
@@ -58,7 +58,7 @@ class TrainingMonitorUI:
         # Store objective information for consistent labeling
         self.objective_labels = []
         self.objective_scales = []
-        self.optimization_parameters = []
+        self.optimisation_parameters = []
         
         # Event handler tracking
         self.click_event_connection = None  # Store event connection to prevent multiple handlers
@@ -212,8 +212,8 @@ class TrainingMonitorUI:
     def get_objective_labels(self):
         """Get human-readable labels for objectives."""
         # First try to use stored parameters
-        if hasattr(self, 'optimization_parameters') and self.optimization_parameters:
-            objectives = self.optimization_parameters
+        if hasattr(self, 'optimisation_parameters') and self.optimisation_parameters:
+            objectives = self.optimisation_parameters
         elif self.env and hasattr(self.env, 'optimise_parameters'):
             objectives = self.env.optimise_parameters
         else:
@@ -231,8 +231,8 @@ class TrainingMonitorUI:
     def get_objective_scales(self):
         """Get appropriate scales (linear/log) for each objective."""
         # First try to use stored parameters
-        if hasattr(self, 'optimization_parameters') and self.optimization_parameters:
-            objectives = self.optimization_parameters
+        if hasattr(self, 'optimisation_parameters') and self.optimisation_parameters:
+            objectives = self.optimisation_parameters
         elif self.env and hasattr(self.env, 'optimise_parameters'):
             objectives = self.env.optimise_parameters
         else:
@@ -330,7 +330,7 @@ class TrainingMonitorUI:
             self.config_var.set(filename)
     
     def load_configuration(self):
-        """Load the configuration file and setup components."""
+        """Load the configuration file and setup components using unified engine."""
         config_path = self.config_var.get()
         if not config_path or not os.path.exists(config_path):
             messagebox.showerror("Error", "Please select a valid configuration file.")
@@ -338,36 +338,51 @@ class TrainingMonitorUI:
         
         try:
             self.status_var.set("Loading configuration...")
-            # self.root.update()  # Remove direct GUI update from non-main thread
-            
-            # Load configuration and materials
-            raw_config = read_config(os.path.abspath(config_path))
-            self.config = CoatingOptimizationConfig.from_config_parser(raw_config)
-            self.materials = read_materials(self.config.general.materials_file)
-            
-            # Setup optimization components
-            print(f"Optimization parameters: {self.config.data.optimise_parameters}")
-            print(f"Number of objectives: {len(self.config.data.optimise_parameters)}")
             
             # Determine whether to continue training based on checkbox
             continue_training = not self.retrain_var.get()  # If retrain is checked, don't continue
             
-            self.env, self.agent, self.trainer = setup_optimization_pipeline(
-                self.config, self.materials, continue_training=continue_training, init_pareto_front=False
+            # Load configuration and materials
+            raw_config = read_config(config_path)
+            self.config = CoatingoptimisationConfig.from_config_parser(raw_config)
+            self.materials = read_materials(self.config.general.materials_file)
+            
+            # Setup optimization components
+            self.env, self.agent, temp_trainer = setup_optimisation_pipeline(
+                self.config, 
+                self.materials, 
+                continue_training=continue_training,
+                init_pareto_front=False
             )
-
+            
+            # The trainer will be created in training_worker with UI callbacks
+            self.trainer = None
+            self.continue_training = continue_training
+            
+            print(f"Optimization parameters: {self.config.data.optimise_parameters}")
+            print(f"Number of objectives: {len(self.config.data.optimise_parameters)}")
             print(f"Agent num_objectives: {self.agent.num_objectives}")
-            print(f"Environment optimise_parameters: {self.env.optimise_parameters}")
+            print(f"Environment optimize_parameters: {self.env.optimise_parameters}")
             
             # Store objective information for consistent UI labeling
-            self.optimization_parameters = self.env.optimise_parameters.copy()
+            self.optimisation_parameters = self.env.optimise_parameters.copy()
             self.update_objective_info()
             
             # Load historical training data if not retraining
             if continue_training:
+                # Create temporary trainer to load historical data
+                temp_trainer_for_data = HPPOTrainer(
+                    self.agent, self.env,
+                    n_iterations=self.config.training.n_iterations,
+                    n_layers=self.config.data.n_layers,
+                    root_dir=self.config.general.root_dir,
+                    continue_training=True
+                )
+                self.trainer = temp_trainer_for_data  # Temporarily store for load_historical_data
                 self.load_historical_data()
+                self.trainer = None  # Reset for training_worker
             
-            # Update status with Pareto front information
+            # Update status with configuration info
             pareto_info = ""
             if hasattr(self.env, 'pareto_front') and len(self.env.pareto_front) > 0:
                 pareto_info = f" Loaded Pareto front: {len(self.env.pareto_front)} points."
@@ -473,8 +488,8 @@ class TrainingMonitorUI:
             }
         
         # Get objectives from stored parameters or environment
-        if hasattr(self, 'optimization_parameters') and self.optimization_parameters:
-            objectives = self.optimization_parameters
+        if hasattr(self, 'optimisation_parameters') and self.optimisation_parameters:
+            objectives = self.optimisation_parameters
         elif hasattr(self, 'env') and self.env and hasattr(self.env, 'optimise_parameters'):
             objectives = self.env.optimise_parameters
         else:
@@ -568,7 +583,7 @@ class TrainingMonitorUI:
     
     def start_training(self):
         """Start the training process in a separate thread."""
-        if self.trainer is None:
+        if self.agent is None or self.env is None or self.config is None:
             messagebox.showerror("Error", "Please load a configuration first.")
             return
         
@@ -605,152 +620,11 @@ class TrainingMonitorUI:
     def training_worker(self):
         """Worker thread for training process with monitoring."""
         try:
-            # Create a custom trainer that reports progress
-            class MonitoredTrainer(HPPOTrainer):
-                def __init__(self, *args, ui_queue=None, **kwargs):
-                    super().__init__(*args, **kwargs)
-                    self.ui_queue = ui_queue
-                    self.episode_count = 0
-                    self.ui_stop_signal = None  # Will be set from outside
-                
-                def make_plots(self):
-                    """Override to disable plotting in training thread."""
-                    pass  # Disable automatic plotting to prevent threading issues
-                
-                def _save_episode_visualization(self, episode, state, reward):
-                    """Override to disable episode visualization in training thread."""
-                    pass  # Disable visualization to prevent threading issues
-                
-                def train(self):
-                    """Override train method to check for stop signal."""
-                    print(f"Starting training from episode {self.start_episode} to {self.n_iterations}")
-                    
-                    # Initialize tracking variables
-                    all_means, all_stds, all_materials = [], [], []
-                    max_reward = self._get_initial_max_reward()
-                    max_state = None
-
-                    # Create states directory
-                    import os
-                    states_dir = os.path.join(self.root_dir, "states")
-                    os.makedirs(states_dir, exist_ok=True)
-
-                    import time
-                    start_time = time.time()
-                    
-                    # Main training loop with stop signal check
-                    for episode in range(self.start_episode, self.n_iterations):
-                        # Check for stop signal
-                        if self.ui_stop_signal and self.ui_stop_signal():
-                            print("Training stopped by user")
-                            break
-                            
-                        episode_start_time = time.time()
-                        
-                        # Determine if scheduler should step
-                        make_scheduler_step = self.scheduler_start <= episode <= self.scheduler_end
-                        
-                        # Run training episode
-                        episode_metrics, episode_data, episode_reward, final_state = self._run_training_episode(episode)
-                        
-                        # Update best states and reward tracking
-                        self._update_episode_tracking(episode_data, all_means, all_stds, all_materials)
-                        max_reward, max_state = self._update_max_reward(episode_reward, final_state, max_reward, max_state)
-                        
-                        # Perform network updates
-                        self._perform_network_updates(episode, episode_metrics, make_scheduler_step)
-                        
-                        # Save network weights if needed
-                        self._save_network_weights_if_needed(episode, episode_data['objective_weights'])
-                        
-                        # Record metrics
-                        self._record_episode_metrics(episode, episode_metrics, episode_reward, final_state, episode_data)
-                        
-                        # Periodic tasks (plotting, saving, etc.)
-                        if episode % 20 == 0 and episode != 0:  # HPPOConstants.EPISODE_PRINT_INTERVAL
-                            self._perform_periodic_tasks(episode, all_materials[0] if all_materials else [], episode_start_time, start_time, final_state, episode_reward)
-
-                    print(f"Training complete. Max reward: {max_reward}")
-                    return self.metrics.iloc[-1].to_dict() if len(self.metrics) > 0 else {}, max_state
-                
-                def _record_episode_metrics(self, episode, episode_metrics, episode_reward, final_state, episode_data):
-                    super()._record_episode_metrics(episode, episode_metrics, episode_reward, final_state, episode_data)
-                    
-                    # Send data to UI queue
-                    if self.ui_queue:
-                        try:
-                            # Prepare training data
-                            training_update = {
-                                'type': 'training_data',
-                                'episode': episode,
-                                'reward': episode_reward,
-                                'metrics': episode_metrics.copy()
-                            }
-                            self.ui_queue.put(training_update, block=False)
-                            
-                            # Send Pareto front data every 20 episodes (more frequent updates)
-                            if episode % 20 == 0 and hasattr(self.env, 'pareto_front'):
-                                # Get states corresponding to Pareto front points
-                                pareto_states = []
-                                if hasattr(self.env, 'pareto_states') and self.env.pareto_states is not None:
-                                    pareto_states = self.env.pareto_states.copy()
-                                elif hasattr(self.env, 'saved_states') and self.env.saved_states is not None:
-                                    # If pareto_states not available, try to get from saved_states
-                                    pareto_states = self.env.saved_states.copy()
-                                
-                                # Get best_states from the trainer, which contains rewards and states
-                                best_states = []
-                                if hasattr(self, 'best_states') and self.best_states is not None:
-                                    best_states = self.best_states.copy()
-                                
-                                # Extract points and states for Pareto analysis
-                                best_points = []
-                                best_state_data = []
-                                best_vals_list = []
-                
-                                for tot_reward, epoch, state, rewards, vals in best_states:
-                                    # Extract relevant metrics for Pareto front (use vals, not rewards)
-                                    reflectivity = vals.get('reflectivity', 0)
-                                    absorption = vals.get('absorption', 0)
-                                    # Convert reflectivity to 1-R for plotting
-                                    ref_loss = 1 - reflectivity
-                                    best_points.append([ref_loss, absorption])
-                                    best_state_data.append(state)
-                                    best_vals_list.append([reflectivity, absorption])  # Store original vals for Pareto computation
-                                
-                                # Recompute Pareto front from best points using vals
-                                recomputed_pareto_front = []
-                                pareto_indices = []
-                                if len(best_vals_list) > 0:
-                                    # Use non-dominated sorting on the actual values
-                                    vals_array = np.array(best_vals_list)
-                                    # For minimization: we want to minimize (1-reflectivity) and absorption
-                                    # So we need to flip reflectivity to make it a minimization problem
-                                    minimization_objectives = np.column_stack([1 - vals_array[:, 0], vals_array[:, 1]])
-                                    
-                                    nds = NonDominatedSorting()
-                                    fronts = nds.do(minimization_objectives)
-                                    
-                                    if len(fronts) > 0 and len(fronts[0]) > 0:
-                                        pareto_indices = fronts[0]
-                                        # Convert back to plotting format (1-R, absorption)
-                                        recomputed_pareto_front = [best_points[i] for i in pareto_indices]
-                                
-                                pareto_update = {
-                                    'type': 'pareto_data',
-                                    'episode': episode,
-                                    'pareto_front': np.array(recomputed_pareto_front) if recomputed_pareto_front else np.array([]),
-                                    'best_points': best_points,  # All best points for background plotting
-                                    'best_state_data': best_state_data,  # States corresponding to best points
-                                    'pareto_indices': pareto_indices,  # Indices of Pareto-optimal points
-                                    'pareto_states': [best_state_data[i] for i in pareto_indices],  # States for Pareto points
-                                }
-                                self.ui_queue.put(pareto_update, block=False)
-                        except queue.Full:
-                            pass  # Skip if queue is full
+            # Create UI callbacks
+            callbacks = create_ui_callbacks(self.training_queue, lambda: not self.is_training)
             
-            # Replace trainer with monitored version
-            monitored_trainer = MonitoredTrainer(
+            # Create unified trainer with callbacks
+            unified_trainer = HPPOTrainer(
                 self.agent, self.env,
                 n_iterations=self.config.training.n_iterations,
                 n_layers=self.config.data.n_layers,
@@ -764,29 +638,71 @@ class TrainingMonitorUI:
                 scheduler_start=self.config.training.scheduler_start,
                 scheduler_end=self.config.training.scheduler_end,
                 weight_network_save=self.config.training.weight_network_save,
-                ui_queue=self.training_queue,
-                continue_training=self.continue_training
+                use_unified_checkpoints=True,  # Use unified HDF5 checkpoint system
+                save_plots=False,  # UI handles plots separately
+                save_episode_visualizations=False,  # UI handles visualizations separately
+                continue_training=self.continue_training,
+                callbacks=callbacks
             )
             
-            if not self.continue_training:
-                # Initialize Pareto front for monitored trainer
-                monitored_trainer.init_pareto_front(n_solutions=1000)
+            # Log checkpoint system info
+            if hasattr(unified_trainer, 'checkpoint_manager'):
+                checkpoint_info = unified_trainer.checkpoint_manager.get_checkpoint_info()
+                if checkpoint_info.get('exists', False):
+                    checkpoint_msg = f"Using unified checkpoint: {checkpoint_info['size_mb']:.1f}MB"
+                    print(checkpoint_msg)
+                    # Update UI status to show checkpoint info
+                    self.training_queue.put({
+                        'type': 'status_update', 
+                        'message': f"Loaded unified checkpoint ({checkpoint_info['size_mb']:.1f}MB) - Training ready..."
+                    })
+                else:
+                    print("Initializing new unified checkpoint system")
+                    self.training_queue.put({
+                        'type': 'status_update', 
+                        'message': "Initialized unified checkpoint system - Training ready..."
+                    })
             
-            # Run training with periodic checks for stop signal
+            # Initialize Pareto front if not continuing
+            if not self.continue_training:
+                unified_trainer.init_pareto_front(n_solutions=1000)
+            
+            # Run training
             try:
-                # Add stop signal to trainer
-                monitored_trainer.ui_stop_signal = lambda: not self.is_training
-                final_metrics, final_state = monitored_trainer.train()
+                final_metrics, final_state = unified_trainer.train()
             except Exception as e:
-                self.training_queue.put({'type': 'error', 'message': str(e) + "\n" + traceback.format_exc()})
-                print(f"Training error: {str(e)} \n{traceback.format_exc()}")
+                error_msg = f"Training error: {str(e)}"
+                traceback_str = traceback.format_exc()
+                full_error = f"{error_msg}\n\nFull traceback:\n{traceback_str}"
+                
+                # Print to terminal for debugging
+                print("=" * 60)
+                print("TRAINING ERROR")
+                print("=" * 60)
+                print(full_error)
+                print("=" * 60)
+                
+                # Send to UI queue
+                self.training_queue.put({'type': 'error', 'message': full_error})
                 return
             
             if self.is_training:
                 self.training_queue.put({'type': 'complete', 'message': 'Training completed successfully!'})
         
         except Exception as e:
-            self.training_queue.put({'type': 'error', 'message': f'Training error: {str(e)}'})
+            error_msg = f'Training worker error: {str(e)}'
+            traceback_str = traceback.format_exc()
+            full_error = f"{error_msg}\n\nFull traceback:\n{traceback_str}"
+            
+            # Print to terminal for debugging
+            print("=" * 60)
+            print("TRAINING WORKER ERROR")
+            print("=" * 60)
+            print(full_error)
+            print("=" * 60)
+            
+            # Send to UI queue
+            self.training_queue.put({'type': 'error', 'message': full_error})
     
     def check_training_updates(self):
         """Check for training updates and update plots."""
@@ -867,6 +783,10 @@ class TrainingMonitorUI:
             self.save_plots_to_disk()
             messagebox.showinfo("Training Complete", update['message'])
         
+        elif update['type'] == 'status_update':
+            # Update status label with checkpoint information
+            self.status_var.set(update['message'])
+        
         elif update['type'] == 'error':
             self.stop_training()
             messagebox.showerror("Training Error", update['message'])
@@ -901,9 +821,9 @@ class TrainingMonitorUI:
             self._plot_metric_with_smoothing(self.rewards_axes[0], df, 'reward', 'Total Reward', window_size)
             
             # 2. Individual Reward Components - Dynamic based on optimize_parameters
-            if hasattr(self, 'optimization_parameters') and self.optimization_parameters:
-                # Use stored optimization parameters for consistency
-                optimise_params = self.optimization_parameters
+            if hasattr(self, 'optimisation_parameters') and self.optimisation_parameters:
+                # Use stored optimisation parameters for consistency
+                optimise_params = self.optimisation_parameters
             elif hasattr(self, 'env') and self.env and hasattr(self.env, 'optimise_parameters'):
                 # Get dynamic reward component names based on actual objectives
                 optimise_params = self.env.optimise_parameters
@@ -951,9 +871,9 @@ class TrainingMonitorUI:
             self.rewards_axes[3].set_yscale('log')
             
             # 5. Objective Weights - Dynamic based on optimize_parameters
-            if hasattr(self, 'optimization_parameters') and self.optimization_parameters:
-                # Use stored optimization parameters for consistency
-                optimise_params = self.optimization_parameters
+            if hasattr(self, 'optimisation_parameters') and self.optimisation_parameters:
+                # Use stored optimisation parameters for consistency
+                optimise_params = self.optimisation_parameters
             elif hasattr(self, 'env') and self.env and hasattr(self.env, 'optimise_parameters'):
                 # Get dynamic weight component names based on actual objectives
                 optimise_params = self.env.optimise_parameters
@@ -1127,6 +1047,17 @@ class TrainingMonitorUI:
             
             # Get the latest data
             latest_data = self.pareto_data[-1]
+            
+            # Check if this update contains actual pareto front data
+            if 'pareto_front' not in latest_data:
+                # This is likely a simplified update with only pareto_front_size
+                ax = self.pareto_fig.add_subplot(1, 1, 1)
+                size = latest_data.get('pareto_front_size', 0)
+                ax.text(0.5, 0.5, f'Pareto front size: {size}\nDetailed data not yet available', 
+                       transform=ax.transAxes, ha='center', va='center')
+                self.pareto_canvas.draw_idle()
+                return
+                
             pareto_front = latest_data['pareto_front'] 
             best_points = latest_data.get('best_points', None)
             current_episode = latest_data.get('episode', 'unknown')
@@ -1144,7 +1075,7 @@ class TrainingMonitorUI:
                 
                 # Force refresh from environment and stored parameters
                 if self.env and hasattr(self.env, 'optimise_parameters'):
-                    self.optimization_parameters = self.env.optimise_parameters.copy()
+                    self.optimisation_parameters = self.env.optimise_parameters.copy()
                 self.update_objective_info()
             
             # Use stored objective information
@@ -1154,8 +1085,8 @@ class TrainingMonitorUI:
             # Final validation - ensure we have valid objective information
             if not obj_labels or len(obj_labels) != pareto_front.shape[1]:
                 # Emergency fallback: create from stored parameters or generic
-                if hasattr(self, 'optimization_parameters') and self.optimization_parameters:
-                    if len(self.optimization_parameters) == pareto_front.shape[1]:
+                if hasattr(self, 'optimisation_parameters') and self.optimisation_parameters:
+                    if len(self.optimisation_parameters) == pareto_front.shape[1]:
                         label_mapping = {
                             'reflectivity': '1 - Reflectivity',
                             'absorption': 'Absorption [ppm]', 
@@ -1163,9 +1094,9 @@ class TrainingMonitorUI:
                             'thickness': 'Total Thickness [nm]'
                         }
                         obj_labels = [label_mapping.get(param, param.replace('_', ' ').title()) 
-                                     for param in self.optimization_parameters]
+                                     for param in self.optimisation_parameters]
                         obj_scales = ['log' if param in ['reflectivity', 'absorption', 'thermal_noise'] 
-                                     else 'linear' for param in self.optimization_parameters]
+                                     else 'linear' for param in self.optimisation_parameters]
                     else:
                         obj_labels = [f'Objective {i+1}' for i in range(pareto_front.shape[1])]
                         obj_scales = ['linear'] * pareto_front.shape[1]
@@ -1579,7 +1510,7 @@ class TrainingMonitorUI:
             if not hasattr(self, 'config') or not self.config:
                 return
                 
-            root_dir = self.config.optimization.root_dir
+            root_dir = self.config.general.root_dir
             if not root_dir or not os.path.exists(root_dir):
                 return
                 
@@ -1597,6 +1528,68 @@ class TrainingMonitorUI:
             
         except Exception as e:
             print(f"Warning: Failed to save plots to disk: {e}")
+
+    def show_training_summary(self):
+        """Show comprehensive training summary including checkpoint information."""
+        if not self.trainer:
+            messagebox.showwarning("No Training Data", "No trainer instance available.")
+            return
+            
+       
+            
+        try:
+            # Get training summary from the trainer
+            if hasattr(self.trainer, 'get_training_summary'):
+                summary = self.trainer.get_training_summary()
+                
+                summary_text = "Training Summary\n" + "="*50 + "\n\n"
+                
+                # Basic training info
+                summary_text += f"Checkpoint Type: {summary.get('checkpoint_type', 'unknown')}\n"
+                summary_text += f"Current Episode: {summary.get('current_episode', 0)}\n"
+                summary_text += f"Target Episodes: {summary.get('target_episodes', 0)}\n"
+                summary_text += f"Completion: {summary.get('completion_percent', 0)}%\n"
+                summary_text += f"Metrics Recorded: {summary.get('metrics_count', 0)}\n"
+                summary_text += f"Best States: {summary.get('best_states_count', 0)}\n"
+                
+                # Pareto front info
+                if 'pareto_front_size' in summary:
+                    summary_text += f"\nPareto Front Size: {summary['pareto_front_size']}\n"
+                if 'total_points_explored' in summary:
+                    summary_text += f"Total Points Explored: {summary['total_points_explored']}\n"
+                if 'objectives_count' in summary:
+                    summary_text += f"Objectives Count: {summary['objectives_count']}\n"
+                
+                # Checkpoint info
+                if 'checkpoint_info' in summary:
+                    checkpoint_info = summary['checkpoint_info']
+                    summary_text += f"\nCheckpoint Information:\n"
+                    summary_text += f"  Exists: {checkpoint_info.get('exists', False)}\n"
+                    if checkpoint_info.get('exists', False):
+                        summary_text += f"  Size: {checkpoint_info.get('size_mb', 0):.2f} MB\n"
+                        summary_text += f"  Groups: {checkpoint_info.get('groups', [])}\n"
+                        if 'last_updated' in checkpoint_info:
+                            summary_text += f"  Last Updated: {checkpoint_info['last_updated']}\n"
+                
+                # Show summary in dialog
+                dialog = tk.Toplevel(self.root)
+                dialog.title("Training Summary")
+                dialog.geometry("500x400")
+                
+                text_widget = tk.Text(dialog, wrap=tk.WORD, padx=10, pady=10)
+                text_widget.pack(fill=tk.BOTH, expand=True)
+                text_widget.insert(tk.END, summary_text)
+                text_widget.config(state=tk.DISABLED)  # Make read-only
+                
+                # Add close button
+                close_button = ttk.Button(dialog, text="Close", command=dialog.destroy)
+                close_button.pack(pady=10)
+                
+            else:
+                messagebox.showinfo("Training Summary", "Training summary not available for this trainer version.")
+                
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to get training summary: {str(e)}")
 
 
 def main():

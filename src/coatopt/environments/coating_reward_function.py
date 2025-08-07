@@ -357,9 +357,8 @@ def reward_function_log_minimise(reflectivity, thermal_noise, total_thickness, a
     return total_reward, vals, rewards
 
 
-
-def reward_function_area(reflectivity, thermal_noise, total_thickness, absorption, optimise_parameters, optimise_targets, env, combine="product", neg_reward=-1e3, weights=None):
-    """Area-based reward function that considers Pareto front diversity and domination.
+def reward_function_normalise_log_targets(reflectivity, thermal_noise, total_thickness, absorption, optimise_parameters, optimise_targets, env, combine="product", neg_reward=-1e3, weights=None):
+    """_summary_
 
     Args:
         reflectivity (_type_): _description_
@@ -368,13 +367,9 @@ def reward_function_area(reflectivity, thermal_noise, total_thickness, absorptio
         absorption (_type_): _description_
         optimise_parameters (_type_): _description_
         optimise_targets (_type_): _description_
-        env (_type_): environment containing pareto front and reference point
-        combine (str): how to combine rewards ("sum", "product", "logproduct")
-        neg_reward (float): penalty for invalid values
-        weights (_type_): weights for each parameter
 
     Returns:
-        tuple: (total_reward, vals, rewards)
+        _type_: _description_
     """
 
     vals = {
@@ -388,63 +383,130 @@ def reward_function_area(reflectivity, thermal_noise, total_thickness, absorptio
 
     rewards = {key:0 for key in vals}
 
-    # Create new point from current values
-    new_point = np.array([[vals[param] for param in optimise_parameters]])
+    if not hasattr(env, 'objective_bounds'):
+        env.objective_bounds = {
+            'reflectivity': {'min': 1e-6, 'max': 1e-1},      # Typical coating values
+            'absorption': {'min': 1e-4, 'max': 1000.0},         # Physical bounds
+            'thermal_noise': {'min': 1e-25, 'max': 1e-15},   # Typical noise values  
+            'thickness': {'min': 100, 'max': 50000}          # nm range
+        }
+
+    normed_vals = {}
+    normed_targets = {}
+    for key in vals.keys():
+        if key in optimise_parameters:
+            normed_vals[key] = (vals[key] - env.objective_bounds[key]['min']) / (env.objective_bounds[key]['max'] - env.objective_bounds[key]['min'])
+            normed_targets[key] = (optimise_targets[key] - env.objective_bounds[key]['min']) / (env.objective_bounds[key]['max'] - env.objective_bounds[key]['min'])
+
+    if "reflectivity" in optimise_parameters:
+        log_reflect = -np.log(np.abs(normed_vals["reflectivity"]-normed_targets["reflectivity"])) + 12
+        rewards["reflectivity"] = log_reflect 
+
+    if "thermal_noise" in optimise_parameters and thermal_noise is not None:
+        log_therm = np.log(1./np.abs(normed_vals["thermal_noise"]-normed_targets["thermal_noise"]))
+        rewards["thermal_noise"] = log_therm 
+
+    if "thickness" in optimise_parameters:
+        rewards["thickeness"] = -normed_vals["thickness"]
     
-    updated_pareto_front, front_updated = env.update_pareto_front(copy.copy(env.pareto_front), copy.copy(new_point))
-    #updated_pareto_front = env.compute_pareto_front(points)       
+    if "absorption" in optimise_parameters:
+        log_absorption = (-np.log(np.abs(normed_vals["absorption"]-normed_targets["absorption"])) + 12) 
+        rewards["absorption"] = log_absorption
 
 
-    # Compute diversity reward based on spread of Pareto front
-    diversity_reward = 0
-    area_reward_val = 0
-    
-    if len(updated_pareto_front) > 1:
-        # Sort points by first objective for area calculation
-        sorted_front = updated_pareto_front[np.argsort(updated_pareto_front[:, 0])]
-        
-        # Calculate area under front using trapezoidal rule
-        area_under_front = np.trapz(sorted_front[:, 1], sorted_front[:, 0])
-        
-        # Normalize area by width to avoid penalizing wider fronts
-        front_width = np.max(sorted_front[:, 0]) - np.min(sorted_front[:, 0])
-        normalized_area = area_under_front / (front_width + 1e-6)  # Add small epsilon to avoid division by zero
-        
-        # Reward lower normalized area (closer to origin)
-        area_reward_val = -normalized_area * 5  # Negative because smaller area is better
-        
-        # Diversity reward based on spread
-        front_range = np.ptp(updated_pareto_front, axis=0)  # Range in each dimension
-        diversity_reward = np.sum(front_range) * 3  # Reward wider spread
-        
-        # Additional reward for front size
-        diversity_reward += len(updated_pareto_front) * 2
-
-    # Domination reward - how much better this point is than reference
-    domination_reward = 0
-    if len(env.reference_point) > 0:
-        # Distance from reference point (negative because we want to minimize)
-        ref_distance = np.linalg.norm(new_point - env.reference_point)
-        domination_reward = -ref_distance * 10
-
-
-    # Add area-based rewards
-    total_reward = diversity_reward + area_reward_val + domination_reward
+    if combine=="sum":
+        total_reward = np.sum([rewards[key]*weights[key] for key in optimise_parameters])
+    elif combine=="product":
+        total_reward = np.prod([rewards[key] for key in optimise_parameters])
+    elif combine=="logproduct":
+        total_reward = np.log(np.prod([rewards[key] for key in optimise_parameters]) )
+    else:
+        raise ValueError(f"combine must be either 'sum' or 'product' not {combine}")
 
     if np.isnan(total_reward) or np.isinf(total_reward):
+        #rewards["total_reward"] = neg_reward
         total_reward = neg_reward
 
     rewards["total_reward"] = total_reward
-    rewards["diversity_reward"] = diversity_reward
-    rewards["area_reward"] = area_reward_val
-    rewards["domination_reward"] = domination_reward
-    rewards["reflectivity"] = 0
-    rewards["thermal_noise"] = 0
-    rewards["thickness"] = 0
-    rewards["absorption"] = 0
 
     return total_reward, vals, rewards
 
+
+def reward_function_normalise_log(reflectivity, thermal_noise, total_thickness, absorption, optimise_parameters, optimise_targets, env, combine="product", neg_reward=-1e3, weights=None):
+    """_summary_
+
+    Args:
+        reflectivity (_type_): _description_
+        thermal_noise (_type_): _description_
+        total_thickness (_type_): _description_
+        absorption (_type_): _description_
+        optimise_parameters (_type_): _description_
+        optimise_targets (_type_): _description_
+
+    Returns:
+        _type_: _description_
+    """
+
+    vals = {
+        "reflectivity": reflectivity,
+        "thermal_noise": thermal_noise,
+        "thickness": total_thickness,
+        "absorption": absorption
+    }
+    if weights is None:
+        weights = {key:1 for key in vals}
+
+    rewards = {key:0 for key in vals}
+
+    if not hasattr(env, 'objective_bounds'):
+        env.objective_bounds = {
+            'reflectivity': {'min': 1e-6, 'max': 1e-1},      # Typical coating values
+            'absorption': {'min': 1e-4, 'max': 1000.0},         # Physical bounds
+            'thermal_noise': {'min': 1e-25, 'max': 1e-15},   # Typical noise values  
+            'thickness': {'min': 100, 'max': 50000}          # nm range
+        }
+
+    normed_vals = {}
+    normed_targets = {}
+    normed_log_vals = {}
+    for key in vals.keys():
+        if key in optimise_parameters:
+            normed_vals[key] = (vals[key] - env.objective_bounds[key]['min']) / (env.objective_bounds[key]['max'] - env.objective_bounds[key]['min'])
+            normed_targets[key] = (optimise_targets[key] - env.objective_bounds[key]['min']) / (env.objective_bounds[key]['max'] - env.objective_bounds[key]['min'])
+            normed_log_vals = (np.log(vals[key]) - np.log(env.objective_bounds[key]['min'])) / (np.log(env.objective_bounds[key]['max']) - np.log(env.objective_bounds[key]['min']))
+    
+    if "reflectivity" in optimise_parameters:
+        log_reflect = normed_log_vals["reflectivity"] 
+        rewards["reflectivity"] = log_reflect 
+
+    if "thermal_noise" in optimise_parameters and thermal_noise is not None:
+        log_therm = -normed_vals["thermal_noise"] 
+        rewards["thermal_noise"] = log_therm 
+
+    if "thickness" in optimise_parameters:
+        rewards["thickeness"] = -normed_vals["thickness"]
+    
+    if "absorption" in optimise_parameters:
+        log_absorption = -normed_log_vals["absorption"]
+        rewards["absorption"] = log_absorption
+
+
+    if combine=="sum":
+        total_reward = np.sum([rewards[key]*weights[key] for key in optimise_parameters])
+    elif combine=="product":
+        total_reward = np.prod([rewards[key] for key in optimise_parameters])
+    elif combine=="logproduct":
+        total_reward = np.log(np.prod([rewards[key] for key in optimise_parameters]) )
+    else:
+        raise ValueError(f"combine must be either 'sum' or 'product' not {combine}")
+
+    if np.isnan(total_reward) or np.isinf(total_reward):
+        #rewards["total_reward"] = neg_reward
+        total_reward = neg_reward
+
+    rewards["total_reward"] = total_reward
+
+    return total_reward, vals, rewards
 
 def reward_function_hypervolume(reflectivity, thermal_noise, total_thickness, absorption, 
                                optimise_parameters, optimise_targets, env, 
@@ -453,7 +515,7 @@ def reward_function_hypervolume(reflectivity, thermal_noise, total_thickness, ab
     """Hypervolume-based reward function with log-space normalization.
     
     This version transforms objectives to log-space and normalizes them to handle
-    different scales properly, then computes hypervolume for multi-objective optimization.
+    different scales properly, then computes hypervolume for multi-objective optimisation.
 
     Args:
         reflectivity: Reflectivity value (typically 1-R)
@@ -461,7 +523,7 @@ def reward_function_hypervolume(reflectivity, thermal_noise, total_thickness, ab
         total_thickness: Total coating thickness
         absorption: Absorption value
         optimise_parameters: List of parameters being optimized
-        optimise_targets: Target values for optimization
+        optimise_targets: Target values for optimisation
         env: Environment containing pareto front and reference point
         combine: How to combine rewards (not used in hypervolume approach)
         neg_reward: Penalty for invalid values

@@ -5,13 +5,13 @@ Simplifies object creation and reduces parameter passing complexity.
 from typing import Dict, Any
 from coatopt.algorithms import pc_hppo_oml
 from coatopt.environments.thermal_noise_environment_pareto import ParetoCoatingStack
-from coatopt.config.structured_config import CoatingOptimizationConfig
+from coatopt.config.structured_config import CoatingoptimisationConfig
 from typing import Tuple
 
 
 
 
-def create_pareto_environment(config: CoatingOptimizationConfig, materials: Dict[int, Dict[str, Any]]) -> ParetoCoatingStack:
+def create_pareto_environment(config: CoatingoptimisationConfig, materials: Dict[int, Dict[str, Any]]) -> ParetoCoatingStack:
     """
     Create ParetoCoatingStack environment from structured configuration.
     
@@ -52,7 +52,7 @@ def create_pareto_environment(config: CoatingOptimizationConfig, materials: Dict
     return env
 
 
-def create_pc_hppo_agent(config: CoatingOptimizationConfig, env: ParetoCoatingStack) -> pc_hppo_oml.PCHPPO:
+def create_pc_hppo_agent(config: CoatingoptimisationConfig, env: ParetoCoatingStack) -> pc_hppo_oml.PCHPPO:
     """
     Create PC-HPPO agent from structured configuration.
     
@@ -107,7 +107,7 @@ def create_pc_hppo_agent(config: CoatingOptimizationConfig, env: ParetoCoatingSt
     return agent
 
 
-def create_trainer(config: CoatingOptimizationConfig, agent: pc_hppo_oml.PCHPPO, env: ParetoCoatingStack, continue_training: bool = False) -> pc_hppo_oml.HPPOTrainer:
+def create_trainer(config: CoatingoptimisationConfig, agent: pc_hppo_oml.PCHPPO, env: ParetoCoatingStack, continue_training: bool = False) -> pc_hppo_oml.HPPOTrainer:
     """
     Create HPPO trainer from structured configuration.
     
@@ -140,7 +140,7 @@ def create_trainer(config: CoatingOptimizationConfig, agent: pc_hppo_oml.PCHPPO,
     return trainer
 
 
-def load_model_if_needed(agent: pc_hppo_oml.PCHPPO, config: CoatingOptimizationConfig, continue_training: bool) -> None:
+def load_model_if_needed(agent: pc_hppo_oml.PCHPPO, config: CoatingoptimisationConfig, continue_training: bool) -> None:
     """
     Load pre-trained model weights if specified in configuration.
     
@@ -157,9 +157,9 @@ def load_model_if_needed(agent: pc_hppo_oml.PCHPPO, config: CoatingOptimizationC
         print(f"Loaded model from: {config.general.load_model_path if config.general.load_model_path != 'root' else config.general.root_dir}")
 
 
-def setup_optimization_pipeline(config: CoatingOptimizationConfig, materials: Dict[int, Dict[str, Any]], continue_training: bool = False, init_pareto_front: bool = True) -> Tuple[ParetoCoatingStack, pc_hppo_oml.PCHPPO, pc_hppo_oml.HPPOTrainer]:
+def setup_optimisation_pipeline(config: CoatingoptimisationConfig, materials: Dict[int, Dict[str, Any]], continue_training: bool = False, init_pareto_front: bool = True) -> Tuple[ParetoCoatingStack, pc_hppo_oml.PCHPPO, pc_hppo_oml.HPPOTrainer]:
     """
-    Complete setup of the optimization pipeline.
+    Complete setup of the optimisation pipeline.
     
     Args:
         config: Structured configuration object
