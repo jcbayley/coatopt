@@ -439,7 +439,6 @@ class CoatingStack():
         state_trim = self.trim_state(state)
         # reverse state
         state_trim = state_trim[::-1]
-    
 
         r, thermal_noise, e_integrated, total_thickness = merit_function(
             np.array(state_trim),
@@ -453,7 +452,6 @@ class CoatingStack():
             use_optical_thickness=self.use_optical_thickness
             )
         
-
         if return_separate:
             return r, thermal_noise, e_integrated, total_thickness
         else:
