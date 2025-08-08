@@ -2,8 +2,8 @@ import numpy as np
 import torch 
 from torch.nn import functional as F
 from collections import deque
-from coatopt.networks.truncated_normal import TruncatedNormalDist
-from coatopt.algorithms.pre_networks import PreNetworkLinear, PreNetworkLSTM, PreNetworkAttention
+from coatopt.src.coatopt.utils.truncated_normal import TruncatedNormalDist
+from coatopt.src.coatopt.algorithms.hppo.pre_networks import PreNetworkLinear, PreNetworkLSTM, PreNetworkAttention
 from torch.nn.utils.rnn import pack_padded_sequence, pad_sequence
 import os
 import sys
@@ -138,9 +138,9 @@ class PCHPPO(object):
             hyper_networks=False):
 
         if hyper_networks:
-            from coatopt.algorithms.hyper_policy_nets import DiscretePolicy, ContinuousPolicy, Value
+            from coatopt.src.coatopt.algorithms.hppo.hyper_policy_nets import DiscretePolicy, ContinuousPolicy, Value
         else:
-            from coatopt.algorithms.policy_nets import DiscretePolicy, ContinuousPolicy, Value
+            from coatopt.src.coatopt.algorithms.hppo.policy_nets import DiscretePolicy, ContinuousPolicy, Value
 
         print("sd", state_dim)
         self.upper_bound = upper_bound

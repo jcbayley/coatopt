@@ -26,7 +26,7 @@ class ParetoCoatingStack(CoatingStack):
             reflectivity_reward_shape="none",
             thermal_reward_shape="log_thermal_noise",
             absorption_reward_shape="log_absorption",
-            reward_func="default",
+            reward_function=None,
             use_intermediate_reward=False,
             ignore_air_option=False,
             ignore_substrate_option=False,
@@ -34,6 +34,7 @@ class ParetoCoatingStack(CoatingStack):
             optimise_parameters = ["reflectivity", "thermal_noise", "absorption","thickness"],
             optimise_targets = {"reflectivity":0.99999, "thermal_noise":5.394480540642821e-21, "absorption":0.01, "thickness":0.1},
             optimise_weight_ranges = {"reflectivity":[0,1], "thermal_noise":[0,1], "absorption":[0,1], "thickness":[0,1]},
+            design_criteria = {"reflectivity":0.99999, "thermal_noise":5.394480540642821e-21, "absorption":0.01, "thickness":0.1},
             light_wavelength=1064e-9,
             include_random_rare_state=False,
             use_optical_thickness=True,
@@ -75,43 +76,79 @@ class ParetoCoatingStack(CoatingStack):
             optimise_parameters = optimise_parameters,
             optimise_targets = optimise_targets,
             optimise_weight_ranges=optimise_weight_ranges,
+            design_criteria=design_criteria,
             light_wavelength=light_wavelength,
             include_random_rare_state=include_random_rare_state,
             use_optical_thickness=use_optical_thickness,
             combine=combine,
-            reward_func=reward_func,
+            reward_function=reward_function,
             final_weight_epoch=final_weight_epoch,
             start_weight_alpha=start_weight_alpha,
             final_weight_alpha=final_weight_alpha,
             cycle_weights=cycle_weights,
             n_weight_cycles=n_weight_cycles)
         
-        self.pareto_front = []
+        self.pareto_front = np.empty((0, len(self.optimise_parameters)))  # Initialize as empty numpy array with correct shape
         self.reference_point = []
         self.saved_points = []
         self.saved_data = []
+
+
+    def compute_pareto_front(self, points):        
+        """
+        Compute the Pareto front from a set of points.
+
+        Parameters:
+            points (numpy.ndarray): Array of points (shape: [n_points, n_dimensions]).
+
+        Returns:
+            numpy.ndarray: Pareto front points.
+        """
+        # Perform non-dominated sorting
+        nds = NonDominatedSorting()
+        fronts = nds.do(points) 
+    
+        # Extract the Pareto front (the first front)
+        pareto_front = points[fronts[0]]
+    
+        return pareto_front
 
     def update_pareto_front(self, pareto_front, new_point):
         """
         Update the Pareto front with a new point and check if it updates the front.
 
         Parameters:
-            pareto_front (numpy.ndarray): Current Pareto front points (shape: [n_points, n_dimensions]).
+            pareto_front (numpy.ndarray or list): Current Pareto front points (shape: [n_points, n_dimensions]).
             new_point (numpy.ndarray): New point to be added (shape: [n_dimensions]).
 
         Returns:
             numpy.ndarray: Updated Pareto front.
             bool: Whether the Pareto front was updated or not.
         """
+        # Handle empty Pareto front case
+        if len(pareto_front) == 0 or (isinstance(pareto_front, np.ndarray) and pareto_front.size == 0):
+            # Warning when Pareto front is empty - this might indicate missing data from previous training
+            print("WARNING: Pareto front is empty. This may occur when:")
+            print("  - Starting fresh training (normal)")
+            print("  - Continuing training but previous Pareto front wasn't loaded (check save/load logic)")
+            
+            # If pareto front is empty, the new point becomes the first point
+            new_point_array = np.array([new_point]) if new_point.ndim == 1 else new_point
+            updated_pareto_front = self.compute_pareto_front(new_point_array)
+            return updated_pareto_front, True
+        
+        # Convert pareto_front to numpy array if it's a list
+        if isinstance(pareto_front, list):
+            pareto_front = np.array(pareto_front)
+        
+        # Ensure new_point is properly shaped (1D -> 2D)
+        if new_point.ndim == 1:
+            new_point = new_point.reshape(1, -1)
+        
         # Combine the current Pareto front with the new point
         combined_points = np.vstack([pareto_front, new_point])
 
-        # Perform non-dominated sorting
-        nds = NonDominatedSorting()
-        fronts = nds.do(combined_points)
-
-        # Extract the updated Pareto front (the first front)
-        updated_pareto_front = combined_points[fronts[0]]
+        updated_pareto_front = self.compute_pareto_front(combined_points)
 
         # Check if the Pareto front was updated
         pareto_updated = not np.array_equal(updated_pareto_front, pareto_front)
@@ -155,7 +192,7 @@ class ParetoCoatingStack(CoatingStack):
         else:
             weights=None
 
-        
+  
         total_reward, vals, rewards = self.select_reward(
             new_reflectivity, 
             new_thermal_noise, 
@@ -194,25 +231,26 @@ class ParetoCoatingStack(CoatingStack):
         if air_index <= 10:
             total_reward -= 50
 
-        if front_updated:
-            #total_reward = np.abs(np.sqrt(np.sum((new_point - self.pareto_front)**2)))/10 + 10
-            total_reward = total_reward
-            #total_reward = np.sum((minpareto - new_point)/minpareto) 
-            total_reward = total_reward + 10 #+ volume*1e-4
-            rewards["total_reward"] = total_reward
-            # Calculate the rewards based on the updated Pareto front
-            #rewards = {"reflectivity": 1, "thermal_noise": 1, "absorption": 1, "thickness": 1, "total_reward": total_reward}
-            self.pareto_front = updated_pareto_front
-            self.saved_points.append(new_point)
-            self.saved_data.append([new_reflectivity, new_thermal_noise, new_E_integrated, new_total_thickness])
-        else:
-            # No change in Pareto front, return zero rewards
-            #total_reward = -np.abs(np.sqrt(np.sum((new_point - self.pareto_front)**2)))/10
-            #total_reward = np.sum((minpareto - new_point)/minpareto)
-            total_reward = total_reward #+ volume*1e-4
-            rewards["total_reward"] = total_reward 
-            #rewards = {"total_reward": 0, "reflectivity": 0, "thermal_noise": 0, "absorption": 0, "thickness": 0, "total_reward": total_reward}
-        
+        if self.reward_function != "area":
+            if front_updated:
+                #total_reward = np.abs(np.sqrt(np.sum((new_point - self.pareto_front)**2)))/10 + 10
+                total_reward = total_reward
+                #total_reward = np.sum((minpareto - new_point)/minpareto) 
+                total_reward = total_reward + 10 #+ volume*1e-4
+                rewards["total_reward"] = total_reward
+                # Calculate the rewards based on the updated Pareto front
+                #rewards = {"reflectivity": 1, "thermal_noise": 1, "absorption": 1, "thickness": 1, "total_reward": total_reward}
+                self.pareto_front = updated_pareto_front
+                self.saved_points.append(new_point)
+                self.saved_data.append([new_reflectivity, new_thermal_noise, new_E_integrated, new_total_thickness])
+            else:
+                # No change in Pareto front, return zero rewards
+                #total_reward = -np.abs(np.sqrt(np.sum((new_point - self.pareto_front)**2)))/10
+                #total_reward = np.sum((minpareto - new_point)/minpareto)
+                total_reward = total_reward #+ volume*1e-4
+                rewards["total_reward"] = total_reward 
+                #rewards = {"total_reward": 0, "reflectivity": 0, "thermal_noise": 0, "absorption": 0, "thickness": 0, "total_reward": total_reward}
+            
         rewards["updated_pareto_front"] = updated_pareto_front
         rewards["front_updated"] = front_updated
             

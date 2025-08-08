@@ -1,14 +1,90 @@
 """
-Structured configuration management for coating optimization.
+Structured configuration management for coating optimisation.
 Provides type-safe configuration objects to replace repetitive config.get() calls.
 """
-from dataclasses import dataclass, field
-from typing import Dict, List, Any, Optional
+from dataclasses import dataclass, field, fields, MISSING
+from typing import Dict, List, Any, Optional, get_type_hints
 from .load_config import CoatingConfigParser
 
 
 @dataclass
-class GeneralConfig:
+class BaseConfig:
+    """Base configuration class with automatic field mapping from INI sections."""
+    
+    @classmethod
+    def from_config_section(cls, config: CoatingConfigParser, section_name: str, 
+                          strict=True, **defaults):
+        """Automatically create config from INI section using dataclass field names.
+        
+        Args:
+            config: Configuration parser
+            section_name: INI section name
+            strict: If True, raises error for unknown config parameters (catches typos)
+            **defaults: Default values for optional fields
+        """
+        kwargs = {}
+        
+        # Get type hints for proper type conversion
+        type_hints = get_type_hints(cls)
+        
+        # Get all expected field names from the dataclass
+        expected_fields = {field_info.name for field_info in fields(cls)}
+        
+        if strict:
+            # Get all actual field names from the config section
+            try:
+                actual_fields = set(config.options(section_name))
+            except:
+                actual_fields = set()
+            
+            # Check for typos/unknown fields in config
+            unknown_fields = actual_fields - expected_fields
+            if unknown_fields:
+                # Create helpful error message with suggestions
+                error_msg = f"Unknown configuration parameters in section '[{section_name}]': {sorted(unknown_fields)}.\n"
+                error_msg += f"Valid parameters are: {sorted(expected_fields)}\n"
+                
+                # Try to suggest corrections for potential typos
+                suggestions = []
+                for unknown in unknown_fields:
+                    close_matches = [field for field in expected_fields 
+                                   if abs(len(field) - len(unknown)) <= 2 and
+                                   sum(c1 != c2 for c1, c2 in zip(field, unknown)) <= 2]
+                    if close_matches:
+                        suggestions.append(f"'{unknown}' -> did you mean '{close_matches[0]}'?")
+                
+                if suggestions:
+                    error_msg += "Possible corrections:\n" + "\n".join(f"  {s}" for s in suggestions)
+                
+                raise ValueError(error_msg)
+        
+        for field_info in fields(cls):
+            field_name = field_info.name
+            field_type = type_hints.get(field_name, str)
+            
+            # Check if there's a default provided
+            default_value = defaults.get(field_name, field_info.default if field_info.default is not MISSING else None)
+            
+            try:
+                # Get value from config, using fallback if provided
+                if default_value is not None:
+                    value = config.get(section_name, field_name, fallback=default_value)
+                else:
+                    value = config.get(section_name, field_name)
+                
+                kwargs[field_name] = value
+                
+            except Exception as e:
+                if default_value is not None:
+                    kwargs[field_name] = default_value
+                else:
+                    raise ValueError(f"Required field '{field_name}' not found in section '{section_name}' and no default provided: {e}")
+        
+        return cls(**kwargs)
+
+
+@dataclass
+class GeneralConfig(BaseConfig):
     """General configuration parameters."""
     root_dir: str
     data_dir: str
@@ -19,7 +95,7 @@ class GeneralConfig:
 
 
 @dataclass
-class DataConfig:
+class DataConfig(BaseConfig):
     """Data and environment configuration parameters."""
     n_layers: int
     min_thickness: float
@@ -35,15 +111,16 @@ class DataConfig:
     optimise_parameters: List[str]
     optimise_targets: Dict[str, float]
     optimise_weight_ranges: Dict[str, List[float]]
+    design_criteria: Dict[str, float] 
     use_ligo_reward: bool
     include_random_rare_state: bool
     use_optical_thickness: bool
     combine: str
-    reward_func: str
+    reward_function: str
 
 
 @dataclass
-class NetworkConfig:
+class NetworkConfig(BaseConfig):
     """Neural network architecture configuration."""
     model_type: str
     hyper_networks: bool
@@ -61,7 +138,7 @@ class NetworkConfig:
 
 
 @dataclass
-class TrainingConfig:
+class TrainingConfig(BaseConfig):
     """Training hyperparameters and settings."""
     n_iterations: int
     lr_discrete_policy: float
@@ -87,8 +164,9 @@ class TrainingConfig:
     scheduler_end: int
     lr_step: int
     lr_min: float
+    t_mult: float
     
-    # Pareto optimization
+    # Pareto optimisation
     n_init_solutions: int
     final_weight_epoch: int
     start_weight_alpha: float
@@ -99,97 +177,86 @@ class TrainingConfig:
 
 
 @dataclass
-class CoatingOptimizationConfig:
-    """Complete configuration for coating optimization."""
+class GeneticConfig(BaseConfig):
+    """Genetic algorithm configuration parameters."""
+    algorithm: str  # NSGA2, NSGA3, MOEAD
+    population_size: int
+    n_generations: int
+    crossover_probability: float
+    crossover_eta: float
+    mutation_probability: float
+    mutation_eta: float
+    eliminate_duplicates: bool
+    n_neighbors: Optional[int] = None  # For MOEAD
+    prob_neighbor_mating: Optional[float] = None  # For MOEAD
+    n_partitions: Optional[int] = None  # For NSGA3/MOEAD reference directions
+    seed: int = 1234
+    thickness_sigma: float = 1e-4
+
+
+@dataclass
+class CoatingOptimisationConfig:
+    """Complete configuration for coating optimisation."""
     general: GeneralConfig
     data: DataConfig
-    network: NetworkConfig
-    training: TrainingConfig
+    network: Optional[NetworkConfig] = None
+    training: Optional[TrainingConfig] = None
+    genetic: Optional[GeneticConfig] = None
     
     @classmethod
-    def from_config_parser(cls, config: CoatingConfigParser) -> 'CoatingOptimizationConfig':
-        """Create structured config from ConfigParser."""
+    def from_config_parser(cls, config: CoatingConfigParser) -> 'CoatingOptimisationConfig':
+        """Create structured config from ConfigParser using automatic field mapping."""
         
-        general = GeneralConfig(
-            root_dir=config.get("General", "root_dir"),
-            data_dir=config.get("General", "data_dir"),
-            load_model=config.get("General", "load_model"),
-            load_model_path=config.get("General", "load_model_path"),
-            materials_file=config.get("General", "materials_file"),
-            continue_training=config.get("General", "continue_training")
-        )
+        # Define defaults for optional fields
+        data_defaults = {
+            'reflectivity_reward_shape': 'none',
+            'absorption_reward_shape': 'none',
+            'optimise_weight_ranges': {},
+            'use_optical_thickness': True,
+            'combine': 'logproduct'
+        }
         
-        data = DataConfig(
-            n_layers=config.get("Data", "n_layers"),
-            min_thickness=config.get("Data", "min_thickness"),
-            max_thickness=config.get("Data", "max_thickness"),
-            use_observation=config.get("Data", "use_observation"),
-            reward_shape=config.get("Data", "reward_shape"),
-            thermal_reward_shape=config.get("Data", "thermal_reward_shape"),
-            reflectivity_reward_shape=config.get("Data", "reflectivity_reward_shape", fallback="none"),
-            absorption_reward_shape=config.get("Data", "absorption_reward_shape", fallback="none"),
-            use_intermediate_reward=config.get("Data", "use_intermediate_reward"),
-            ignore_air_option=config.get("Data", "ignore_air_option"),
-            ignore_substrate_option=config.get("Data", "ignore_substrate_option"),
-            optimise_parameters=config.get("Data", "optimise_parameters"),
-            optimise_targets=config.get("Data", "optimise_targets"),
-            optimise_weight_ranges=config.get("Data", "optimise_weight_ranges", fallback={}),
-            use_ligo_reward=config.get("Data", "use_ligo_reward"),
-            include_random_rare_state=config.get("Data", "include_random_rare_state"),
-            use_optical_thickness=config.get("Data", "use_optical_thickness", fallback=True),
-            combine=config.get("Data", "combine", fallback="logproduct"),
-            reward_func=config.get("Data", "reward_func")
-        )
+        network_defaults = {
+            'n_continuous_layers': 2,
+            'n_discrete_layers': 2,
+            'n_value_layers': 2,
+            'discrete_hidden_size': 16,
+            'continuous_hidden_size': 16,
+            'value_hidden_size': 16
+        }
         
-        network = NetworkConfig(
-            model_type=config.get("Network", "model_type"),
-            hyper_networks=config.get("Network", "hyper_networks"),
-            include_layer_number=config.get("Network", "include_layer_number"),
-            include_material_in_policy=config.get("Network", "include_material_in_policy"),
-            pre_network_type=config.get("Network", "pre_network_type"),
-            hidden_size=config.get("Network", "hidden_size"),
-            n_pre_layers=config.get("Network", "n_pre_layers"),
-            n_continuous_layers=config.get("Network", "n_continuous_layers", fallback=2),
-            n_discrete_layers=config.get("Network", "n_discrete_layers", fallback=2),
-            n_value_layers=config.get("Network", "n_value_layers", fallback=2),
-            discrete_hidden_size=config.get("Network", "discrete_hidden_size", fallback=16),
-            continuous_hidden_size=config.get("Network", "continuous_hidden_size", fallback=16),
-            value_hidden_size=config.get("Network", "value_hidden_size", fallback=16)
-        )
+        training_defaults = {
+            'cycle_weights': False
+        }
         
-        training = TrainingConfig(
-            n_iterations=config.get("Training", "n_iterations"),
-            lr_discrete_policy=config.get("Training", "lr_discrete_policy"),
-            lr_continuous_policy=config.get("Training", "lr_continuous_policy"),
-            lr_value=config.get("Training", "lr_value"),
-            n_episodes_per_update=config.get("Training", "n_episodes_per_update"),
-            n_epochs_per_update=config.get("Training", "n_epochs_per_update"),
-            clip_ratio=config.get("Training", "clip_ratio"),
-            gamma=config.get("Training", "gamma"),
-            batch_size=config.get("Training", "batch_size"),
-            optimiser=config.get("Training", "optimiser"),
-            device=config.get("Training", "device"),
-            model_save_interval=config.get("Training", "model_save_interval"),
-            entropy_beta_start=config.get("Training", "entropy_beta_start"),
-            entropy_beta_end=config.get("Training", "entropy_beta_end"),
-            entropy_beta_decay_length=config.get("Training", "entropy_beta_decay_length"),
-            entropy_beta_decay_start=config.get("Training", "entropy_beta_decay_start"),
-            scheduler_start=config.get("Training", "scheduler_start"),
-            scheduler_end=config.get("Training", "scheduler_end"),
-            lr_step=config.get("Training", "lr_step"),
-            lr_min=config.get("Training", "lr_min"),
-            n_init_solutions=config.get("Training", "n_init_solutions"),
-            final_weight_epoch=config.get("Training", "final_weight_epoch"),
-            start_weight_alpha=config.get("Training", "start_weight_alpha"),
-            final_weight_alpha=config.get("Training", "final_weight_alpha"),
-            cycle_weights=config.get("Training", "cycle_weights", fallback=False),
-            n_weight_cycles=config.get("Training", "n_weight_cycles"),
-            weight_network_save=config.get("Training", "weight_network_save")
-        )
+        genetic_defaults = {
+            'eliminate_duplicates': True,
+            'seed': 10,
+            'thickness_sigma': 1e-4
+        }
+        
+        # Create config objects automatically
+        general = GeneralConfig.from_config_section(config, "General")
+        data = DataConfig.from_config_section(config, "Data", **data_defaults)
+        
+        # Optional sections
+        network = None
+        training = None
+        genetic = None
+        
+        if config.has_section("Network"):
+            network = NetworkConfig.from_config_section(config, "Network", **network_defaults)
+        
+        if config.has_section("Training"):
+            training = TrainingConfig.from_config_section(config, "Training", **training_defaults)
+        
+        if config.has_section("Genetic"):
+            genetic = GeneticConfig.from_config_section(config, "Genetic", **genetic_defaults)
         
         return cls(
             general=general,
             data=data,
             network=network,
-            training=training
+            training=training,
+            genetic=genetic
         )

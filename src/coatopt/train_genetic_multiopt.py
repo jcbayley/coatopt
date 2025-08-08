@@ -1,26 +1,24 @@
 """
-Multi-objective Pareto optimization training script for coating design.
-Refactored for improved structure and maintainability.
+Multi-objective genetic algorithm training script for coating design.
+Refactored to match the HPPO training structure and use structured configuration.
 """
 import os
 import argparse
 from coatopt.config import read_config, read_materials
-from coatopt.config.structured_config import CoatingOptimizationConfig
-from coatopt.factories import setup_optimization_pipeline
+from coatopt.config.structured_config import CoatingOptimisationConfig
+from coatopt.factories import setup_genetic_optimisation_pipeline
 from coatopt.utils.evaluation import run_evaluation_pipeline, create_enhanced_pareto_plots
 
 
 def parse_arguments():
     """Parse command line arguments."""
-    parser = argparse.ArgumentParser(description="Train PC-HPPO-OML for multi-objective coating optimization")
-    parser.add_argument("-c", "--config", type=str, required=False, default="none",
+    parser = argparse.ArgumentParser(description="Train genetic algorithm for multi-objective coating optimisation")
+    parser.add_argument("-c", "--config", type=str, required=True,
                         help="Path to configuration file")
     parser.add_argument('--train', action=argparse.BooleanOptionalAction, default=False,
                         help="Run training")
     parser.add_argument('--test', action=argparse.BooleanOptionalAction, default=False,
                         help="Run testing/evaluation")
-    parser.add_argument('--continue-training', action=argparse.BooleanOptionalAction, default=False,
-                        help="Continue training from checkpoint")
     parser.add_argument('-n', "--n-samples", type=int, required=False, default=1000,
                         help="Number of samples for evaluation")
     return parser.parse_args()
@@ -30,7 +28,11 @@ def load_configuration(config_path: str):
     """Load and structure configuration."""
     print(f"Loading configuration from: {config_path}")
     raw_config = read_config(os.path.abspath(config_path))
-    structured_config = CoatingOptimizationConfig.from_config_parser(raw_config)
+    structured_config = CoatingOptimisationConfig.from_config_parser(raw_config)
+    
+    # Validate genetic configuration
+    if structured_config.genetic is None:
+        raise ValueError("Genetic algorithm configuration section [Genetic] is required")
     
     materials = read_materials(structured_config.general.materials_file)
     print(f"Loaded {len(materials)} materials")
@@ -40,7 +42,7 @@ def load_configuration(config_path: str):
 
 def run_training(trainer):
     """Execute training process."""
-    print("Starting training...")
+    print("Starting genetic algorithm optimisation...")
     trainer.train()
     print("Training completed.")
 
@@ -48,10 +50,16 @@ def run_training(trainer):
 def run_evaluation(trainer, env, n_samples: int, output_dir: str):
     """Execute evaluation and visualization."""
     print("Starting evaluation...")
-    sampled_states, results, sampled_weights = run_evaluation_pipeline(trainer, env, n_samples, output_dir)
     
-    # Create enhanced pareto plots with training data if available
-    create_enhanced_pareto_plots(trainer, env, results, sampled_states, sampled_weights, output_dir)
+    # Use trainer's evaluate method which handles genetic algorithm specifics
+    sampled_states, results, sampled_weights = trainer.evaluate(n_samples)
+    
+    # The genetic trainer already saves results and creates basic plots
+    # We can add enhanced plots if needed
+    try:
+        create_enhanced_pareto_plots(trainer, env, results, sampled_states, sampled_weights, output_dir)
+    except Exception as e:
+        print(f"Warning: Could not create enhanced plots: {e}")
     
     return sampled_states, results, sampled_weights
 
@@ -64,11 +72,8 @@ def main():
     # Load configuration
     config, materials = load_configuration(args.config)
     
-    # Determine if continuing training
-    continue_training = args.continue_training or config.general.continue_training
-    
-    # Setup optimization pipeline
-    env, agent, trainer = setup_optimization_pipeline(config, materials, continue_training)
+    # Setup genetic optimisation pipeline
+    env, trainer = setup_genetic_optimisation_pipeline(config, materials)
     
     # Execute requested operations
     if args.train:

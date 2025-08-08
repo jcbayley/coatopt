@@ -161,6 +161,14 @@ def make_materials_plot(all_materials: List[List[List[float]]], n_layers: int, o
     padding_value = [0.0] * n_materials
     all_materials_padded = pad_lists(all_materials, padding_value, n_materials)
 
+    # Ensure itis of correct number of layers
+    if all_materials_padded.shape[0] < n_layers:
+        all_materials_padded = np.pad(
+            all_materials_padded, 
+            ((0, n_layers - all_materials_padded.shape[0]), (0, 0)), 
+            mode='constant', 
+            constant_values=0.0
+        )
     
     # Plot material probabilities for each layer
     for layer_idx in range(n_layers):

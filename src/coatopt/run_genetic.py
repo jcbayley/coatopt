@@ -10,7 +10,7 @@ import matplotlib.pyplot as plt
 import copy 
 from coatopt.environments.thermal_noise_environment_genetic import GeneticCoatingStack
 from coatopt.config import read_config, read_materials
-from coatopt.algorithms.genetic_algorithm import StatePool
+from coatopt.src.coatopt.algorithms.genetic_algorithms.genetic_algorithm import StatePool
 from coatopt.environments import coating_utils
 import argparse
 #import plotting

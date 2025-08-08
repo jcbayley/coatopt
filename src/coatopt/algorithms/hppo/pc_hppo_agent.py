@@ -1,5 +1,5 @@
 """
-PC-HPPO (Proximal Constrained Hierarchical Proximal Policy Optimization) Agent.
+PC-HPPO (Proximal Constrained Hierarchical Proximal Policy optimisation) Agent.
 Refactored from pc_hppo_oml.py for improved readability and maintainability.
 """
 from typing import Union, Optional, Tuple, List
@@ -9,9 +9,9 @@ from torch.nn import functional as F
 from collections import deque
 import os
 
-from coatopt.networks.truncated_normal import TruncatedNormalDist
-from coatopt.algorithms.pre_networks import PreNetworkLinear, PreNetworkLSTM, PreNetworkAttention
-from coatopt.algorithms.replay_buffer import ReplayBuffer
+from coatopt.utils.truncated_normal import TruncatedNormalDist
+from coatopt.algorithms.hppo.pre_networks import PreNetworkLinear, PreNetworkLSTM, PreNetworkAttention
+from coatopt.algorithms.hppo.replay_buffer import ReplayBuffer
 from coatopt.algorithms.config import HPPOConstants
 from coatopt.algorithms.action_utils import (
     prepare_state_input, prepare_layer_number, create_material_mask,
@@ -21,10 +21,10 @@ from coatopt.algorithms.action_utils import (
 
 class PCHPPO:
     """
-    Proximal Constrained Hierarchical Proximal Policy Optimization agent.
+    Proximal Constrained Hierarchical Proximal Policy optimisation agent.
     
     Implements a multi-objective reinforcement learning agent with separate
-    discrete and continuous action spaces for coating optimization.
+    discrete and continuous action spaces for coating optimisation.
     """
 
     def __init__(
@@ -34,8 +34,8 @@ class PCHPPO:
         num_cont: int, 
         hidden_size: int, 
         num_objectives: int = 3,
-        disc_lr_policy: float = 1e-4, 
-        cont_lr_policy: float = 1e-4, 
+        lr_discrete_policy: float = 1e-4, 
+        lr_continuous_policy: float = 1e-4, 
         lr_value: float = 2e-4, 
         lr_step: Union[int, List[int]] = 10,
         lr_min: float = 1e-6,
@@ -63,9 +63,9 @@ class PCHPPO:
         air_material_index: int = 0,
         ignore_air_option: bool = False,
         ignore_substrate_option: bool = False,
-        beta_start: float = 1.0,
-        beta_end: float = 0.001,
-        beta_decay_length: int = 500,
+        entropy_beta_start: float = 1.0,
+        entropy_beta_end: float = 0.001,
+        entropy_beta_decay_length: int = 500,
         hyper_networks: bool = False
     ):
         """
@@ -76,9 +76,9 @@ class PCHPPO:
             num_discrete: Number of discrete actions
             num_cont: Number of continuous actions
             hidden_size: Hidden layer size for networks
-            num_objectives: Number of optimization objectives
-            disc_lr_policy: Learning rate for discrete policy
-            cont_lr_policy: Learning rate for continuous policy
+            num_objectives: Number of optimisation objectives
+            lr_discrete_policy: Learning rate for discrete policy
+            lr_continuous_policy: Learning rate for continuous policy
             lr_value: Learning rate for value function
             lr_step: Learning rate scheduler step size
             lr_min: Minimum learning rate
@@ -106,16 +106,16 @@ class PCHPPO:
             air_material_index: Index of air material
             ignore_air_option: Whether to ignore air material
             ignore_substrate_option: Whether to ignore substrate material
-            beta_start: Initial entropy coefficient
-            beta_end: Final entropy coefficient
-            beta_decay_length: Entropy decay length
+            entropy_beta_start: Initial entropy coefficient
+            entropy_beta_end: Final entropy coefficient
+            entropy_beta_decay_length: Entropy decay length
             hyper_networks: Whether to use hypernetworks
         """
         # Import network classes based on hyper_networks flag
         if hyper_networks:
-            from coatopt.algorithms.hyper_policy_nets import DiscretePolicy, ContinuousPolicy, Value
+            from coatopt.algorithms.hppo.hyper_policy_nets import DiscretePolicy, ContinuousPolicy, Value
         else:
-            from coatopt.algorithms.policy_nets import DiscretePolicy, ContinuousPolicy, Value
+            from coatopt.algorithms.hppo.policy_nets import DiscretePolicy, ContinuousPolicy, Value
 
         # Store configuration
         self.upper_bound = upper_bound
@@ -126,9 +126,9 @@ class PCHPPO:
         self.ignore_air_option = ignore_air_option
         self.ignore_substrate_option = ignore_substrate_option
         self.num_objectives = num_objectives
-        self.beta_start = beta_start
-        self.beta_end = beta_end
-        self.beta_decay_length = beta_decay_length
+        self.entropy_beta_start = entropy_beta_start
+        self.entropy_beta_end = entropy_beta_end
+        self.entropy_beta_decay_length = entropy_beta_decay_length
         self.pre_type = pre_type
         self.n_updates = n_updates
 
@@ -148,7 +148,7 @@ class PCHPPO:
         )
 
         # Initialize optimizers and schedulers
-        self._setup_optimizers(optimiser, disc_lr_policy, cont_lr_policy, lr_value)
+        self._setup_optimizers(optimiser, lr_discrete_policy, lr_continuous_policy, lr_value)
         self._setup_schedulers(lr_step, T_mult, lr_min)
 
         # Initialize training components
@@ -222,19 +222,19 @@ class PCHPPO:
         self.policy_continuous_old.load_state_dict(self.policy_continuous.state_dict())
         self.value_old.load_state_dict(self.value.state_dict())
 
-    def _setup_optimizers(self, optimiser, disc_lr_policy, cont_lr_policy, lr_value):
+    def _setup_optimizers(self, optimiser, lr_discrete_policy, lr_continuous_policy, lr_value):
         """Setup optimizers for networks."""
         self.lr_value = lr_value
-        self.disc_lr_policy = disc_lr_policy
-        self.cont_lr_policy = cont_lr_policy
+        self.lr_discrete_policy = lr_discrete_policy
+        self.lr_continuous_policy = lr_continuous_policy
 
         if optimiser == "adam":
-            self.optimiser_discrete = torch.optim.Adam(self.policy_discrete.parameters(), lr=disc_lr_policy)
-            self.optimiser_continuous = torch.optim.Adam(self.policy_continuous.parameters(), lr=cont_lr_policy)
+            self.optimiser_discrete = torch.optim.Adam(self.policy_discrete.parameters(), lr=lr_discrete_policy)
+            self.optimiser_continuous = torch.optim.Adam(self.policy_continuous.parameters(), lr=lr_continuous_policy)
             self.optimiser_value = torch.optim.Adam(self.value.parameters(), lr=lr_value)
         elif optimiser == "sgd":
-            self.optimiser_discrete = torch.optim.SGD(self.policy_discrete.parameters(), lr=disc_lr_policy)
-            self.optimiser_continuous = torch.optim.SGD(self.policy_continuous.parameters(), lr=cont_lr_policy)
+            self.optimiser_discrete = torch.optim.SGD(self.policy_discrete.parameters(), lr=lr_discrete_policy)
+            self.optimiser_continuous = torch.optim.SGD(self.policy_continuous.parameters(), lr=lr_continuous_policy)
             self.optimiser_value = torch.optim.SGD(self.value.parameters(), lr=lr_value)
         else:
             raise ValueError(f"Unsupported optimizer: {optimiser}")
@@ -299,8 +299,14 @@ class PCHPPO:
             self.scheduler_continuous.step(step)
             self.scheduler_value.step(step)
 
-        # Calculate entropy coefficient based on current learning rate
-        entropy_val = self.beta_start * self.scheduler_value.get_last_lr()[0] / self.lr_value
+        # Calculate entropy coefficient using cosine annealing
+        if step < self.entropy_beta_decay_length:
+            # Cosine annealing from entropy_beta_start to beta_end
+            entropy_val = self.entropy_beta_end + (self.entropy_beta_start - self.entropy_beta_end) * (
+            1 + np.cos(np.pi * step / self.entropy_beta_decay_length)
+            ) / 2
+        else:
+            entropy_val = self.entropy_beta_end
         
         return (
             self.scheduler_discrete.get_last_lr(),
@@ -328,7 +334,7 @@ class PCHPPO:
             actionc: Continuous action to evaluate (if None, sample new)
             actiond: Discrete action to evaluate (if None, sample new)  
             packed: Whether state is already packed
-            objective_weights: Multi-objective optimization weights
+            objective_weights: Multi-objective optimisation weights
             
         Returns:
             Tuple containing action components, probabilities, and values
@@ -337,13 +343,18 @@ class PCHPPO:
         state_tensor = prepare_state_input(state, self.pre_type)
         layer_number, layer_numbers_validated = prepare_layer_number(layer_number)
         
-        # Pack state sequence for RNN processing
-        state_pack = pack_state_sequence(state_tensor, layer_numbers_validated)
+        # Pack state sequence only for LSTM processing
+        if self.pre_type == "lstm":
+            state_input = pack_state_sequence(state_tensor, layer_numbers_validated)
+            use_packed = True
+        else:
+            state_input = state_tensor
+            use_packed = False
         
         # Get pre-network outputs (optimized based on gradient needs)
         is_training = actionc is not None or actiond is not None  # If actions provided, likely training
         pre_output_d, pre_output_c, pre_output_v = self._get_pre_network_outputs(
-            state_pack, layer_number, objective_weights, needs_gradients=is_training
+            state_input, layer_number, objective_weights, needs_gradients=is_training, packed=use_packed
         )
         
         # Get discrete action probabilities
@@ -392,29 +403,40 @@ class PCHPPO:
             entropy_discrete, entropy_continuous
         )
 
-    def _get_pre_network_outputs(self, state_pack, layer_number, objective_weights, needs_gradients=True):
+    def _get_pre_network_outputs(self, state_input, layer_number, objective_weights, needs_gradients=True, packed=False):
         """
         Get pre-network outputs for different network heads.
         
         Args:
-            state_pack: Packed state sequence
+            state_input: State input (packed sequence for LSTM, regular tensor for others)
             layer_number: Layer number tensor
             objective_weights: Multi-objective weights
             needs_gradients: Whether gradients are needed (training vs inference)
+            packed: Whether the input is a packed sequence
             
         Returns:
             Tuple of (discrete_output, continuous_output, value_output)
         """
         if needs_gradients:
             # During training: separate forward passes for gradient computation
-            pre_output_d = self.pre_network(state_pack, layer_number, packed=True, weights=objective_weights)
-            pre_output_c = self.pre_network(state_pack, layer_number, packed=True, weights=objective_weights)
-            pre_output_v = self.pre_network(state_pack, layer_number, packed=True, weights=objective_weights)
+            if self.pre_type == "lstm":
+                pre_output_d = self.pre_network(state_input, layer_number, packed=packed, weights=objective_weights)
+                pre_output_c = self.pre_network(state_input, layer_number, packed=packed, weights=objective_weights)
+                pre_output_v = self.pre_network(state_input, layer_number, packed=packed, weights=objective_weights)
+            else:
+                # For non-LSTM networks, don't pass packed or weights parameters
+                pre_output_d = self.pre_network(state_input, layer_number)
+                pre_output_c = self.pre_network(state_input, layer_number)
+                pre_output_v = self.pre_network(state_input, layer_number)
             return pre_output_d, pre_output_c, pre_output_v
         else:
             # During inference: single forward pass, detach for efficiency
             with torch.no_grad():
-                pre_output = self.pre_network(state_pack, layer_number, packed=True, weights=objective_weights)
+                if self.pre_type == "lstm":
+                    pre_output = self.pre_network(state_input, layer_number, packed=packed, weights=objective_weights)
+                else:
+                    # For non-LSTM networks, don't pass packed or weights parameters
+                    pre_output = self.pre_network(state_input, layer_number)
                 return pre_output.detach(), pre_output.detach(), pre_output.detach()
 
     def _apply_material_constraints(self, discrete_probs, state_tensor, layer_number):

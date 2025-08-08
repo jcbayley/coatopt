@@ -1,7 +1,7 @@
 [project]
 name = "coatopt"
 description = "optimise coating layers"
-version = "0.0.1"
+version = "0.0.2"
 readme = "README.rst"
 authors = [
     { name = "Joseph Bayley", email = "joseph.bayley@glasgow.ac.uk" }
@@ -17,6 +17,12 @@ dependencies = [
     "numba"
 ]
 
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["coatopt", "coatopt_ui", "coatopt_cli"] 
+exclude = ["docs*"]
+namespaces = false
+
 [project.optional-dependencies]
 dev = [
     "tox",
@@ -27,3 +33,7 @@ dev = [
 [build-system]
 requires = ["setuptools", "setuptools-scm"]
 build-backend = "setuptools.build_meta"
+
+[project.scripts]
+coatopt-ui = "coatopt_ui.launch_ui:main"
+coatopt-train = "coatopt_cli.train:main"

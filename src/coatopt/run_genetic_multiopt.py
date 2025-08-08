@@ -11,7 +11,7 @@ import matplotlib.pyplot as plt
 import copy 
 from coatopt.environments.thermal_noise_environment_genetic import GeneticCoatingStack
 from coatopt.config import read_config, read_materials
-from coatopt.algorithms.genetic_algorithm import StatePool
+from coatopt.src.coatopt.algorithms.genetic_algorithms.genetic_algorithm import StatePool
 from coatopt.environments import coating_utils, coating_reward_function
 from coatopt.tools import plotting
 import argparse
@@ -73,7 +73,7 @@ if __name__ == '__main__':
         use_optical_thickness=config.get("Data", "use_optical_thickness"),
         thickness_sigma=config.get("Genetic", "thickness_sigma"),
         combine= config.get("Data", "combine"),
-        reward_func=config.get("Data", "reward_func"),
+        reward_function=config.get("Data", "reward_function"),
     )
 
     if not os.path.isdir(config.get("General", "root_dir")):
