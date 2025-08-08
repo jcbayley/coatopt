@@ -1,5 +1,5 @@
 """
-PC-HPPO-OML: Proximal Constrained Hierarchical Proximal Policy Optimization with Online Meta-Learning
+PC-HPPO-OML: Proximal Constrained Hierarchical Proximal Policy optimisation with Online Meta-Learning
 Refactored and cleaned up for improved readability and maintainability.
 
 This module provides imports for backward compatibility while the actual implementations

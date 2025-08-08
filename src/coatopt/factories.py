@@ -71,8 +71,8 @@ def create_pc_hppo_agent(config: CoatingoptimisationConfig, env: ParetoCoatingSt
         env.n_materials,
         1,  # output_size
         hidden_size=config.network.hidden_size,
-        disc_lr_policy=config.training.lr_discrete_policy,
-        cont_lr_policy=config.training.lr_continuous_policy,
+        lr_discrete_policy=config.training.lr_discrete_policy,
+        lr_continuous_policy=config.training.lr_continuous_policy,
         lr_value=config.training.lr_value,
         lr_step=config.training.lr_step,
         lr_min=config.training.lr_min,
@@ -99,9 +99,9 @@ def create_pc_hppo_agent(config: CoatingoptimisationConfig, env: ParetoCoatingSt
         ignore_air_option=config.data.ignore_air_option,
         ignore_substrate_option=config.data.ignore_substrate_option,
         num_objectives=len(config.data.optimise_parameters),
-        beta_start=config.training.entropy_beta_start,
-        beta_end=config.training.entropy_beta_end,
-        beta_decay_length=config.training.entropy_beta_decay_length,
+        entropy_beta_start=config.training.entropy_beta_start,
+        entropy_beta_end=config.training.entropy_beta_end,
+        entropy_beta_decay_length=config.training.entropy_beta_decay_length,
         hyper_networks=config.network.hyper_networks,
     )
     return agent

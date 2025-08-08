@@ -110,7 +110,7 @@ class HPPOTrainer:
         self.use_obs = use_obs
         self.weight_network_save = weight_network_save
         self.use_unified_checkpoints = use_unified_checkpoints
-        self.save_plots = save_plots
+        self.save_plots = False
         self.save_episode_visualizations = save_episode_visualizations
         
         # Callback system
@@ -440,7 +440,8 @@ class HPPOTrainer:
                     'max_reward': max_reward,
                     'metrics': episode_metrics.copy(),
                     'final_state': final_state,
-                    'pareto_front_size': len(self.env.pareto_front) if hasattr(self.env, 'pareto_front') else 0
+                    'pareto_front_size': len(self.env.pareto_front) if hasattr(self.env, 'pareto_front') else 0,
+                    'training_time': time.time() - self.training_start_time
                 }
                 self.callbacks.on_episode_complete(episode, episode_info)
             
@@ -461,8 +462,16 @@ class HPPOTrainer:
                         'training_time': current_time - self.training_start_time,
                         'episodes_completed': episode - self.start_episode + 1,
                         'pareto_front_size': len(self.env.pareto_front) if hasattr(self.env, 'pareto_front') else 0,
-                        'pareto_ranges': self._get_pareto_ranges() if hasattr(self.env, 'pareto_front') else {}
+                        'pareto_ranges': self._get_pareto_ranges() if hasattr(self.env, 'pareto_front') else {},
+                        'metrics': episode_metrics.copy()
                     }
+                    
+                    # Add Pareto update for plot manager
+                    if episode % 20 == 0 and hasattr(self.env, 'pareto_front'):
+                        pareto_update = self._generate_pareto_update(episode)
+                        if pareto_update:
+                            progress_info['pareto_update'] = pareto_update
+                    
                     self.callbacks.on_periodic_update(episode, progress_info)
                 
                 self.last_progress_time = current_time
@@ -627,8 +636,8 @@ class HPPOTrainer:
         else:
             # No updates yet, use default values
             episode_metrics.update({
-                "lr_discrete": self.agent.disc_lr_policy,
-                "lr_continuous": self.agent.cont_lr_policy,
+                "lr_discrete": self.agent.lr_discrete_policy,
+                "lr_continuous": self.agent.lr_continuous_policy,
                 "lr_value": self.agent.lr_value,
                 "beta": self.agent.beta,
                 "loss_policy_discrete": np.nan,
@@ -901,7 +910,7 @@ class HPPOTrainer:
         print(f"Generating {n_solutions} solutions...")
         
         # Load trained networks
-        self.agent.load_networks(self.root_dir)
+        self.agent.load_networks(os.path.join(self.root_dir, HPPOConstants.NETWORK_WEIGHTS_DIR))
         
         all_rewards, all_states, all_vals, weights = [], [], [], []
         
@@ -1135,6 +1144,172 @@ class HPPOTrainer:
             print(f"Legacy training directory backed up to: {backup_dir}")
             return backup_dir
 
+    def load_historical_data_to_plot_manager(self, plot_manager) -> bool:
+        """
+        Load historical training data into plot manager.
+        
+        This is a shared utility function used by both CLI and UI to load
+        historical training data and pareto states from checkpoints.
+        
+        Args:
+            plot_manager: TrainingPlotManager instance to load data into
+            
+        Returns:
+            bool: True if data was successfully loaded, False otherwise
+        """
+        if not plot_manager:
+            return False
+            
+        try:
+            if self.use_unified_checkpoints and hasattr(self, 'checkpoint_manager'):
+                # Load from unified checkpoint
+                if os.path.exists(self.checkpoint_manager.checkpoint_path):
+                    checkpoint_data = self.checkpoint_manager.load_complete_checkpoint()
+                    
+                    if not checkpoint_data:
+                        return False
+                        
+                    # Load training metrics
+                    training_data = checkpoint_data.get('training_data', {})
+                    
+                    # Check for metrics_df (the correct key from checkpoint manager)
+                    metrics_df = None
+                    if 'metrics_df' in training_data:
+                        metrics_df = training_data['metrics_df']
+                    elif 'metrics' in training_data:
+                        metrics_df = training_data['metrics']
+                    
+                    if metrics_df is not None:
+                        
+                        # Check if it's a pandas DataFrame
+                        if hasattr(metrics_df, 'iterrows'):
+                            # Convert to list of episode data for plot manager
+                            for _, row in metrics_df.iterrows():
+                                episode_data = {
+                                    'episode': int(row.get('episode', 0)),
+                                    'reward': float(row.get('reward', 0.0)),
+                                    'metrics': {key: float(val) for key, val in row.items() 
+                                              if key not in ['episode', 'reward'] and pd.notna(val)}
+                                }
+                                plot_manager.add_training_data(episode_data)
+                        else:
+                            print(f"Debug: metrics_df is not a DataFrame, it's: {type(metrics_df)}")
+                            # Try to convert to DataFrame if it's a numpy array or similar
+                            if hasattr(metrics_df, '__len__') and len(metrics_df) > 0:
+                                print(f"Debug: metrics_df has {len(metrics_df)} entries")
+                    else:
+                        print("Debug: No 'metrics' or 'metrics_df' key found in training_data")
+                    
+                    # Load pareto data with states
+                    pareto_data = checkpoint_data.get('pareto_data', {})
+                    best_states = checkpoint_data.get('best_states', [])
+                    
+                    if 'fronts_history' in pareto_data and best_states:
+                        fronts_history = pareto_data['fronts_history']
+                        
+                        # Process each episode's front data
+                        for episode_num, front_data in fronts_history.items():
+                            if isinstance(episode_num, str) and episode_num.startswith('episode_'):
+                                episode = int(episode_num.split('_')[1])
+                            else:
+                                episode = int(episode_num)
+                            
+                            # Generate pareto states for this episode
+                            pareto_states = self._generate_pareto_states_from_checkpoint(
+                                front_data, best_states, episode)
+                            
+                            if pareto_states:
+                                pareto_update = {
+                                    'episode': episode,
+                                    'pareto_front': front_data,
+                                    'pareto_states': pareto_states,
+                                    'best_state_data': pareto_states,
+                                    'pareto_indices': list(range(len(pareto_states)))
+                                }
+                                plot_manager.add_pareto_data(pareto_update)
+                    
+                    print(f"Loaded historical data from unified checkpoint: {len(plot_manager.training_data)} episodes")
+                    return True
+                    
+            else:
+                # Load from legacy format
+                print("Loading historical data from legacy format...")
+                return self._load_historical_data_legacy(plot_manager)
+                
+        except Exception as e:
+            print(f"Warning: Failed to load historical data: {e}")
+            return False
+        
+        return False
+    
+    def _generate_pareto_states_from_checkpoint(self, front_data, best_states, episode):
+        """Generate pareto states from checkpoint data."""
+        if not front_data.size or not best_states:
+            return []
+            
+        pareto_states = []
+        
+        # Try to match front points with best states based on proximity
+        for front_point in front_data:
+            closest_state = None
+            min_distance = float('inf')
+            
+            for state_data in best_states:
+                if len(state_data) >= 5:  # tot_reward, epoch, state, rewards, vals
+                    _, _, state, rewards, vals = state_data[:5]
+                    
+                    # Calculate expected front point from this state
+                    if hasattr(self.env, 'optimise_parameters'):
+                        expected_point = []
+                        for param in self.env.optimise_parameters:
+                            if param in vals:
+                                val = vals[param]
+                                if param == 'reflectivity':
+                                    expected_point.append(1 - val)  # Convert to 1-R
+                                else:
+                                    expected_point.append(val)
+                        
+                        if len(expected_point) == len(front_point):
+                            distance = np.linalg.norm(np.array(expected_point) - np.array(front_point))
+                            if distance < min_distance:
+                                min_distance = distance
+                                closest_state = state
+            
+            if closest_state is not None:
+                pareto_states.append(closest_state)
+        
+        return pareto_states
+    
+    def _load_historical_data_legacy(self, plot_manager) -> bool:
+        """Load historical data from legacy format."""
+        try:
+            # Load metrics from legacy CSV/pickle files
+            metrics_file = os.path.join(self.root_dir, HPPOConstants.METRICS_FILE)
+            if os.path.exists(metrics_file):
+                if metrics_file.endswith('.csv'):
+                    metrics_df = pd.read_csv(metrics_file)
+                else:
+                    with open(metrics_file, 'rb') as f:
+                        metrics_df = pickle.load(f)
+                
+                # Convert to plot manager format
+                for _, row in metrics_df.iterrows():
+                    episode_data = {
+                        'episode': int(row.get('episode', 0)),
+                        'reward': float(row.get('reward', 0.0)),
+                        'metrics': {key: float(val) for key, val in row.items() 
+                                  if key not in ['episode', 'reward'] and pd.notna(val)}
+                    }
+                    plot_manager.add_training_data(episode_data)
+                
+                print(f"Loaded historical data from legacy format: {len(metrics_df)} episodes")
+                return True
+            
+        except Exception as e:
+            print(f"Warning: Failed to load legacy historical data: {e}")
+        
+        return False
+
 # Migration utility function
 def migrate_legacy_training_data(legacy_root_dir: str, new_root_dir: str = None) -> str:
     """
@@ -1221,7 +1396,7 @@ def migrate_legacy_training_data(legacy_root_dir: str, new_root_dir: str = None)
 
 # Convenience functions for creating callbacks
 
-def create_cli_callbacks(verbose: bool = True) -> TrainingCallbacks:
+def create_cli_callbacks(verbose: bool = True, plot_manager=None) -> TrainingCallbacks:
     """Create callbacks optimized for CLI usage."""
     
     def cli_progress_update(episode: int, info: Dict[str, Any]):
@@ -1240,6 +1415,24 @@ def create_cli_callbacks(verbose: bool = True) -> TrainingCallbacks:
                   f"Max: {info['max_reward']:8.3f} | "
                   f"Speed: {eps_per_sec:.2f} eps/s | "
                   f"ETA: {eta_str}{pareto_info}")
+        
+        # Update plots if plot manager is available
+        if plot_manager:
+            # Add training data
+            episode_data = {
+                'episode': episode,
+                'reward': info['reward'],
+                'metrics': info.get('metrics', {})
+            }
+            plot_manager.add_training_data(episode_data)
+            
+            # Add Pareto data if available
+            if 'pareto_update' in info:
+                plot_manager.add_pareto_data(info['pareto_update'])
+            
+            # Update plots periodically
+            if plot_manager.should_update_plots(episode):
+                plot_manager.update_all_plots(episode)
     
     def cli_summary_update(episode: int, info: Dict[str, Any]):
         if verbose and episode % 100 == 0:
@@ -1250,8 +1443,8 @@ def create_cli_callbacks(verbose: bool = True) -> TrainingCallbacks:
             
             if info['pareto_front_size'] > 0:
                 print(f"Pareto front size: {info['pareto_front_size']}")
-                for param, (min_val, max_val) in info['pareto_ranges'].items():
-                    print(f"  {param}: [{min_val:.4f}, {max_val:.4f}]")
+                #for param, (min_val, max_val) in info['pareto_ranges'].items():
+                #    print(f"  {param}: [{min_val:.4f}, {max_val:.4f}]")
             print("-" * 30 + "\n")
     
     return TrainingCallbacks(
@@ -1274,9 +1467,7 @@ def create_ui_callbacks(ui_queue, ui_stop_check) -> TrainingCallbacks:
                 'metrics': info['metrics']
             }
             ui_queue.put(training_update, block=False)
-            
-            # Note: Pareto data is sent by trainer's _send_ui_updates method
-            # No need to send simplified updates here
+
         except:
             pass  # Don't let queue issues stop training
     

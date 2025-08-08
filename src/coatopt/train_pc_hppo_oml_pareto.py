@@ -7,7 +7,7 @@ import argparse
 from coatopt.config import read_config, read_materials
 from coatopt.config.structured_config import CoatingOptimizationConfig
 from coatopt.factories import setup_optimization_pipeline
-from coatopt.utils.evaluation import run_evaluation_pipeline
+from coatopt.utils.evaluation import run_evaluation_pipeline, create_enhanced_pareto_plots
 
 
 def parse_arguments():
@@ -48,7 +48,12 @@ def run_training(trainer):
 def run_evaluation(trainer, env, n_samples: int, output_dir: str):
     """Execute evaluation and visualization."""
     print("Starting evaluation...")
-    run_evaluation_pipeline(trainer, env, n_samples, output_dir)
+    sampled_states, results, sampled_weights = run_evaluation_pipeline(trainer, env, n_samples, output_dir)
+    
+    # Create enhanced pareto plots with training data if available
+    create_enhanced_pareto_plots(trainer, env, results, sampled_states, sampled_weights, output_dir)
+    
+    return sampled_states, results, sampled_weights
 
 
 def main():

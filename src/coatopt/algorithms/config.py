@@ -53,6 +53,7 @@ class HPPOConstants:
     STATES_DIR = "states"
     NETWORK_WEIGHTS_DIR = "network_weights"
     PARETO_FRONTS_DIR = "pareto_fronts"
+    EVALUATION_DIR = "evaluation_outputs"
     
     # Plot file names
     RUNNING_REWARDS_PLOT = "running_rewards.png"

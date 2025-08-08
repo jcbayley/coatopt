@@ -24,14 +24,17 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from coatopt.config import read_config, read_materials
 from coatopt.config.structured_config import CoatingoptimisationConfig
 from coatopt.factories import setup_optimisation_pipeline
-from coatopt.algorithms.hppo_trainer import HPPOTrainer, create_cli_callbacks
+from coatopt.algorithms.hppo_trainer import HPPOTrainer, create_cli_callbacks, HPPOConstants
+from coatopt.utils.evaluation import run_evaluation_pipeline, create_enhanced_pareto_plots
+from coatopt.utils.plotting import TrainingPlotManager
 
 
 class CommandLineTrainer:
     """Command-line interface using the unified HPPOTrainer."""
     
     def __init__(self, config_path: str, continue_training: bool = True, 
-                 verbose: bool = True, save_plots: bool = False):
+                 verbose: bool = True, save_plots: bool = False, 
+                 evaluate_only: bool = False, n_eval_samples: int = 1000):
         """
         Initialize command-line trainer.
         
@@ -40,12 +43,16 @@ class CommandLineTrainer:
             continue_training: Whether to continue from existing checkpoint
             verbose: Whether to show detailed progress
             save_plots: Whether to save training plots
+            evaluate_only: Whether to only run evaluation (no training)
+            n_eval_samples: Number of samples for evaluation
         """
         self.config_path = os.path.abspath(config_path)
         self.verbose = verbose
         self.save_plots = save_plots
         self.save_visualizations = save_plots  # Save visualizations if plots enabled
         self.continue_training = continue_training
+        self.evaluate_only = evaluate_only
+        self.n_eval_samples = n_eval_samples
         self.should_stop = False
         
         # Components will be loaded in load_configuration
@@ -54,6 +61,7 @@ class CommandLineTrainer:
         self.env = None
         self.agent = None
         self.trainer = None
+        self.plot_manager = None
         
         # Setup signal handling for graceful shutdown
         signal.signal(signal.SIGINT, self._signal_handler)
@@ -88,8 +96,17 @@ class CommandLineTrainer:
             init_pareto_front=False
         )
         
+        # Create plot manager if saving plots
+        if self.save_plots:
+            self.plot_manager = TrainingPlotManager(
+                save_plots=True,
+                output_dir=self.config.general.root_dir,
+                ui_mode=False
+            )
+            self.plot_manager.set_objective_info(self.config.data.optimise_parameters)
+        
         # Create callbacks for progress reporting
-        callbacks = create_cli_callbacks(verbose=self.verbose)
+        callbacks = create_cli_callbacks(verbose=self.verbose, plot_manager=self.plot_manager)
         callbacks.should_stop = lambda: self.should_stop
         callbacks.save_plots = self.save_plots
         callbacks.save_visualizations = self.save_visualizations
@@ -115,6 +132,10 @@ class CommandLineTrainer:
             continue_training=self.continue_training,
             callbacks=callbacks
         )
+        
+        # Load historical data for plotting if continuing training
+        if self.continue_training and self.plot_manager:
+            self.trainer.load_historical_data_to_plot_manager(self.plot_manager)
         
         # Check if we have existing data
         if self.continue_training:
@@ -185,6 +206,42 @@ class CommandLineTrainer:
             if self.verbose:
                 traceback.print_exc()
             return False
+    
+    def run_evaluation(self):
+        """Run evaluation and enhanced visualization."""
+        if self.trainer is None:
+            raise RuntimeError("Configuration must be loaded before evaluation")
+        
+        print("\n" + "="*60)
+        print("STARTING EVALUATION")
+        print("="*60)
+        print(f"Configuration: {self.config_path}")
+        print(f"Number of samples: {self.n_eval_samples}")
+        print(f"Output directory: {self.config.general.root_dir}")
+        print("="*60)
+        
+        try:
+            # Run evaluation pipeline
+            print(f"Generating {self.n_eval_samples} solution samples...")
+            sampled_states, results, sampled_weights = run_evaluation_pipeline(
+                self.trainer, self.env, self.n_eval_samples, os.path.join(self.config.general.root_dir, HPPOConstants.EVALUATION_DIR)
+            )
+        
+            print("\n" + "="*60)
+            print("EVALUATION COMPLETED SUCCESSFULLY")
+            print("="*60)
+            print(f"Output directory: {self.config.general.root_dir}")
+            print(f"Samples generated: {len(sampled_states)}")
+            print(f"Enhanced Pareto plots created combining training and evaluation data")
+            print("="*60)
+            
+            return True
+            
+        except Exception as e:
+            print(f"\nEvaluation failed with error: {e}")
+            if self.verbose:
+                traceback.print_exc()
+            return False
 
 
 def main():
@@ -200,6 +257,9 @@ Examples:
   # Train from scratch (ignore existing data)  
   coatopt-train -c config.ini --retrain
   
+  # Run evaluation only with 2000 samples
+  coatopt-train -c config.ini --evaluate -n 2000
+  
   # Train with plot saving enabled
   coatopt-train -c config.ini --save-plots
   
@@ -211,6 +271,10 @@ Examples:
                         help='Path to configuration file (required)')
     parser.add_argument('--retrain', action='store_true',
                         help='Start training from scratch (ignore existing checkpoints)')
+    parser.add_argument('--evaluate', action='store_true',
+                        help='Run evaluation only (no training)')
+    parser.add_argument('-n', '--n-samples', type=int, default=1000,
+                        help='Number of samples for evaluation (default: 1000)')
     parser.add_argument('--save-plots', action='store_true',
                         help='Save training plots and visualizations')
     parser.add_argument('-q', '--quiet', action='store_true',
@@ -230,14 +294,19 @@ Examples:
             config_path=args.config,
             continue_training=not args.retrain,
             verbose=not args.quiet,
-            save_plots=args.save_plots
+            save_plots=args.save_plots,
+            evaluate_only=args.evaluate,
+            n_eval_samples=args.n_samples
         )
         
         # Load configuration
         trainer.load_configuration()
         
-        # Run training
-        success = trainer.run_training()
+        # Run appropriate operation
+        if args.evaluate:
+            success = trainer.run_evaluation()
+        else:
+            success = trainer.run_training()
         
         sys.exit(0 if success else 1)
         
