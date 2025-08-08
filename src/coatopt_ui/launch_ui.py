@@ -6,7 +6,7 @@ Simple launcher that ensures proper imports and environment setup.
 """
 import sys
 import os
-
+import traceback
 
 def main():
     # Add the current directory to Python path for imports
@@ -40,7 +40,7 @@ def main():
         sys.exit(1)
 
     except Exception as e:
-        print(f"Error launching UI: {e}")
+        print(f"Error launching UI: {e}, traceback: {traceback.format_exc()}")
         sys.exit(1)
 
 if __name__ == "__main__":

@@ -36,12 +36,15 @@ class TrainingPlotManager:
         # Data storage
         self.training_data = []
         self.pareto_data = []
+        self.eval_data = {}
         self.historical_pareto_data = {}
         
         # Objective information
         self.objective_labels = []
         self.objective_scales = []
         self.optimisation_parameters = []
+        self.objective_targets = {}
+        self.design_criteria = {}
         
         # Plot update throttling
         self.last_plot_update = 0
@@ -108,9 +111,11 @@ class TrainingPlotManager:
         ax.set_title("Pareto Front Visualization")
         self.pareto_fig.tight_layout()
     
-    def set_objective_info(self, optimisation_parameters: List[str]):
+    def set_objective_info(self, optimisation_parameters: List[str], objective_targets: Optional[Dict] = None, design_criteria: Optional[Dict] = None):
         """Set objective information for consistent labeling."""
         self.optimisation_parameters = optimisation_parameters.copy()
+        self.objective_targets = objective_targets if objective_targets else {}
+        self.design_criteria = design_criteria if design_criteria else {}
         self.objective_labels = self._get_objective_labels()
         self.objective_scales = self._get_objective_scales()
     
@@ -154,6 +159,11 @@ class TrainingPlotManager:
         # Store in historical data
         episode = pareto_data.get('episode', 0)
         self.historical_pareto_data[episode] = pareto_data.copy()
+    
+    def add_eval_pareto_data(self, eval_data: Dict[str, Any]):
+        """Add evaluation Pareto data for plotting."""        
+        # If running in UI mode, update plots immediately
+        self.eval_data = eval_data
     
     def should_update_plots(self, current_episode: int) -> bool:
         """Check if plots should be updated based on throttling."""
@@ -377,6 +387,7 @@ class TrainingPlotManager:
             pareto_front = latest_data['pareto_front'] 
             best_points = latest_data.get('best_points', None)
             current_episode = latest_data.get('episode', 'unknown')
+            eval_points = self.eval_data.get('eval_points', None)
             
             if pareto_front is None or len(pareto_front) == 0:
                 ax = self.pareto_fig.add_subplot(1, 1, 1)
@@ -399,7 +410,7 @@ class TrainingPlotManager:
             
             # Plot based on number of objectives
             if n_objectives == 2:
-                self._plot_2d_pareto(pareto_front, best_points, current_episode)
+                self._plot_2d_pareto(pareto_front, best_points, current_episode, eval_points)
             else:
                 self._plot_multi_objective_pareto(pareto_front, best_points, current_episode)
             
@@ -418,7 +429,7 @@ class TrainingPlotManager:
             self.objective_labels = [f'Objective {i+1}' for i in range(n_objectives)]
             self.objective_scales = ['linear'] * n_objectives
     
-    def _plot_2d_pareto(self, pareto_front, best_points, episode):
+    def _plot_2d_pareto(self, pareto_front, best_points, episode, eval_points = None):
         """Plot 2D Pareto front."""
         ax = self.pareto_fig.add_subplot(1, 1, 1)
         
@@ -436,6 +447,13 @@ class TrainingPlotManager:
         ax.scatter(pareto_front[:, 0], pareto_front[:, 1],
                   c='red', s=40, alpha=0.8, label='Pareto Front',
                   edgecolors='black', linewidths=1)
+        
+        # add evaluation points as well as training points
+        if eval_points is not None and len(eval_points) > 0:
+            eval_points_array = np.array(eval_points)
+            if eval_points_array.shape[1] >= 2:
+                ax.scatter(eval_points_array[:, 0], eval_points_array[:, 1],
+                           c='orange', s=10, alpha=0.5, label='Evaluation Points')
         
         # Connect Pareto points if not too many
         if len(pareto_front) < 20:
@@ -467,6 +485,8 @@ class TrainingPlotManager:
                               linewidth=2, label=f'Target {self.objective_labels[1] if len(self.objective_labels) > 1 else "Obj 2"}')
             except Exception as e:
                 print(f"Error plotting objective targets: {e}")
+        else:
+            print(f"No objective targets set for Pareto plot.")
         
         # Set labels and scales
         ax.set_xlabel(self.objective_labels[0] if len(self.objective_labels) > 0 else 'Objective 1')

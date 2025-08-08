@@ -103,7 +103,9 @@ class CommandLineTrainer:
                 output_dir=self.config.general.root_dir,
                 ui_mode=False
             )
-            self.plot_manager.set_objective_info(self.config.data.optimise_parameters)
+            self.plot_manager.set_objective_info(self.config.data.optimise_parameters, 
+                                                 self.config.data.optimise_targets, 
+                                                 self.config.data.design_criteria)
         
         # Create callbacks for progress reporting
         callbacks = create_cli_callbacks(verbose=self.verbose, plot_manager=self.plot_manager)
