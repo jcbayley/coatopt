@@ -66,7 +66,7 @@ class TrainingMonitorUI:
         # Plot update throttling
         self.last_reward_plot_update = 0
         self.last_pareto_plot_update = 0
-        self.plot_update_interval = 5  # Update plots every N episodes
+        self.plot_update_interval = 40  # Update plots every N episodes
         
         self.setup_ui()
         self.setup_plots()
@@ -162,7 +162,7 @@ class TrainingMonitorUI:
         self.epoch_var = tk.IntVar(value=0)
         self.epoch_slider = tk.Scale(self.pareto_controls_frame, from_=0, to=100, orient=tk.HORIZONTAL, 
                                    variable=self.epoch_var, command=self.on_epoch_change, 
-                                   length=400, resolution=20)
+                                   length=400, resolution=self.plot_update_interval)
         self.epoch_slider.pack(side=tk.LEFT, padx=(10, 5), fill=tk.X, expand=True)
         
         self.epoch_label = ttk.Label(self.pareto_controls_frame, text="Episode: 0")
@@ -409,8 +409,8 @@ class TrainingMonitorUI:
                     accumulated_states.append(best_state_entry)
                     
                     # Generate Pareto data for every 20 episodes or final episode
-                    if (i + 1) % 20 == 0 or i == len(self.trainer.best_states) - 1:
-                        episode = (i + 1) * 20  # Approximate episode number
+                    if (i + 1) % self.plot_update_interval == 0 or i == len(self.trainer.best_states) - 1:
+                        episode = (i + 1) * self.plot_update_interval  # Approximate episode number
                         pareto_data = self._generate_pareto_data_from_states(accumulated_states, episode)
                         self.historical_pareto_data[episode] = pareto_data
                 
@@ -755,19 +755,19 @@ class TrainingMonitorUI:
                 self.epoch_slider.config(to=max_episode)
             
             # Update epoch slider to current episode if we're at the latest
-            if self.epoch_var.get() == max_episode - 20 or self.epoch_var.get() == 0:
+            if self.epoch_var.get() == max_episode - self.plot_update_interval or self.epoch_var.get() == 0:
                 self.epoch_var.set(episode)
                 self.epoch_label.config(text=f"Episode: {episode}")
             
             # Update plot more frequently to show changes
-            if episode - self.last_pareto_plot_update >= 20:  # More frequent updates for Pareto plots
+            if episode - self.last_pareto_plot_update >= self.plot_update_interval:  # More frequent updates for Pareto plots
                 # Ensure objective information is up to date before plotting
                 if not hasattr(self, 'objective_labels') or not self.objective_labels:
                     self.update_objective_info()
                 
                 # Update the current plot if we're viewing the latest episode
                 current_episode = self.epoch_var.get()
-                if current_episode == episode or current_episode >= episode - 20:
+                if current_episode == episode or current_episode >= episode - self.plot_update_interval:
                     self.update_pareto_plot()
                 self.last_pareto_plot_update = episode
         

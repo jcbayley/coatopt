@@ -7,7 +7,7 @@ from coatopt.algorithms import pc_hppo_oml
 from coatopt.environments.thermal_noise_environment_pareto import ParetoCoatingStack
 from coatopt.config.structured_config import CoatingoptimisationConfig
 from typing import Tuple
-
+import os
 
 
 
@@ -151,7 +151,7 @@ def load_model_if_needed(agent: pc_hppo_oml.PCHPPO, config: CoatingoptimisationC
     """
     if config.general.load_model or continue_training:
         if config.general.load_model_path == "root" or continue_training:
-            agent.load_networks(config.general.root_dir)
+            agent.load_networks(os.path.join(config.general.root_dir, pc_hppo_oml.HPPOConstants.NETWORK_WEIGHTS_DIR))
         else:
             agent.load_networks(config.general.load_model_path)
         print(f"Loaded model from: {config.general.load_model_path if config.general.load_model_path != 'root' else config.general.root_dir}")

@@ -473,7 +473,7 @@ def reward_function_normalise_log(reflectivity, thermal_noise, total_thickness, 
         if key in optimise_parameters:
             normed_vals[key] = (vals[key] - env.objective_bounds[key]['min']) / (env.objective_bounds[key]['max'] - env.objective_bounds[key]['min'])
             normed_targets[key] = (optimise_targets[key] - env.objective_bounds[key]['min']) / (env.objective_bounds[key]['max'] - env.objective_bounds[key]['min'])
-            normed_log_vals = (np.log(vals[key]) - np.log(env.objective_bounds[key]['min'])) / (np.log(env.objective_bounds[key]['max']) - np.log(env.objective_bounds[key]['min']))
+            normed_log_vals[key] = (np.log(vals[key]) - np.log(env.objective_bounds[key]['min'])) / (np.log(env.objective_bounds[key]['max']) - np.log(env.objective_bounds[key]['min']))
     
     if "reflectivity" in optimise_parameters:
         log_reflect = normed_log_vals["reflectivity"] 
