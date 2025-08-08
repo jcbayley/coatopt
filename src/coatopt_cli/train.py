@@ -192,7 +192,7 @@ class CommandLineTrainer:
             # Initialize Pareto front if not continuing
             if not self.continue_training:
                 print("Initializing Pareto front...")
-                self.trainer.init_pareto_front(n_solutions=1000)
+                self.trainer.init_pareto_front(n_solutions=self.config.training.n_init_solutions)
             
             # Run training using unified trainer
             final_metrics, best_state = self.trainer.train()

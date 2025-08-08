@@ -14,7 +14,7 @@ import numpy as np
 
 # Set matplotlib backend before any other matplotlib imports
 import matplotlib
-matplotlib.use('Agg')  # Use non-interactive backend for threading safety
+matplotlib.use('TkAgg')  # Use interactive backend for tkinter GUI with click events
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from matplotlib.figure import Figure
@@ -452,6 +452,9 @@ class TrainingMonitorUI:
             self.values_canvas.figure = values_fig
             self.pareto_canvas.figure = pareto_fig
             
+            # Set up canvas draw callback for plot manager
+            self.plot_manager.set_canvas_draw_callback(self.pareto_canvas.draw_idle)
+            
             # Redraw canvases
             self.rewards_canvas.draw()
             self.values_canvas.draw()
@@ -672,16 +675,28 @@ class TrainingMonitorUI:
             'best_points': best_points,
             'best_state_data': best_state_data,
             'pareto_indices': pareto_indices,
-            'pareto_states': [best_state_data[i] for i in pareto_indices]
+            'pareto_states': [best_state_data[i] for i in pareto_indices],
+            'coating_states': [best_state_data[i] for i in pareto_indices]  # For plot manager compatibility
         }
     
     def update_pareto_plot_for_episode(self, episode):
         """Update Pareto plot with data from a specific episode using plot manager."""
         if self.plot_manager:
-            self.plot_manager.update_pareto_plot(episode)
+            # Update plot and get click handler
+            click_handler = self.plot_manager.update_pareto_plot(episode)
+            
+            # Connect click handler if available
+            if click_handler:
+                # Disconnect any existing handler
+                if hasattr(self, 'click_event_connection') and self.click_event_connection is not None:
+                    self.pareto_canvas.mpl_disconnect(self.click_event_connection)
+                
+                # Connect new handler
+                self.click_event_connection = self.pareto_canvas.mpl_connect('button_press_event', click_handler)
+            
             self.pareto_canvas.draw_idle()
             
-            # Update pareto states for UI features
+            # Update pareto states for UI features (legacy support)
             if hasattr(self, 'historical_pareto_data') and episode in self.historical_pareto_data:
                 episode_data = self.historical_pareto_data[episode]
                 self.pareto_states = episode_data.get('pareto_states', [])
@@ -810,10 +825,13 @@ class TrainingMonitorUI:
                     'best_state_data': list(sampled_states),
                     'pareto_indices': [],
                     'pareto_states': [],
+                    'eval_points': [],  # For plot manager
+                    'coating_states': list(sampled_states)  # For plot manager
                 }
                 
                 # Convert results to best_points format
                 best_points = []
+                eval_points = []
                 for i in range(len(sampled_states)):
                     point = []
                     for obj in objectives:
@@ -827,10 +845,16 @@ class TrainingMonitorUI:
                                 point.append(val)
                     if len(point) == len(objectives):
                         best_points.append(point)
+                        eval_points.append(point)
                 
                 eval_data['best_points'] = best_points
+                eval_data['eval_points'] = eval_points
                 
-                # Add to pareto data for visualization
+                # Add to plot manager for enhanced visualization
+                if self.plot_manager:
+                    self.plot_manager.add_eval_pareto_data(eval_data)
+                
+                # Add to pareto data for visualization (legacy)
                 self.pareto_data.append(eval_data)
                 
                 # Update the plot
@@ -966,8 +990,7 @@ class TrainingMonitorUI:
             
             # Update Pareto plot
             if self.plot_manager and self.plot_manager.should_update_plots(episode):
-                self.plot_manager.update_pareto_plot()
-                self.pareto_canvas.draw_idle()
+                self.update_pareto_plot()
                 self.last_pareto_plot_update = episode
         
         elif update['type'] == 'complete':
@@ -1019,22 +1042,29 @@ class TrainingMonitorUI:
         """Update Pareto plot using plot manager."""
         if self.plot_manager:
             current_episode = self.epoch_var.get() if hasattr(self, 'epoch_var') else None
-            self.plot_manager.update_pareto_plot(current_episode)
-            self.pareto_canvas.draw_idle()
             
-            # Maintain UI-specific coating stack visualization
-            self._update_coating_stack_display()
+            # Update plot and get click handler
+            click_handler = self.plot_manager.update_pareto_plot(current_episode)
+            
+            # Connect click handler if available
+            if click_handler:
+                # Disconnect any existing handlers
+                if hasattr(self, 'click_event_connection') and self.click_event_connection is not None:
+                    self.pareto_canvas.mpl_disconnect(self.click_event_connection)
+                
+                # Connect new handlers
+                self.click_event_connection = self.pareto_canvas.mpl_connect('button_press_event', click_handler)
+                
+            else:
+                print(f"[DEBUG] No click handler received from plot manager")
+            
+            self.pareto_canvas.draw_idle()
     
     def _update_coating_stack_display(self):
         """Update coating stack display for UI-specific features."""
-        try:
-            # This maintains the coating stack subplot for click interactions
-            # The plot manager handles the main Pareto plotting
-            if hasattr(self, 'coating_ax') and hasattr(self, 'pareto_states') and self.pareto_states:
-                # Keep existing coating display functionality
-                pass
-        except Exception as e:
-            print(f"Error updating coating stack display: {e}")
+        # This method is no longer needed as coating stack visualization 
+        # is now handled directly by the TrainingPlotManager
+        pass
 
     def plot_2d_pairs(self, pareto_front, best_points, obj_labels, obj_scales, episode):
         """Plot all pairs of objectives in 2D subplots."""
@@ -1359,10 +1389,11 @@ class TrainingMonitorUI:
     def cleanup(self):
         """Clean up resources when closing the UI."""
         try:
-            # Disconnect click event handler
-            if self.click_event_connection is not None:
+            # Disconnect click event handlers
+            if hasattr(self, 'click_event_connection') and self.click_event_connection is not None:
                 self.pareto_canvas.mpl_disconnect(self.click_event_connection)
                 self.click_event_connection = None
+
         except Exception as e:
             print(f"Error during cleanup: {e}")
 
