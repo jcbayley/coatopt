@@ -102,7 +102,7 @@ def save_results_to_hdf5(
     sampled_states: np.ndarray,
     sampled_weights: np.ndarray,
     results: Dict[str, np.ndarray],
-    filename: str = "sampled_outputs.h5"
+    filename: str = "evaluation_outputs.h5"
 ) -> None:
     """
     Save optimization results to HDF5 file.

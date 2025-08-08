@@ -177,15 +177,34 @@ class TrainingConfig(BaseConfig):
 
 
 @dataclass
-class CoatingoptimisationConfig:
+class GeneticConfig(BaseConfig):
+    """Genetic algorithm configuration parameters."""
+    algorithm: str  # NSGA2, NSGA3, MOEAD
+    population_size: int
+    n_generations: int
+    crossover_probability: float
+    crossover_eta: float
+    mutation_probability: float
+    mutation_eta: float
+    eliminate_duplicates: bool
+    n_neighbors: Optional[int] = None  # For MOEAD
+    prob_neighbor_mating: Optional[float] = None  # For MOEAD
+    n_partitions: Optional[int] = None  # For NSGA3/MOEAD reference directions
+    seed: int = 1234
+    thickness_sigma: float = 1e-4
+
+
+@dataclass
+class CoatingOptimisationConfig:
     """Complete configuration for coating optimisation."""
     general: GeneralConfig
     data: DataConfig
-    network: NetworkConfig
-    training: TrainingConfig
+    network: Optional[NetworkConfig] = None
+    training: Optional[TrainingConfig] = None
+    genetic: Optional[GeneticConfig] = None
     
     @classmethod
-    def from_config_parser(cls, config: CoatingConfigParser) -> 'CoatingoptimisationConfig':
+    def from_config_parser(cls, config: CoatingConfigParser) -> 'CoatingOptimisationConfig':
         """Create structured config from ConfigParser using automatic field mapping."""
         
         # Define defaults for optional fields
@@ -210,15 +229,34 @@ class CoatingoptimisationConfig:
             'cycle_weights': False
         }
         
+        genetic_defaults = {
+            'eliminate_duplicates': True,
+            'seed': 10,
+            'thickness_sigma': 1e-4
+        }
+        
         # Create config objects automatically
         general = GeneralConfig.from_config_section(config, "General")
         data = DataConfig.from_config_section(config, "Data", **data_defaults)
-        network = NetworkConfig.from_config_section(config, "Network", **network_defaults)
-        training = TrainingConfig.from_config_section(config, "Training", **training_defaults)
+        
+        # Optional sections
+        network = None
+        training = None
+        genetic = None
+        
+        if config.has_section("Network"):
+            network = NetworkConfig.from_config_section(config, "Network", **network_defaults)
+        
+        if config.has_section("Training"):
+            training = TrainingConfig.from_config_section(config, "Training", **training_defaults)
+        
+        if config.has_section("Genetic"):
+            genetic = GeneticConfig.from_config_section(config, "Genetic", **genetic_defaults)
         
         return cls(
             general=general,
             data=data,
             network=network,
-            training=training
+            training=training,
+            genetic=genetic
         )

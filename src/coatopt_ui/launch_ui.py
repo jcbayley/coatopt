@@ -31,6 +31,7 @@ def main():
 
     except ImportError as e:
         print(f"Import error: {e}")
+        print(traceback.format_exc())
         print("Please ensure all dependencies are installed:")
         print("  - tkinter (usually comes with Python)")
         print("  - matplotlib")

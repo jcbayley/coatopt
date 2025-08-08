@@ -22,9 +22,9 @@ import pandas as pd
 from pymoo.util.nds.non_dominated_sorting import NonDominatedSorting
 
 from coatopt.config import read_config, read_materials
-from coatopt.config.structured_config import CoatingoptimisationConfig
+from coatopt.config.structured_config import CoatingOptimisationConfig
 from coatopt.factories import setup_optimisation_pipeline
-from coatopt.algorithms.hppo_trainer import HPPOTrainer, create_ui_callbacks
+from coatopt.algorithms.hppo.hppo_trainer import HPPOTrainer, create_ui_callbacks
 from coatopt.utils.evaluation import run_evaluation_pipeline, create_enhanced_pareto_plots
 from coatopt.utils.plotting import TrainingPlotManager
 
@@ -356,7 +356,7 @@ class TrainingMonitorUI:
             
             # Load configuration and materials
             raw_config = read_config(config_path)
-            self.config = CoatingoptimisationConfig.from_config_parser(raw_config)
+            self.config = CoatingOptimisationConfig.from_config_parser(raw_config)
             self.materials = read_materials(self.config.general.materials_file)
             
             # Setup optimization components
@@ -374,8 +374,11 @@ class TrainingMonitorUI:
                 ui_mode=True,
                 figure_size=(12, 10)
             )
-            self.plot_manager.set_objective_info(self.config.data.optimise_parameters)
+            target_list = [self.config.data.optimise_targets[param] for param in self.config.data.optimise_parameters]
+            design_list = [self.config.data.design_criteria[param] for param in self.config.data.optimise_parameters]
+            self.plot_manager.set_objective_info(self.config.data.optimise_parameters, target_list, design_list)
             
+            print("[DEBUG]", self.plot_manager.design_criteria)
             # Create UI callbacks for progress reporting
             callbacks = create_ui_callbacks(self.training_queue, lambda: not self.is_training)
             

@@ -2,16 +2,17 @@
 Factory functions for creating environment and agent objects.
 Simplifies object creation and reduces parameter passing complexity.
 """
-from typing import Dict, Any
-from coatopt.algorithms import pc_hppo_oml
+from typing import Dict, Any, Tuple, Optional
+from coatopt.algorithms import hppo
+from coatopt.algorithms.genetic_algorithms.genetic_moo import GeneticTrainer
 from coatopt.environments.thermal_noise_environment_pareto import ParetoCoatingStack
-from coatopt.config.structured_config import CoatingoptimisationConfig
-from typing import Tuple
+from coatopt.environments.thermal_noise_environment_genetic import GeneticCoatingStack
+from coatopt.config.structured_config import CoatingOptimisationConfig
 import os
 
 
 
-def create_pareto_environment(config: CoatingoptimisationConfig, materials: Dict[int, Dict[str, Any]]) -> ParetoCoatingStack:
+def create_pareto_environment(config: CoatingOptimisationConfig, materials: Dict[int, Dict[str, Any]]) -> ParetoCoatingStack:
     """
     Create ParetoCoatingStack environment from structured configuration.
     
@@ -52,7 +53,7 @@ def create_pareto_environment(config: CoatingoptimisationConfig, materials: Dict
     return env
 
 
-def create_pc_hppo_agent(config: CoatingoptimisationConfig, env: ParetoCoatingStack) -> pc_hppo_oml.PCHPPO:
+def create_pc_hppo_agent(config: CoatingOptimisationConfig, env: ParetoCoatingStack) -> hppo.PCHPPO:
     """
     Create PC-HPPO agent from structured configuration.
     
@@ -66,7 +67,7 @@ def create_pc_hppo_agent(config: CoatingoptimisationConfig, env: ParetoCoatingSt
     # Determine input size based on observation vs state
     input_size = env.obs_space_shape if config.data.use_observation else env.state_space_shape
     
-    agent = pc_hppo_oml.PCHPPO(
+    agent = hppo.PCHPPO(
         input_size,
         env.n_materials,
         1,  # output_size
@@ -107,7 +108,7 @@ def create_pc_hppo_agent(config: CoatingoptimisationConfig, env: ParetoCoatingSt
     return agent
 
 
-def create_trainer(config: CoatingoptimisationConfig, agent: pc_hppo_oml.PCHPPO, env: ParetoCoatingStack, continue_training: bool = False) -> pc_hppo_oml.HPPOTrainer:
+def create_trainer(config: CoatingOptimisationConfig, agent: hppo.PCHPPO, env: ParetoCoatingStack, continue_training: bool = False) -> hppo.HPPOTrainer:
     """
     Create HPPO trainer from structured configuration.
     
@@ -120,7 +121,7 @@ def create_trainer(config: CoatingoptimisationConfig, agent: pc_hppo_oml.PCHPPO,
     Returns:
         Configured HPPO trainer
     """
-    trainer = pc_hppo_oml.HPPOTrainer(
+    trainer = hppo.HPPOTrainer(
         agent=agent,
         env=env,
         n_iterations=config.training.n_iterations,
@@ -140,7 +141,7 @@ def create_trainer(config: CoatingoptimisationConfig, agent: pc_hppo_oml.PCHPPO,
     return trainer
 
 
-def load_model_if_needed(agent: pc_hppo_oml.PCHPPO, config: CoatingoptimisationConfig, continue_training: bool) -> None:
+def load_model_if_needed(agent: hppo.PCHPPO, config: CoatingOptimisationConfig, continue_training: bool) -> None:
     """
     Load pre-trained model weights if specified in configuration.
     
@@ -151,13 +152,13 @@ def load_model_if_needed(agent: pc_hppo_oml.PCHPPO, config: CoatingoptimisationC
     """
     if config.general.load_model or continue_training:
         if config.general.load_model_path == "root" or continue_training:
-            agent.load_networks(os.path.join(config.general.root_dir, pc_hppo_oml.HPPOConstants.NETWORK_WEIGHTS_DIR))
+            agent.load_networks(os.path.join(config.general.root_dir, hppo.HPPOConstants.NETWORK_WEIGHTS_DIR))
         else:
             agent.load_networks(config.general.load_model_path)
         print(f"Loaded model from: {config.general.load_model_path if config.general.load_model_path != 'root' else config.general.root_dir}")
 
 
-def setup_optimisation_pipeline(config: CoatingoptimisationConfig, materials: Dict[int, Dict[str, Any]], continue_training: bool = False, init_pareto_front: bool = True) -> Tuple[ParetoCoatingStack, pc_hppo_oml.PCHPPO, pc_hppo_oml.HPPOTrainer]:
+def setup_optimisation_pipeline(config: CoatingOptimisationConfig, materials: Dict[int, Dict[str, Any]], continue_training: bool = False, init_pareto_front: bool = True) -> Tuple[ParetoCoatingStack, hppo.PCHPPO, hppo.HPPOTrainer]:
     """
     Complete setup of the optimisation pipeline.
     
@@ -186,3 +187,78 @@ def setup_optimisation_pipeline(config: CoatingoptimisationConfig, materials: Di
     
     print("Pipeline setup complete.")
     return env, agent, trainer
+
+
+def create_genetic_environment(config: CoatingOptimisationConfig, materials: Dict[int, Dict[str, Any]]) -> GeneticCoatingStack:
+    """
+    Create GeneticCoatingStack environment from structured configuration.
+    
+    Args:
+        config: Structured configuration object
+        materials: Materials dictionary
+        
+    Returns:
+        Configured GeneticCoatingStack environment
+    """
+    env = GeneticCoatingStack(
+        max_layers=config.data.n_layers,
+        min_thickness=config.data.min_thickness,
+        max_thickness=config.data.max_thickness,
+        materials=materials,
+        opt_init=False,
+        use_intermediate_reward=config.data.use_intermediate_reward,
+        reflectivity_reward_shape=config.data.reflectivity_reward_shape,
+        thermal_reward_shape=config.data.thermal_reward_shape,
+        absorption_reward_shape=config.data.absorption_reward_shape,
+        ignore_air_option=config.data.ignore_air_option,
+        ignore_substrate_option=config.data.ignore_substrate_option,
+        use_ligo_reward=config.data.use_ligo_reward,
+        optimise_parameters=config.data.optimise_parameters,
+        optimise_targets=config.data.optimise_targets,
+        include_random_rare_state=config.data.include_random_rare_state,
+        use_optical_thickness=config.data.use_optical_thickness,
+        thickness_sigma=config.genetic.thickness_sigma,
+        combine=config.data.combine,
+        reward_function=config.data.reward_function,
+    )
+    return env
+
+
+def create_genetic_trainer(config: CoatingOptimisationConfig, env: GeneticCoatingStack) -> GeneticTrainer:
+    """
+    Create genetic algorithm trainer from structured configuration.
+    
+    Args:
+        config: Structured configuration object
+        env: Genetic environment object
+        
+    Returns:
+        Configured genetic trainer
+    """
+    trainer = GeneticTrainer(
+        environment=env,
+        config=config.genetic,
+        output_dir=config.general.root_dir
+    )
+    return trainer
+
+
+def setup_genetic_optimisation_pipeline(config: CoatingOptimisationConfig, materials: Dict[int, Dict[str, Any]]) -> Tuple[GeneticCoatingStack, GeneticTrainer]:
+    """
+    Complete setup of the genetic optimisation pipeline.
+    
+    Args:
+        config: Structured configuration object
+        materials: Materials dictionary
+        
+    Returns:
+        Tuple of (environment, trainer)
+    """
+    print("Setting up genetic environment...")
+    env = create_genetic_environment(config, materials)
+    
+    print("Creating genetic trainer...")
+    trainer = create_genetic_trainer(config, env)
+    
+    print("Genetic pipeline setup complete.")
+    return env, trainer

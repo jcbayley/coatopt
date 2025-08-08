@@ -24,7 +24,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from coatopt.config import read_config, read_materials
 from coatopt.config.structured_config import CoatingoptimisationConfig
 from coatopt.factories import setup_optimisation_pipeline
-from coatopt.algorithms.hppo_trainer import HPPOTrainer, create_cli_callbacks, HPPOConstants
+from coatopt.algorithms.hppo.hppo_trainer import HPPOTrainer, create_cli_callbacks, HPPOConstants
 from coatopt.utils.evaluation import run_evaluation_pipeline, create_enhanced_pareto_plots
 from coatopt.utils.plotting import TrainingPlotManager
 
@@ -103,7 +103,9 @@ class CommandLineTrainer:
                 output_dir=self.config.general.root_dir,
                 ui_mode=False
             )
-            self.plot_manager.set_objective_info(self.config.data.optimise_parameters)
+            target_list = [self.config.data.optimise_targets[param] for param in self.config.data.optimise_parameters]
+            design_list = [self.config.data.design_criteria[param] for param in self.config.data.optimise_parameters]
+            self.plot_manager.set_objective_info(self.config.data.optimise_parameters, target_list, design_list)
         
         # Create callbacks for progress reporting
         callbacks = create_cli_callbacks(verbose=self.verbose, plot_manager=self.plot_manager)

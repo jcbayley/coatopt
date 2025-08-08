@@ -12,7 +12,7 @@ import matplotlib.pyplot as plt
 from matplotlib.figure import Figure
 from pymoo.util.nds.non_dominated_sorting import NonDominatedSorting
 from typing import List, Dict, Any, Optional, Tuple, Union
-
+import traceback
 
 class TrainingPlotManager:
     """Manager for training plots that can be used by both CLI and UI."""
@@ -115,7 +115,7 @@ class TrainingPlotManager:
         ax.set_title("Pareto Front Visualization")
         self.pareto_fig.tight_layout()
     
-    def set_objective_info(self, optimisation_parameters: List[str], objective_targets: Optional[Dict] = None, design_criteria: Optional[Dict] = None):
+    def set_objective_info(self, optimisation_parameters: List[str], objective_targets: Optional[List[float]] = None, design_criteria: Optional[List[float]] = None):
         """Set objective information for consistent labeling."""
         self.optimisation_parameters = optimisation_parameters.copy()
         self.objective_targets = objective_targets if objective_targets else {}
@@ -492,7 +492,8 @@ class TrainingPlotManager:
             except:
                 pass
         
-        self._add_objective_targets(ax)
+        #self._add_objective_targets(ax)
+        self._add_design_criteria(ax)
         self._configure_axis_labels_and_scales(ax, 0, 1)
         ax.set_title(f'Pareto Front - Episode {episode}')
         ax.grid(True, alpha=0.3)
@@ -546,7 +547,8 @@ class TrainingPlotManager:
                 pass
         
         # Configure Pareto plot
-        self._add_objective_targets(pareto_ax)
+        #self._add_objective_targets(pareto_ax)
+        self._add_design_criteria(pareto_ax)
         self._configure_axis_labels_and_scales(pareto_ax, 0, 1)
         pareto_ax.set_title(f'Pareto Front - Episode {episode}')
         pareto_ax.grid(True, alpha=0.3)
@@ -714,20 +716,45 @@ class TrainingPlotManager:
             try:
                 # Draw vertical line for first objective target
                 if len(self.objective_targets) > 0 and self.objective_targets[0] is not None:
-                    target_x = self.objective_targets[0]
+                    target_x = 1 - self.design_criteria[0] if self.objective_labels[0] == "1 - Reflectivity" else self.design_criteria[0]
                     ax.axvline(x=target_x, color='green', linestyle='--', alpha=0.7, 
                               linewidth=2, label=f'Target {self.objective_labels[0] if len(self.objective_labels) > 0 else "Obj 1"}')
                 
                 # Draw horizontal line for second objective target
                 if len(self.objective_targets) > 1 and self.objective_targets[1] is not None:
-                    target_y = self.objective_targets[1]
+                    target_y = 1 - self.design_criteria[1] if self.objective_labels[1] == "1 - Reflectivity" else self.design_criteria[1]
                     ax.axhline(y=target_y, color='orange', linestyle='--', alpha=0.7,
                               linewidth=2, label=f'Target {self.objective_labels[1] if len(self.objective_labels) > 1 else "Obj 2"}')
             except Exception as e:
-                print(f"Error plotting objective targets: {e}")
+                print(f"Error plotting objective targets: {e} traceback: {e.__traceback__}")
         else:
             print(f"No objective targets set for Pareto plot.")
-    
+        
+
+    def _add_design_criteria(self, ax):
+        """Add design critera lines to plot."""
+        # Add objective target lines if available
+        if hasattr(self, 'design_criteria') and self.design_criteria:
+            try:
+
+                # Draw vertical line for first objective target
+                if len(self.design_criteria) > 0 and self.design_criteria[0] is not None:
+                    target_x = 1 - self.design_criteria[0] if self.objective_labels[0] == "1 - Reflectivity" else self.design_criteria[0]
+                    ax.axvline(x=target_x, color='k', linestyle='--', alpha=0.7, 
+                              linewidth=2, label=f'Target {self.objective_labels[0] if len(self.objective_labels) > 0 else "Obj 1"}')
+                
+                # Draw horizontal line for second objective target
+                if len(self.design_criteria) > 1 and self.design_criteria[1] is not None:
+                    target_y = 1 - self.design_criteria[1] if self.objective_labels[1] == "1 - Reflectivity" else self.design_criteria[1]
+                    ax.axhline(y=target_y, color='k', linestyle='--', alpha=0.7,
+                              linewidth=2, label=f'Target {self.objective_labels[1] if len(self.objective_labels) > 1 else "Obj 2"}')
+            except Exception as e:
+                print(f"Error plotting objective targets: {e} traceback: {e.__traceback__}")
+        else:
+            print(f"No objective targets set for design criteria.")
+
+
+
     def _configure_axis_labels_and_scales(self, ax, i, j):
         """Configure axis labels and scales for objectives i and j."""
         # Set labels and scales

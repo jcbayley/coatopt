@@ -17,8 +17,8 @@ from pymoo.util.nds.non_dominated_sorting import NonDominatedSorting
 
 from coatopt.algorithms.config import HPPOConstants
 from coatopt.algorithms.plotting_utils import make_reward_plot, make_val_plot, make_loss_plot, make_materials_plot
-from coatopt.algorithms.pc_hppo_agent import PCHPPO
-from coatopt.algorithms.training_checkpoint_manager import TrainingCheckpointManager
+from coatopt.algorithms.hppo.pc_hppo_agent import PCHPPO
+from coatopt.algorithms.hppo.training_checkpoint_manager import TrainingCheckpointManager
 import traceback
 
 

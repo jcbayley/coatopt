@@ -9,9 +9,9 @@ from torch.nn import functional as F
 from collections import deque
 import os
 
-from coatopt.networks.truncated_normal import TruncatedNormalDist
-from coatopt.algorithms.pre_networks import PreNetworkLinear, PreNetworkLSTM, PreNetworkAttention
-from coatopt.algorithms.replay_buffer import ReplayBuffer
+from coatopt.utils.truncated_normal import TruncatedNormalDist
+from coatopt.algorithms.hppo.pre_networks import PreNetworkLinear, PreNetworkLSTM, PreNetworkAttention
+from coatopt.algorithms.hppo.replay_buffer import ReplayBuffer
 from coatopt.algorithms.config import HPPOConstants
 from coatopt.algorithms.action_utils import (
     prepare_state_input, prepare_layer_number, create_material_mask,
@@ -113,9 +113,9 @@ class PCHPPO:
         """
         # Import network classes based on hyper_networks flag
         if hyper_networks:
-            from coatopt.algorithms.hyper_policy_nets import DiscretePolicy, ContinuousPolicy, Value
+            from coatopt.algorithms.hppo.hyper_policy_nets import DiscretePolicy, ContinuousPolicy, Value
         else:
-            from coatopt.algorithms.policy_nets import DiscretePolicy, ContinuousPolicy, Value
+            from coatopt.algorithms.hppo.policy_nets import DiscretePolicy, ContinuousPolicy, Value
 
         # Store configuration
         self.upper_bound = upper_bound
