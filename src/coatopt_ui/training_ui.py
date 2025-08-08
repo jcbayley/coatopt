@@ -56,8 +56,8 @@ class TrainingMonitorUI:
         self.saved_states = []   # Store all sampled coating states
         
         # Store objective information for consistent labeling
-        #self.objective_labels = []
-        #self.objective_scales = []
+        self.objective_labels = []
+        self.objective_scales = []
         self.optimisation_parameters = []
         
         # Event handler tracking
@@ -205,13 +205,12 @@ class TrainingMonitorUI:
         try:
             if hasattr(self, 'pareto_data') and self.pareto_data:
                 # Ensure objective info is current before switching viz mode
-                #if not hasattr(self, 'objective_labels') or not self.objective_labels:
-                #    self.update_objective_info()
+                if not hasattr(self, 'objective_labels') or not self.objective_labels:
+                    self.update_objective_info()
                 self.update_pareto_plot()
         except Exception as e:
             print(f"Error changing visualization mode: {e}")
 
-    '''
     def update_objective_info(self):
         """Update stored objective information based on current environment."""
         if not self.env or not hasattr(self.env, 'optimise_parameters'):
@@ -259,7 +258,7 @@ class TrainingMonitorUI:
         }
         
         return [scale_mapping.get(param, 'linear') for param in objectives]
-    '''
+
     def on_epoch_change(self, value):
         """Handle epoch slider change."""
         try:
@@ -375,10 +374,7 @@ class TrainingMonitorUI:
                 ui_mode=True,
                 figure_size=(12, 10)
             )
-
-            self.plot_manager.set_objective_info(self.config.data.optimise_parameters, 
-                                                 self.config.data.optimise_targets, 
-                                                 self.config.data.design_criteria)
+            self.plot_manager.set_objective_info(self.config.data.optimise_parameters)
             
             # Create UI callbacks for progress reporting
             callbacks = create_ui_callbacks(self.training_queue, lambda: not self.is_training)
@@ -413,8 +409,8 @@ class TrainingMonitorUI:
             print(f"Environment optimize_parameters: {self.env.optimise_parameters}")
             
             # Store objective information for consistent UI labeling
-            #self.optimisation_parameters = self.env.optimise_parameters.copy()
-            #self.update_objective_info()
+            self.optimisation_parameters = self.env.optimise_parameters.copy()
+            self.update_objective_info()
             
             # Load historical training data if not retraining
             if continue_training:
@@ -764,25 +760,19 @@ class TrainingMonitorUI:
                     # Update UI with new evaluation data
                     self.add_evaluation_data_to_pareto_plot(results, sampled_states)
                     
-                    # Signal completion using existing queue system
-                    self.training_queue.put({
-                        'type': 'evaluation_complete',
-                        'success': True,
-                        'result': len(sampled_states)
-                    })
+                    # Signal completion - store values to avoid lambda closure issues
+                    num_samples = len(sampled_states)
+                    self.root.after(0, lambda: self.on_evaluation_complete(True, num_samples))
                     
                 except Exception as e:
-                    # Signal error using existing queue system
-                    self.training_queue.put({
-                        'type': 'evaluation_complete',
-                        'success': False,
-                        'result': str(e)
-                    })
+                    # Signal error - store error message to avoid lambda closure issues
+                    error_msg = str(e)
+                    self.root.after(0, lambda: self.on_evaluation_complete(False, error_msg))
             
             # Start evaluation thread
             eval_thread = threading.Thread(target=evaluation_worker, daemon=True)
             eval_thread.start()
-        
+            
         except Exception as e:
             messagebox.showerror("Error", f"Failed to start evaluation: {str(e)}")
             self.on_evaluation_complete(False, str(e))
@@ -797,15 +787,6 @@ class TrainingMonitorUI:
         
         if success:
             self.status_var.set(f"Evaluation completed successfully with {result} samples.")
-            # Update plots after evaluation completion (on main thread)
-            if self.plot_manager:
-                print("Updating all plots after evaluation completion...")
-                self.plot_manager.update_all_plots()
-                print("Redrawing canvases...")
-                self.rewards_canvas.draw()
-                self.values_canvas.draw() 
-                self.pareto_canvas.draw()
-                print("Plot update complete.")
             messagebox.showinfo("Evaluation Complete", 
                               f"Evaluation completed with {result} samples.\n"
                               f"Enhanced Pareto plots have been created and saved.\n"
@@ -849,17 +830,14 @@ class TrainingMonitorUI:
                 
                 eval_data['best_points'] = best_points
                 
-                # Add to plot manager for visualization
-                if self.plot_manager:
-                    print(f"Adding evaluation data with {len(best_points)} points to plot manager")
-                    self.plot_manager.add_eval_pareto_data(eval_data)
-                    print(f"Plot manager now has {len(self.plot_manager.pareto_data)} pareto datasets and {len(self.plot_manager.eval_data)} eval datasets")
+                # Add to pareto data for visualization
+                self.pareto_data.append(eval_data)
                 
-                # Schedule plot update on main thread instead of calling directly
-                # Don't call update_pareto_plot() from worker thread as it accesses UI variables
+                # Update the plot
+                self.update_pareto_plot()
                 
         except Exception as e:
-            print(f"Error adding evaluation data to plot: {e}, traceback: {traceback.format_exc()}")
+            print(f"Error adding evaluation data to plot: {e}")
     
     def training_worker(self):
         """Worker thread for training process using pre-initialized trainer."""
@@ -1011,12 +989,6 @@ class TrainingMonitorUI:
             # Update status label with checkpoint information
             self.status_var.set(update['message'])
         
-        elif update['type'] == 'evaluation_complete':
-            # Handle evaluation completion through queue system
-            success = update['success']
-            result = update['result']
-            self.on_evaluation_complete(success, result)
-        
         elif update['type'] == 'error':
             self.stop_training()
             messagebox.showerror("Training Error", update['message'])
@@ -1046,15 +1018,7 @@ class TrainingMonitorUI:
     def update_pareto_plot(self):
         """Update Pareto plot using plot manager."""
         if self.plot_manager:
-            # Safely get current episode, handling thread safety
-            try:
-                current_episode = self.epoch_var.get() if hasattr(self, 'epoch_var') else None
-            except RuntimeError:
-                # If called from non-main thread, use latest episode from plot manager
-                current_episode = None
-                if hasattr(self.plot_manager, 'pareto_data') and self.plot_manager.pareto_data:
-                    current_episode = self.plot_manager.pareto_data[-1].get('episode', None)
-            
+            current_episode = self.epoch_var.get() if hasattr(self, 'epoch_var') else None
             self.plot_manager.update_pareto_plot(current_episode)
             self.pareto_canvas.draw_idle()
             

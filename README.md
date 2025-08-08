@@ -28,28 +28,36 @@ pip install .
 
 ## Quick Start
 
-### Training a Model
+### Training a Model cli
 
-Train the PC-HPPO-OML algorithm for multi-objective Pareto optimization:
+Train the PC-HPPO-OML algorithm for multi-objective Pareto optimization in the command line:
 
 ```bash
-python -m coatopt.train_pc_hppo_oml_pareto -c src/coatopt/config/default.ini --train
+coatopt-cli -c src/coatopt/config/default.ini --save-plots
+```
+
+### Training a Model ui
+
+Train the PC-HPPO-OML algorithm for multi-objective Pareto optimization in the user interface, then see UI instructions:
+
+```bash
+coatopt-ui 
 ```
 
 ### Testing/Evaluation
 
-Generate solutions using a trained model:
+See the UI docs for the ui instructions, for the cli run :
 
 ```bash
-python -m coatopt.train_pc_hppo_oml_pareto -c src/coatopt/config/default.ini --test -n 1000
+coatopt-cli -c src/coatopt/config/default.ini --evaluate -n 1000 --save-plots
 ```
 
 ### Continue Training
 
-Resume training from a checkpoint:
+Resume training is on by default, if you want to retrain or start new training run:
 
 ```bash
-python -m coatopt.train_pc_hppo_oml_pareto -c src/coatopt/config/default.ini --train --continue-training
+coatopt-cli -c src/coatopt/config/default.ini -retrain
 ```
 
 ## Configuration
@@ -74,19 +82,17 @@ Key parameters in `default.ini`:
 ## Outputs
 
 Training generates:
-- **Training metrics**: `training_metrics.csv` with loss, reward, and objective values
-- **Pareto fronts**: Non-dominated solutions at each iteration
-- **Visualizations**: Reward plots, coating stack diagrams, Pareto front plots
-- **Model checkpoints**: Trained neural network weights
 - **HDF5 results**: Complete evaluation results for analysis
+- **HDF5 evaluation**: evaluation results file
+- **Plots**: plots showing training and pareto front metrics
 
 ## Algorithm Details
 
 PC-HPPO-OML uses:
 - **Hierarchical action space**: Discrete material selection + continuous thickness
-- **Multi-objective rewards**: Dynamic weight cycling to explore Pareto front
+- **Multi-objective rewards**: Dynamic weight cycling and randomisation to explore Pareto front
 - **Pareto front maintenance**: Non-dominated sorting to find pareto front
-- **LSTM pre-networks**: Sequential processing of coating layer information
+- **LSTM or attention pre-networks**: Sequential processing of coating layer information
 - **PPO updates**: Stable policy gradient optimization with clipping
 
 ## Requirements
