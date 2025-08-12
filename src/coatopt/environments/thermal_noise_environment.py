@@ -1,7 +1,14 @@
 import torch
 import numpy as np
 from .coating_utils import getCoatAbsorption, getCoatNoise2, getCoatRefl2, merit_function, merit_function_2
-from .coating_reward_function import reward_function, reward_function_target, reward_function_raw, reward_function_log_minimise, reward_function_hypervolume, reward_function_normalise_log, reward_function_normalise_log_targets
+from .coating_reward_function import (reward_function, 
+                                      reward_function_target, 
+                                      reward_function_raw, 
+                                      reward_function_log_minimise, 
+                                      reward_function_hypervolume, 
+                                      reward_function_normalise_log, 
+                                      reward_function_normalise_log_targets,
+                                      reward_function_log_normalise_targets)
 import time
 import scipy
 from tmm import coh_tmm
@@ -603,6 +610,17 @@ class CoatingStack():
                 self)
         elif self.reward_function == "normed_log_targets":
             total_reward, vals, rewards = reward_function_normalise_log_targets(
+                new_reflectivity, 
+                new_thermal_noise, 
+                new_total_thickness, 
+                new_E_integrated, 
+                self.optimise_parameters, 
+                self.optimise_targets, 
+                self,
+                combine=self.combine, 
+                weights=weights)
+        elif self.reward_function == "log_normed_targets":
+            total_reward, vals, rewards = reward_function_log_normalise_targets(
                 new_reflectivity, 
                 new_thermal_noise, 
                 new_total_thickness, 

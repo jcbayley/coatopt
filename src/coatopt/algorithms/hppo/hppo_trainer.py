@@ -622,28 +622,56 @@ class HPPOTrainer:
             loss1, loss2, loss3 = self.agent.update(update_policy=True, update_value=True)
             lr_outs = self.agent.scheduler_step(episode, make_scheduler_step)
             
-            # Update agent beta and store metrics
-            self.agent.beta = lr_outs[3]
-            episode_metrics.update({
-                "lr_discrete": lr_outs[0][0],
-                "lr_continuous": lr_outs[1][0], 
-                "lr_value": lr_outs[2][0],
-                "beta": self.agent.beta,
-                "loss_policy_discrete": loss1,
-                "loss_policy_continuous": loss2,
-                "loss_value": loss3
-            })
+            # Handle both old format (4 values) and new format (5 values) for backward compatibility
+            if len(lr_outs) == 5:
+                # New format with separate discrete and continuous entropy coefficients
+                lr_discrete, lr_continuous, lr_value, beta_discrete, beta_continuous = lr_outs
+                episode_metrics.update({
+                    "lr_discrete": lr_discrete[0],
+                    "lr_continuous": lr_continuous[0], 
+                    "lr_value": lr_value[0],
+                    "beta_discrete": beta_discrete,
+                    "beta_continuous": beta_continuous,
+                    "beta": (beta_discrete + beta_continuous) / 2,  # Average for backward compatibility
+                    "loss_policy_discrete": loss1,
+                    "loss_policy_continuous": loss2,
+                    "loss_value": loss3
+                })
+            else:
+                # Old format with single entropy coefficient
+                lr_discrete, lr_continuous, lr_value, beta = lr_outs
+                self.agent.beta = beta
+                episode_metrics.update({
+                    "lr_discrete": lr_discrete[0],
+                    "lr_continuous": lr_continuous[0], 
+                    "lr_value": lr_value[0],
+                    "beta": beta,
+                    "loss_policy_discrete": loss1,
+                    "loss_policy_continuous": loss2,
+                    "loss_value": loss3
+                })
         else:
             # No updates yet, use default values
-            episode_metrics.update({
+            default_metrics = {
                 "lr_discrete": self.agent.lr_discrete_policy,
                 "lr_continuous": self.agent.lr_continuous_policy,
                 "lr_value": self.agent.lr_value,
-                "beta": self.agent.beta,
                 "loss_policy_discrete": np.nan,
                 "loss_policy_continuous": np.nan,
                 "loss_value": np.nan
-            })
+            }
+            
+            # Add entropy coefficients (check if agent has separate coefficients)
+            if hasattr(self.agent, 'beta_discrete') and hasattr(self.agent, 'beta_continuous'):
+                default_metrics.update({
+                    "beta_discrete": self.agent.beta_discrete,
+                    "beta_continuous": self.agent.beta_continuous,
+                    "beta": (self.agent.beta_discrete + self.agent.beta_continuous) / 2
+                })
+            else:
+                default_metrics["beta"] = self.agent.beta
+            
+            episode_metrics.update(default_metrics)
 
     def _save_network_weights_if_needed(self, episode: int, objective_weights: np.ndarray) -> None:
         """Save network weights periodically if enabled."""

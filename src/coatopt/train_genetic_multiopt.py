@@ -40,11 +40,40 @@ def load_configuration(config_path: str):
     return structured_config, materials
 
 
-def run_training(trainer):
+def run_training(trainer, env, output_dir):
     """Execute training process."""
     print("Starting genetic algorithm optimisation...")
     trainer.train()
-    print("Training completed.")
+    print("Training completed successfully.")
+    print(f"Results have been saved to: {trainer.output_dir}")
+    
+    # Always create Pareto front plots after training
+    print("Creating Pareto front visualization...")
+    try:
+        create_pareto_front_plots(trainer, env, output_dir)
+        print("Pareto front plots created successfully.")
+    except Exception as e:
+        print(f"Warning: Could not create Pareto front plots: {e}")
+
+
+def create_pareto_front_plots(trainer, env, output_dir):
+    """Create Pareto front plots after training."""
+    if trainer.result is None:
+        print("No optimization results available for plotting.")
+        return
+    
+    # Get the Pareto front data
+    pareto_states, pareto_results = trainer._process_pareto_front()
+    
+    # Create enhanced Pareto plots if available
+    try:
+        # Try to use the enhanced plotting function
+        sampled_weights = None  # Not used for genetic algorithms
+        create_enhanced_pareto_plots(trainer, env, pareto_results, pareto_states, sampled_weights, output_dir)
+    except Exception as e:
+        print(f"Enhanced plots failed, creating basic Pareto plot: {e}")
+        # Fallback to basic Pareto plot
+        trainer._create_pareto_plot(pareto_results)
 
 
 def run_evaluation(trainer, env, n_samples: int, output_dir: str):
@@ -77,14 +106,27 @@ def main():
     
     # Execute requested operations
     if args.train:
-        run_training(trainer)
+        run_training(trainer, env, config.general.root_dir)
     
     if args.test:
+        # If test is requested, ensure we have results (either from training or previously saved)
+        if trainer.result is None:
+            print("No optimization results found. Loading from saved state if available...")
+            result_path = os.path.join(config.general.root_dir, "optimizer_result.pkl")
+            if os.path.exists(result_path):
+                trainer.load_optimizer_state(result_path)
+                print("Loaded previous optimization results.")
+            else:
+                print("No saved results found. Please run training first with --train flag.")
+                return
+        
         run_evaluation(trainer, env, args.n_samples, config.general.root_dir)
     
     if not args.train and not args.test:
-        print("No operation specified. Use --train and/or --test flags.")
-        print("Run with --help for usage information.")
+        # Default behavior: run training if no flags specified
+        print("No operation specified. Running training by default...")
+        print("Use --train and/or --test flags for explicit control.")
+        run_training(trainer, env, config.general.root_dir)
 
 
 if __name__ == "__main__":
