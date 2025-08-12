@@ -22,7 +22,7 @@ import traceback
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from coatopt.config import read_config, read_materials
-from coatopt.config.structured_config import CoatingoptimisationConfig
+from coatopt.config.structured_config import CoatingOptimisationConfig
 from coatopt.factories import setup_optimisation_pipeline
 from coatopt.algorithms.hppo.hppo_trainer import HPPOTrainer, create_cli_callbacks, HPPOConstants
 from coatopt.utils.evaluation import run_evaluation_pipeline, create_enhanced_pareto_plots
@@ -81,7 +81,7 @@ class CommandLineTrainer:
         
         # Load configuration and materials
         raw_config = read_config(self.config_path)
-        self.config = CoatingoptimisationConfig.from_config_parser(raw_config)
+        self.config = CoatingOptimisationConfig.from_config_parser(raw_config)
         self.materials = read_materials(self.config.general.materials_file)
         
         print(f"Loaded {len(self.materials)} materials")

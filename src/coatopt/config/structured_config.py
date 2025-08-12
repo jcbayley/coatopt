@@ -135,6 +135,7 @@ class NetworkConfig(BaseConfig):
     discrete_hidden_size: int
     continuous_hidden_size: int
     value_hidden_size: int
+    buffer_size: int = 10000  # Default buffer size for replay memory
 
 
 @dataclass
