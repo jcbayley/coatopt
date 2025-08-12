@@ -22,11 +22,18 @@ import traceback
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from coatopt.config import read_config, read_materials
-from coatopt.config.structured_config import CoatingoptimisationConfig
+from coatopt.config.structured_config import CoatingOptimisationConfig
 from coatopt.factories import setup_optimisation_pipeline
 from coatopt.algorithms.hppo.hppo_trainer import HPPOTrainer, create_cli_callbacks, HPPOConstants
 from coatopt.utils.evaluation import run_evaluation_pipeline, create_enhanced_pareto_plots
 from coatopt.utils.plotting import TrainingPlotManager
+
+# Optional MCTS integration
+try:
+    from coatopt.algorithms.mcts.mcts import HybridMCTSAgent
+    MCTS_AVAILABLE = True
+except ImportError:
+    MCTS_AVAILABLE = False
 
 
 class CommandLineTrainer:
@@ -34,7 +41,8 @@ class CommandLineTrainer:
     
     def __init__(self, config_path: str, continue_training: bool = True, 
                  verbose: bool = True, save_plots: bool = False, 
-                 evaluate_only: bool = False, n_eval_samples: int = 1000):
+                 evaluate_only: bool = False, n_eval_samples: int = 1000,
+                 enable_mcts: bool = False):
         """
         Initialize command-line trainer.
         
@@ -45,9 +53,21 @@ class CommandLineTrainer:
             save_plots: Whether to save training plots
             evaluate_only: Whether to only run evaluation (no training)
             n_eval_samples: Number of samples for evaluation
+            enable_mcts: Whether to run periodic MCTS evaluation during training
         """
         self.config_path = os.path.abspath(config_path)
         self.verbose = verbose
+        self.continue_training = continue_training
+        self.save_plots = save_plots
+        self.evaluate_only = evaluate_only
+        self.n_eval_samples = n_eval_samples
+        self.enable_mcts = enable_mcts and MCTS_AVAILABLE
+        
+        if enable_mcts and not MCTS_AVAILABLE:
+            print("Warning: MCTS requested but not available. Install MCTS components first.")
+        
+        self.config = None
+        self.trainer = None
         self.save_plots = save_plots
         self.save_visualizations = save_plots  # Save visualizations if plots enabled
         self.continue_training = continue_training
@@ -81,7 +101,7 @@ class CommandLineTrainer:
         
         # Load configuration and materials
         raw_config = read_config(self.config_path)
-        self.config = CoatingoptimisationConfig.from_config_parser(raw_config)
+        self.config = CoatingOptimisationConfig.from_config_parser(raw_config)
         self.materials = read_materials(self.config.general.materials_file)
         
         print(f"Loaded {len(self.materials)} materials")
@@ -279,6 +299,8 @@ Examples:
                         help='Number of samples for evaluation (default: 1000)')
     parser.add_argument('--save-plots', action='store_true',
                         help='Save training plots and visualizations')
+    parser.add_argument('--enable-mcts', action='store_true',
+                        help='Enable periodic MCTS evaluation during training')
     parser.add_argument('-q', '--quiet', action='store_true',
                         help='Minimal output (less verbose)')
     parser.add_argument('-v', '--version', action='version', version='coatopt-train 1.0.0')
@@ -298,7 +320,8 @@ Examples:
             verbose=not args.quiet,
             save_plots=args.save_plots,
             evaluate_only=args.evaluate,
-            n_eval_samples=args.n_samples
+            n_eval_samples=args.n_samples,
+            enable_mcts=args.enable_mcts
         )
         
         # Load configuration

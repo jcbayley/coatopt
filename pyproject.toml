@@ -37,3 +37,4 @@ build-backend = "setuptools.build_meta"
 [project.scripts]
 coatopt-ui = "coatopt_ui.launch_ui:main"
 coatopt-train = "coatopt_cli.train:main"
+coatopt-mcts = "coatopt_cli.mcts_optimize:main"

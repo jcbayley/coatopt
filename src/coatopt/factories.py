@@ -5,6 +5,7 @@ Simplifies object creation and reduces parameter passing complexity.
 from typing import Dict, Any, Tuple, Optional
 from coatopt.algorithms import hppo
 from coatopt.algorithms.genetic_algorithms.genetic_moo import GeneticTrainer
+from coatopt.algorithms.mcts.mcts_trainer import MCTSTrainer
 from coatopt.environments.thermal_noise_environment_pareto import ParetoCoatingStack
 from coatopt.environments.thermal_noise_environment_genetic import GeneticCoatingStack
 from coatopt.config.structured_config import CoatingOptimisationConfig
@@ -103,7 +104,12 @@ def create_pc_hppo_agent(config: CoatingOptimisationConfig, env: ParetoCoatingSt
         entropy_beta_start=config.training.entropy_beta_start,
         entropy_beta_end=config.training.entropy_beta_end,
         entropy_beta_decay_length=config.training.entropy_beta_decay_length,
+        entropy_beta_discrete_start=config.training.entropy_beta_discrete_start,
+        entropy_beta_discrete_end=config.training.entropy_beta_discrete_end,
+        entropy_beta_continuous_start=config.training.entropy_beta_continuous_start,
+        entropy_beta_continuous_end=config.training.entropy_beta_continuous_end,
         hyper_networks=config.network.hyper_networks,
+        buffer_size=config.network.buffer_size
     )
     return agent
 
@@ -261,4 +267,30 @@ def setup_genetic_optimisation_pipeline(config: CoatingOptimisationConfig, mater
     trainer = create_genetic_trainer(config, env)
     
     print("Genetic pipeline setup complete.")
+    return env, trainer
+
+
+def setup_mcts_optimisation_pipeline(config: CoatingOptimisationConfig, materials: Dict[int, Dict[str, Any]]) -> Tuple[ParetoCoatingStack, MCTSTrainer]:
+    """
+    Complete setup of the MCTS optimisation pipeline.
+    
+    Args:
+        config: Structured configuration object
+        materials: Materials dictionary
+        
+    Returns:
+        Tuple of (environment, trainer)
+    """
+    print("Setting up MCTS environment...")
+    env = create_pareto_environment(config, materials)
+    
+    print("Creating PC-HPPO agent for MCTS (will train from scratch)...")
+    pc_hppo_agent = create_pc_hppo_agent(config, env)
+    
+    # MCTS trains policies from scratch through experience
+    # No pre-trained models needed - agent learns during MCTS search
+    print("Initializing MCTS trainer (training from scratch)...")
+    trainer = MCTSTrainer(config, env, pc_hppo_agent)
+    
+    print("MCTS pipeline setup complete.")
     return env, trainer

@@ -135,6 +135,7 @@ class NetworkConfig(BaseConfig):
     discrete_hidden_size: int
     continuous_hidden_size: int
     value_hidden_size: int
+    buffer_size: int = 10000  # Default buffer size for replay memory
 
 
 @dataclass
@@ -175,6 +176,12 @@ class TrainingConfig(BaseConfig):
     n_weight_cycles: int
     weight_network_save: bool
 
+    # Separate entropy coefficients for discrete and continuous policies
+    entropy_beta_discrete_start: Optional[float] = None
+    entropy_beta_discrete_end: Optional[float] = None
+    entropy_beta_continuous_start: Optional[float] = None
+    entropy_beta_continuous_end: Optional[float] = None
+
 
 @dataclass
 class GeneticConfig(BaseConfig):
@@ -192,6 +199,18 @@ class GeneticConfig(BaseConfig):
     n_partitions: Optional[int] = None  # For NSGA3/MOEAD reference directions
     seed: int = 1234
     thickness_sigma: float = 1e-4
+    checkpoint_interval: int = 50  # Save checkpoints every N generations
+
+
+@dataclass
+class MCTSConfig(BaseConfig):
+    """Monte Carlo Tree Search configuration parameters."""
+    n_simulations: int = 1000  # Number of MCTS simulations per search
+    c_puct: float = 1.4  # UCB exploration constant
+    use_policy_priors: bool = True  # Use discrete policy for material selection guidance
+    eval_interval: int = 50  # Evaluate and save checkpoints every N iterations
+    max_layers_override: Optional[int] = None  # Override max layers for MCTS (None = use Data.n_layers)
+    available_materials: Optional[List[int]] = None  # Subset of materials to use (None = all except air)
 
 
 @dataclass
@@ -202,6 +221,7 @@ class CoatingOptimisationConfig:
     network: Optional[NetworkConfig] = None
     training: Optional[TrainingConfig] = None
     genetic: Optional[GeneticConfig] = None
+    mcts: Optional[MCTSConfig] = None
     
     @classmethod
     def from_config_parser(cls, config: CoatingConfigParser) -> 'CoatingOptimisationConfig':
@@ -235,6 +255,15 @@ class CoatingOptimisationConfig:
             'thickness_sigma': 1e-4
         }
         
+        mcts_defaults = {
+            'n_simulations': 1000,
+            'c_puct': 1.4,
+            'use_policy_priors': True,
+            'eval_interval': 50,
+            'max_layers_override': None,
+            'available_materials': None
+        }
+        
         # Create config objects automatically
         general = GeneralConfig.from_config_section(config, "General")
         data = DataConfig.from_config_section(config, "Data", **data_defaults)
@@ -243,6 +272,7 @@ class CoatingOptimisationConfig:
         network = None
         training = None
         genetic = None
+        mcts = None
         
         if config.has_section("Network"):
             network = NetworkConfig.from_config_section(config, "Network", **network_defaults)
@@ -252,11 +282,15 @@ class CoatingOptimisationConfig:
         
         if config.has_section("Genetic"):
             genetic = GeneticConfig.from_config_section(config, "Genetic", **genetic_defaults)
+            
+        if config.has_section("MCTS"):
+            mcts = MCTSConfig.from_config_section(config, "MCTS", **mcts_defaults)
         
         return cls(
             general=general,
             data=data,
             network=network,
             training=training,
-            genetic=genetic
+            genetic=genetic,
+            mcts=mcts
         )
