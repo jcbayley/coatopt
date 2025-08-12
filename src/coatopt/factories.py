@@ -103,6 +103,10 @@ def create_pc_hppo_agent(config: CoatingOptimisationConfig, env: ParetoCoatingSt
         entropy_beta_start=config.training.entropy_beta_start,
         entropy_beta_end=config.training.entropy_beta_end,
         entropy_beta_decay_length=config.training.entropy_beta_decay_length,
+        entropy_beta_discrete_start=config.training.entropy_beta_discrete_start,
+        entropy_beta_discrete_end=config.training.entropy_beta_discrete_end,
+        entropy_beta_continuous_start=config.training.entropy_beta_continuous_start,
+        entropy_beta_continuous_end=config.training.entropy_beta_continuous_end,
         hyper_networks=config.network.hyper_networks,
     )
     return agent
