@@ -176,6 +176,11 @@ class TrainingConfig(BaseConfig):
     n_weight_cycles: int
     weight_network_save: bool
 
+    # Separate entropy coefficients for discrete and continuous policies
+    entropy_beta_discrete_start: Optional[float] = None
+    entropy_beta_discrete_end: Optional[float] = None
+    entropy_beta_continuous_start: Optional[float] = None
+    entropy_beta_continuous_end: Optional[float] = None
 
 @dataclass
 class GeneticConfig(BaseConfig):
