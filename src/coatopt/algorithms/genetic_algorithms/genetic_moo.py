@@ -22,6 +22,7 @@ from pymoo.operators.sampling.rnd import FloatRandomSampling
 from pymoo.optimize import minimize
 from pymoo.core.population import Population
 from pymoo.visualization.scatter import Scatter
+from pymoo.core.callback import Callback
 
 from coatopt.environments import coating_reward_function
 from coatopt.config.structured_config import GeneticConfig
@@ -98,6 +99,142 @@ class CoatingMOO(ElementwiseProblem):
         out["VALS"] = vals
 
 
+class CheckpointCallback(Callback):
+    """Callback for saving checkpoints and creating plots during optimization."""
+    
+    def __init__(self, trainer, checkpoint_interval=50):
+        """
+        Initialize checkpoint callback.
+        
+        Args:
+            trainer: GeneticTrainer instance
+            checkpoint_interval: Save checkpoint every N generations
+        """
+        super().__init__()
+        self.trainer = trainer
+        self.checkpoint_interval = checkpoint_interval
+        self.checkpoint_dir = os.path.join(trainer.output_dir, "checkpoints")
+        os.makedirs(self.checkpoint_dir, exist_ok=True)
+    
+    def notify(self, algorithm):
+        """Called after each generation."""
+        generation = algorithm.n_gen
+        
+        # Save checkpoint every N generations
+        if generation % self.checkpoint_interval == 0 and generation > 0:
+            self._save_checkpoint(algorithm, generation)
+    
+    def _save_checkpoint(self, algorithm, generation):
+        """Save checkpoint data and create plots using existing trainer methods."""
+        print(f"\n--- Saving checkpoint at generation {generation} ---")
+        
+        try:
+            # Create checkpoint subdirectory
+            checkpoint_subdir = os.path.join(self.checkpoint_dir, f"gen_{generation}")
+            os.makedirs(checkpoint_subdir, exist_ok=True)
+            
+            # Create a Population object from current algorithm population
+            current_pop = algorithm.pop
+            
+            # Use existing trainer method to process population data
+            states, results = self.trainer._process_population_data(current_pop)
+            
+            # Save checkpoint data using existing methods
+            self._save_checkpoint_data(states, results, checkpoint_subdir, generation)
+            
+            # Create plots using existing methods
+            self._create_checkpoint_plots(results, states, checkpoint_subdir, generation)
+            
+            print(f"Checkpoint saved to: {checkpoint_subdir}")
+            
+        except Exception as e:
+            print(f"Warning: Failed to save checkpoint at generation {generation}: {e}")
+    
+    def _save_checkpoint_data(self, states, results, checkpoint_dir, generation):
+        """Save checkpoint data using existing trainer methods."""
+        # Use existing dataframe creation method
+        df = self.trainer._create_results_dataframe(states, results)
+        
+        # Save to CSV with generation-specific name
+        csv_path = os.path.join(checkpoint_dir, f"population_gen_{generation}.csv")
+        df.to_csv(csv_path, index=False)
+        
+        # Create summary file
+        self._create_summary_file(results, checkpoint_dir, generation)
+    
+    def _create_summary_file(self, results, checkpoint_dir, generation):
+        """Create a summary file with statistics."""
+        summary_path = os.path.join(checkpoint_dir, f"summary_gen_{generation}.txt")
+        
+        with open(summary_path, 'w') as f:
+            f.write(f"Checkpoint Summary - Generation {generation}\n")
+            f.write(f"================================\n\n")
+            f.write(f"Population Size: {len(list(results.values())[0])}\n")
+            f.write(f"Objectives: {', '.join(self.trainer.env.optimise_parameters)}\n")
+            
+            # Statistics for each objective
+            for param in self.trainer.env.optimise_parameters:
+                vals_key = f"{param}_vals"
+                if vals_key in results:
+                    vals = results[vals_key]
+                    f.write(f"\n{param.title()} Statistics:\n")
+                    f.write(f"  Min: {np.min(vals):.6f}\n")
+                    f.write(f"  Max: {np.max(vals):.6f}\n")
+                    f.write(f"  Mean: {np.mean(vals):.6f}\n")
+                    f.write(f"  Std: {np.std(vals):.6f}\n")
+    
+    def _create_checkpoint_plots(self, results, states, checkpoint_dir, generation):
+        """Create plots using existing trainer methods."""
+        # Create Pareto front plot using existing method with modified output path
+        if len(self.trainer.env.optimise_parameters) >= 2:
+            try:
+                # Temporarily modify trainer's output_dir to save to checkpoint dir
+                original_output_dir = self.trainer.output_dir
+                self.trainer.output_dir = checkpoint_dir
+                
+                # Use existing Pareto plot method
+                self.trainer._create_pareto_plot(results)
+                
+                # Rename the generated plot to include generation number
+                original_plot_path = os.path.join(checkpoint_dir, "pareto_front.png")
+                new_plot_path = os.path.join(checkpoint_dir, f"pareto_front_gen_{generation}.png")
+                
+                if os.path.exists(original_plot_path):
+                    os.rename(original_plot_path, new_plot_path)
+                
+                # Restore original output directory
+                self.trainer.output_dir = original_output_dir
+                
+            except Exception as e:
+                print(f"Warning: Failed to create Pareto plot for gen {generation}: {e}")
+        
+        # Create sample coating plots using existing method
+        self._create_sample_coating_plots(states, checkpoint_dir, generation)
+    
+    def _create_sample_coating_plots(self, states, checkpoint_dir, generation):
+        """Create sample coating plots using existing plotting functionality."""
+        # Create a few sample coating plots (similar to existing _create_coating_plots but for checkpoint)
+        n_sample_plots = min(5, len(states))
+        
+        for i in range(n_sample_plots):
+            try:
+                state = states[i]
+                
+                # Calculate rewards and values for this state
+                total_reward, vals, rewards = self.trainer.env.compute_reward(state)
+                
+                # Use existing plotting function
+                fig, ax = plotting.plot_stack(state, self.trainer.env.materials, rewards=rewards, vals=vals)
+                fig.suptitle(f"Generation {generation} - Sample {i+1}")
+                
+                plot_path = os.path.join(checkpoint_dir, f"coating_sample_{i+1}_gen_{generation}.png")
+                fig.savefig(plot_path, dpi=300, bbox_inches='tight')
+                plt.close(fig)
+                
+            except Exception as e:
+                print(f"Warning: Failed to create coating plot {i+1} for gen {generation}: {e}")
+
+
 class GeneticTrainer:
     """Genetic algorithm trainer for coating optimisation."""
     
@@ -171,11 +308,22 @@ class GeneticTrainer:
         else:
             raise ValueError(f"Unknown algorithm: {self.config.algorithm}")
 
-    def train(self):
-        """Execute genetic algorithm optimisation."""
+    def train(self, checkpoint_interval=None):
+        """Execute genetic algorithm optimisation with checkpointing.
+        
+        Args:
+            checkpoint_interval: Save checkpoints every N generations (if None, uses config value)
+        """
+        if checkpoint_interval is None:
+            checkpoint_interval = getattr(self.config, 'checkpoint_interval', 50)
+            
         print(f"Starting genetic algorithm optimisation with {self.config.algorithm}")
         print(f"Population size: {self.config.population_size}")
         print(f"Generations: {self.config.n_generations}")
+        print(f"Checkpointing every {checkpoint_interval} generations")
+        
+        # Create checkpoint callback
+        checkpoint_callback = CheckpointCallback(self, checkpoint_interval)
         
         self.result = minimize(
             self.problem,
@@ -183,10 +331,26 @@ class GeneticTrainer:
             ('n_gen', self.config.n_generations),
             seed=self.config.seed,
             save_history=True,
-            verbose=True
+            verbose=True,
+            callback=checkpoint_callback
         )
         
-        print("optimisation completed")
+        print("Optimisation completed")
+        print("Saving final results and creating visualizations...")
+        
+        # Automatically save results after training
+        try:
+            self.evaluate()
+            print("Results saved successfully")
+        except Exception as e:
+            print(f"Warning: Failed to save results: {e}")
+            # Continue execution even if saving fails
+        
+        # Save optimizer state
+        try:
+            self.save_optimizer_state()
+        except Exception as e:
+            print(f"Warning: Failed to save optimizer state: {e}")
 
     def evaluate(self, n_samples: Optional[int] = None) -> Tuple[np.ndarray, Dict[str, np.ndarray], np.ndarray]:
         """
@@ -349,6 +513,63 @@ class GeneticTrainer:
             pareto_group.create_dataset('states', data=pareto_states, compression='gzip')
             for key, data in pareto_results.items():
                 pareto_group.create_dataset(key, data=data, compression='gzip')
+
+    def save_optimizer_state(self):
+        """Save the optimizer state including results and training history."""
+        if self.result is None:
+            print("No optimization results to save. Run training first.")
+            return
+        
+        import pickle
+        
+        # Save the full result object using pickle
+        result_path = os.path.join(self.output_dir, "optimizer_result.pkl")
+        with open(result_path, 'wb') as f:
+            pickle.dump(self.result, f)
+        
+        print(f"Optimizer state saved to: {result_path}")
+        
+        # Also save a summary of the optimization
+        summary_path = os.path.join(self.output_dir, "optimization_summary.txt")
+        with open(summary_path, 'w') as f:
+            f.write(f"Genetic Algorithm Optimization Summary\n")
+            f.write(f"=====================================\n\n")
+            f.write(f"Algorithm: {self.config.algorithm}\n")
+            f.write(f"Population Size: {self.config.population_size}\n")
+            f.write(f"Generations: {self.config.n_generations}\n")
+            f.write(f"Objectives: {', '.join(self.env.optimise_parameters)}\n")
+            f.write(f"Total Evaluations: {len(self.result.history) * self.config.population_size}\n")
+            
+            # Summary statistics of Pareto front
+            if hasattr(self.result, 'F') and self.result.F is not None:
+                if len(self.result.F.shape) == 1:
+                    f.write(f"Final Pareto Front Size: 1\n")
+                else:
+                    f.write(f"Final Pareto Front Size: {len(self.result.F)}\n")
+            
+            f.write(f"\nOutput Directory: {self.output_dir}\n")
+            f.write(f"Files Generated:\n")
+            f.write(f"  - population_data.csv: All evaluated solutions\n")
+            f.write(f"  - optimized_data.csv: Pareto front solutions\n")
+            f.write(f"  - genetic_optimisation_results.h5: Detailed results\n")
+            f.write(f"  - optimizer_result.pkl: Full optimizer state\n")
+            f.write(f"  - pareto_front.png: Pareto front visualization\n")
+            f.write(f"  - states/: Individual coating visualizations\n")
+        
+        print(f"Optimization summary saved to: {summary_path}")
+
+    def load_optimizer_state(self, result_path: str):
+        """Load a previously saved optimizer state."""
+        import pickle
+        
+        if not os.path.exists(result_path):
+            raise FileNotFoundError(f"Optimizer state file not found: {result_path}")
+        
+        with open(result_path, 'rb') as f:
+            self.result = pickle.load(f)
+        
+        print(f"Optimizer state loaded from: {result_path}")
+        return self.result
 
     def _create_visualizations(self, results: Dict[str, np.ndarray], states: np.ndarray):
         """Create visualization plots."""

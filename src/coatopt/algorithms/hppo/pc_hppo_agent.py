@@ -65,8 +65,14 @@ class PCHPPO:
         ignore_substrate_option: bool = False,
         entropy_beta_start: float = 1.0,
         entropy_beta_end: float = 0.001,
+        entropy_beta_decay_start: int = 0,
         entropy_beta_decay_length: int = 500,
-        hyper_networks: bool = False
+        entropy_beta_discrete_start: Optional[float] = None,
+        entropy_beta_discrete_end: Optional[float] = None,
+        entropy_beta_continuous_start: Optional[float] = None,
+        entropy_beta_continuous_end: Optional[float] = None,
+        hyper_networks: bool = False,
+        buffer_size: int = 10000
     ):
         """
         Initialize PC-HPPO agent.
@@ -106,9 +112,14 @@ class PCHPPO:
             air_material_index: Index of air material
             ignore_air_option: Whether to ignore air material
             ignore_substrate_option: Whether to ignore substrate material
-            entropy_beta_start: Initial entropy coefficient
-            entropy_beta_end: Final entropy coefficient
+            entropy_beta_start: Initial entropy coefficient (default for both networks)
+            entropy_beta_end: Final entropy coefficient (default for both networks)
+            entropy_beta_decay_start: Step at which entropy decay begins
             entropy_beta_decay_length: Entropy decay length
+            entropy_beta_discrete_start: Initial entropy coefficient for discrete policy (optional)
+            entropy_beta_discrete_end: Final entropy coefficient for discrete policy (optional)
+            entropy_beta_continuous_start: Initial entropy coefficient for continuous policy (optional)
+            entropy_beta_continuous_end: Final entropy coefficient for continuous policy (optional)
             hyper_networks: Whether to use hypernetworks
         """
         # Import network classes based on hyper_networks flag
@@ -128,9 +139,22 @@ class PCHPPO:
         self.num_objectives = num_objectives
         self.entropy_beta_start = entropy_beta_start
         self.entropy_beta_end = entropy_beta_end
+        self.entropy_beta_decay_start = entropy_beta_decay_start
         self.entropy_beta_decay_length = entropy_beta_decay_length
+        
+        # Set separate entropy coefficients for discrete and continuous policies
+        self.entropy_beta_discrete_start = entropy_beta_discrete_start if entropy_beta_discrete_start is not None else entropy_beta_start
+        self.entropy_beta_discrete_end = entropy_beta_discrete_end if entropy_beta_discrete_end is not None else entropy_beta_end
+        self.entropy_beta_continuous_start = entropy_beta_continuous_start if entropy_beta_continuous_start is not None else entropy_beta_start
+        self.entropy_beta_continuous_end = entropy_beta_continuous_end if entropy_beta_continuous_end is not None else entropy_beta_end
+        
         self.pre_type = pre_type
         self.n_updates = n_updates
+        self.buffer_size = buffer_size
+        
+        # Initialize current entropy coefficients
+        self.beta_discrete = self.entropy_beta_discrete_start
+        self.beta_continuous = self.entropy_beta_continuous_start
 
         # Initialize pre-network
         self.pre_output_dim = hidden_size
@@ -153,7 +177,7 @@ class PCHPPO:
 
         # Initialize training components
         self.mse_loss = torch.nn.MSELoss()
-        self.replay_buffer = ReplayBuffer()
+        self.replay_buffer = ReplayBuffer(max_size=buffer_size)
         self.beta = beta
         self.clip_ratio = clip_ratio
         self.gamma = gamma
@@ -283,36 +307,54 @@ class PCHPPO:
             temp_r.appendleft(R)
         return np.array(temp_r)
 
-    def scheduler_step(self, step: int = 0, make_step: bool = True) -> Tuple[List[float], List[float], List[float], float]:
+    def scheduler_step(self, step: int = 0, make_step: bool = True) -> Tuple[List[float], List[float], List[float], float, float]:
         """
-        Step learning rate schedulers and calculate entropy coefficient.
+        Step learning rate schedulers and calculate entropy coefficients.
         
         Args:
             step: Current step number
             make_step: Whether to actually step the schedulers
             
         Returns:
-            Tuple of (discrete_lr, continuous_lr, value_lr, entropy_coeff)
+            Tuple of (discrete_lr, continuous_lr, value_lr, discrete_entropy_coeff, continuous_entropy_coeff)
         """
         if make_step:
             self.scheduler_discrete.step(step)
             self.scheduler_continuous.step(step)
             self.scheduler_value.step(step)
 
-        # Calculate entropy coefficient using cosine annealing
-        if step < self.entropy_beta_decay_length:
-            # Cosine annealing from entropy_beta_start to beta_end
-            entropy_val = self.entropy_beta_end + (self.entropy_beta_start - self.entropy_beta_end) * (
-            1 + np.cos(np.pi * step / self.entropy_beta_decay_length)
-            ) / 2
-        else:
-            entropy_val = self.entropy_beta_end
+        # Calculate entropy coefficients using cosine annealing
+        def calculate_entropy_coefficient(start_val, end_val):
+            if step < self.entropy_beta_decay_start:
+                # Before decay starts, use start value
+                return start_val
+            elif step >= self.entropy_beta_decay_start + self.entropy_beta_decay_length:
+                # After decay ends, use end value
+                return end_val
+            else:
+                # During decay period, use cosine annealing
+                progress = (step - self.entropy_beta_decay_start) / self.entropy_beta_decay_length
+                return end_val + (start_val - end_val) * (
+                    1 + np.cos(np.pi * progress)
+                ) / 2
+        
+        discrete_entropy_val = calculate_entropy_coefficient(
+            self.entropy_beta_discrete_start, self.entropy_beta_discrete_end
+        )
+        continuous_entropy_val = calculate_entropy_coefficient(
+            self.entropy_beta_continuous_start, self.entropy_beta_continuous_end
+        )
+        
+        # Update current entropy coefficients
+        self.beta_discrete = discrete_entropy_val
+        self.beta_continuous = continuous_entropy_val
         
         return (
             self.scheduler_discrete.get_last_lr(),
             self.scheduler_continuous.get_last_lr(),
             self.scheduler_value.get_last_lr(),
-            entropy_val
+            discrete_entropy_val,
+            continuous_entropy_val
         )
 
     def select_action(
@@ -548,10 +590,10 @@ class PCHPPO:
 
             # Calculate policy losses
             discrete_policy_loss = self._calculate_discrete_policy_loss(
-                log_prob_discrete, old_lprobs_discrete, advantage, entropy_discrete
+                log_prob_discrete, old_lprobs_discrete, advantage, entropy_discrete, self.beta_discrete
             )
             continuous_policy_loss = self._calculate_continuous_policy_loss(
-                log_prob_continuous, old_lprobs_continuous, advantage, entropy_continuous
+                log_prob_continuous, old_lprobs_continuous, advantage, entropy_continuous, self.beta_continuous
             )
             value_loss = self.mse_loss(returns.to(torch.float32).squeeze(), state_value.squeeze())
 
@@ -574,19 +616,19 @@ class PCHPPO:
 
         return discrete_policy_loss.item(), continuous_policy_loss.item(), value_loss.item()
 
-    def _calculate_discrete_policy_loss(self, log_prob, old_log_prob, advantage, entropy):
+    def _calculate_discrete_policy_loss(self, log_prob, old_log_prob, advantage, entropy, entropy_coeff):
         """Calculate PPO clipped discrete policy loss."""
         ratios = torch.exp(log_prob - old_log_prob)
         surr1 = ratios.squeeze() * advantage.squeeze()
         surr2 = torch.clamp(ratios, 1 - self.clip_ratio, 1 + self.clip_ratio) * advantage.squeeze()
-        return -(torch.min(surr1, surr2) + self.beta * entropy.squeeze()).mean()
+        return -(torch.min(surr1, surr2) + entropy_coeff * entropy.squeeze()).mean()
 
-    def _calculate_continuous_policy_loss(self, log_prob, old_log_prob, advantage, entropy):
+    def _calculate_continuous_policy_loss(self, log_prob, old_log_prob, advantage, entropy, entropy_coeff):
         """Calculate PPO clipped continuous policy loss."""
         ratios = torch.exp(log_prob - old_log_prob)
         surr1 = ratios.squeeze() * advantage.squeeze()
         surr2 = torch.clamp(ratios, 1 - self.clip_ratio, 1 + self.clip_ratio) * advantage.squeeze()
-        return -(torch.min(surr1, surr2) + self.beta * entropy.squeeze()).mean()
+        return -(torch.min(surr1, surr2) + entropy_coeff * entropy.squeeze()).mean()
 
     def _update_discrete_policy(self, loss):
         """Update discrete policy network."""

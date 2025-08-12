@@ -254,11 +254,38 @@ class TrainingPlotManager:
             self.rewards_axes[1].set_ylabel('Reward')
             self.rewards_axes[1].legend(fontsize=8)
             
-            # 3. Entropy Weight (Beta)
-            if 'beta' in df.columns:
-                self.rewards_axes[2].plot(episodes, df['beta'], 'purple', linewidth=2)
+            # 3. Entropy Weights (Beta)
+            entropy_plotted = False
+            
+            # Check for separate discrete and continuous entropy weights
+            if 'beta_discrete' in df.columns and 'beta_continuous' in df.columns:
+                self.rewards_axes[2].plot(episodes, df['beta_discrete'], 'blue', linewidth=2, label='Discrete', alpha=0.8)
+                self.rewards_axes[2].plot(episodes, df['beta_continuous'], 'red', linewidth=2, label='Continuous', alpha=0.8)
+                self.rewards_axes[2].set_title('Entropy Weights (β)')
+                self.rewards_axes[2].set_ylabel('Beta')
+                self.rewards_axes[2].legend(fontsize=8)
+                entropy_plotted = True
+            elif 'beta' in df.columns:
+                # Fallback to original single entropy weight
+                self.rewards_axes[2].plot(episodes, df['beta'], 'purple', linewidth=2, label='Shared')
                 self.rewards_axes[2].set_title('Entropy Weight (β)')
                 self.rewards_axes[2].set_ylabel('Beta')
+                entropy_plotted = True
+            
+            # If neither are available, try to detect individual entropy columns
+            if not entropy_plotted:
+                entropy_found = False
+                if 'entropy_discrete' in df.columns:
+                    self.rewards_axes[2].plot(episodes, df['entropy_discrete'], 'blue', linewidth=2, label='Discrete', alpha=0.8)
+                    entropy_found = True
+                if 'entropy_continuous' in df.columns:
+                    self.rewards_axes[2].plot(episodes, df['entropy_continuous'], 'red', linewidth=2, label='Continuous', alpha=0.8)
+                    entropy_found = True
+                    
+                if entropy_found:
+                    self.rewards_axes[2].set_title('Entropy Weights (β)')
+                    self.rewards_axes[2].set_ylabel('Beta')
+                    self.rewards_axes[2].legend(fontsize=8)
             
             # 4. Learning Rates
             lr_components = ['lr_discrete', 'lr_continuous', 'lr_value']

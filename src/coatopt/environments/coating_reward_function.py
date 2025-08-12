@@ -431,6 +431,88 @@ def reward_function_normalise_log_targets(reflectivity, thermal_noise, total_thi
 
     return total_reward, vals, rewards
 
+def reward_function_log_normalise_targets(reflectivity, thermal_noise, total_thickness, absorption, optimise_parameters, optimise_targets, env, combine="product", neg_reward=-1e3, weights=None):
+    """_summary_
+
+    Args:
+        reflectivity (_type_): _description_
+        thermal_noise (_type_): _description_
+        total_thickness (_type_): _description_
+        absorption (_type_): _description_
+        optimise_parameters (_type_): _description_
+        optimise_targets (_type_): _description_
+
+    Returns:
+        _type_: _description_
+    """
+
+    vals = {
+        "reflectivity": reflectivity,
+        "thermal_noise": thermal_noise,
+        "thickness": total_thickness,
+        "absorption": absorption
+    }
+    if weights is None:
+        weights = {key:1 for key in vals}
+
+    rewards = {key:0 for key in vals}
+
+    if not hasattr(env, 'objective_bounds'):
+        env.objective_bounds = {
+            'reflectivity': {'min': 1e-6, 'max': 1e-1},      # Typical coating values
+            'absorption': {'min': 1e-4, 'max': 1000.0},         # Physical bounds
+            'thermal_noise': {'min': 1e-25, 'max': 1e-15},   # Typical noise values  
+            'thickness': {'min': 100, 'max': 50000}          # nm range
+        }
+
+    target_mapping = {
+        "reflectivity": "log-",
+        "thermal_noise": "log-",
+        "thickness": "linear-",
+        "absorption": "log-"
+    }
+
+    normed_vals = {}
+    for key in vals.keys():
+        if key in optimise_parameters:
+            if target_mapping[key][:-1] == "log":
+                normed_vals[key] = np.log(np.abs(vals[key] - optimise_targets[key])) / (np.log(env.objective_bounds[key]['max']) - np.log(env.objective_bounds[key]['min']))
+                #print("denom", key, (np.log(env.objective_bounds[key]['max']) - np.log(env.objective_bounds[key]['min'])))
+                #print("num", (np.log(vals[key]) - np.log(optimise_targets[key])))
+                #print("val", np.log(vals[key]), vals[key])
+                #print("opt", np.log(optimise_targets[key]), optimise_targets[key])
+                #print("nvals", normed_vals[key])
+                #print("-----------------------")
+
+            elif target_mapping[key][:-1] == "linear":
+                normed_vals[key] = np.abs(vals[key] - optimise_targets[key]) / (env.objective_bounds[key]['max'] - env.objective_bounds[key]['min']) 
+            else:
+                raise ValueError(f"Unknown target mapping for {key}: {target_mapping[key]}")
+
+            if target_mapping[key].endswith("-"):
+                normed_vals[key] = -normed_vals[key]
+            
+            # Set the rewards dictionary with the normalized values
+            rewards[key] = normed_vals[key]
+
+
+    if combine=="sum":
+        total_reward = np.sum([rewards[key]*weights[key] for key in optimise_parameters])
+    elif combine=="product":
+        total_reward = np.prod([rewards[key] for key in optimise_parameters])
+    elif combine=="logproduct":
+        total_reward = np.log(np.prod([rewards[key] for key in optimise_parameters]) )
+    else:
+        raise ValueError(f"combine must be either 'sum' or 'product' not {combine}")
+
+    if np.isnan(total_reward) or np.isinf(total_reward):
+        #rewards["total_reward"] = neg_reward
+        total_reward = neg_reward
+
+    rewards["total_reward"] = total_reward
+
+    return total_reward, vals, rewards
+
 
 def reward_function_normalise_log(reflectivity, thermal_noise, total_thickness, absorption, optimise_parameters, optimise_targets, env, combine="product", neg_reward=-1e3, weights=None):
     """_summary_
@@ -507,6 +589,7 @@ def reward_function_normalise_log(reflectivity, thermal_noise, total_thickness, 
     rewards["total_reward"] = total_reward
 
     return total_reward, vals, rewards
+
 
 def reward_function_hypervolume(reflectivity, thermal_noise, total_thickness, absorption, 
                                optimise_parameters, optimise_targets, env, 
