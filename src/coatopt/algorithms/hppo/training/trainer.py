@@ -7,6 +7,7 @@ import os
 import time
 import pickle
 import queue
+import shutil
 from typing import List, Dict, Tuple, Any, Optional, Callable
 from dataclasses import dataclass
 import numpy as np
@@ -17,8 +18,9 @@ from pymoo.util.nds.non_dominated_sorting import NonDominatedSorting
 
 from coatopt.algorithms.config import HPPOConstants
 from coatopt.algorithms.plotting_utils import make_reward_plot, make_val_plot, make_loss_plot, make_materials_plot
-from coatopt.algorithms.hppo.pc_hppo_agent import PCHPPO
-from coatopt.algorithms.hppo.training_checkpoint_manager import TrainingCheckpointManager
+from coatopt.algorithms.hppo.core.agent import PCHPPO
+from coatopt.algorithms.hppo.training.checkpoint_manager import TrainingCheckpointManager
+from coatopt.algorithms.hppo.training.consolidation import ConsolidationStrategy, ConsolidationConfig
 import traceback
 
 
@@ -44,11 +46,12 @@ class TrainingCallbacks:
     # UI-specific
     ui_queue: Optional[queue.Queue] = None  # For sending data to UI
 
-class HPPOTrainer:
+class UnifiedHPPOTrainer:
     """
-    Trainer class for managing HPPO training process.
+    Unified Trainer class for managing HPPO training process.
     
     Handles training loop, metric tracking, plotting, and model persistence.
+    Consolidates HPPOTrainer and EnhancedHPPOTrainer functionality.
     """
 
     def __init__(
@@ -71,6 +74,7 @@ class HPPOTrainer:
         use_unified_checkpoints: bool = True,
         save_plots: bool = False,
         save_episode_visualizations: bool = False,
+        consolidation_config: Optional[ConsolidationConfig] = None,
         callbacks: Optional[TrainingCallbacks] = None
     ):
         """
@@ -118,6 +122,15 @@ class HPPOTrainer:
         self.training_start_time = None
         self.last_progress_time = time.time()
 
+        # Initialize Pareto tracking attributes (consistent format for HPPO and genetic)
+        self.pareto_front_rewards = np.array([])      # Pareto front in reward space
+        self.pareto_front_values = np.array([])       # Pareto front in physical values space
+        self.pareto_states = np.array([])             # States corresponding to Pareto front
+        self.reference_point = np.array([])           # Reference point for hypervolume
+        self.all_rewards = []                         # All rewards explored (HPPO only)
+        self.all_values = []                          # All physical values explored (HPPO only)  
+        self.all_states = []                          # All states explored (HPPO only)
+
         # Setup directories
         self._setup_directories()
 
@@ -127,6 +140,13 @@ class HPPOTrainer:
                 root_dir=self.root_dir,
                 checkpoint_name="training_checkpoint.h5"
             )
+
+        # Initialize consolidation if config provided
+        self.use_consolidation = consolidation_config is not None
+        if self.use_consolidation:
+            self.consolidation = ConsolidationStrategy(consolidation_config, agent)
+        else:
+            self.consolidation = None
 
         # Setup scheduler
         self.scheduler_start = scheduler_start
@@ -160,6 +180,16 @@ class HPPOTrainer:
         self.start_episode = 0
         self.continue_training = False
         self.best_states = []
+        
+        # Initialize Pareto tracking (already done in __init__ but ensure they're properly initialized)
+        if not hasattr(self, 'pareto_front_rewards'):
+            self.pareto_front_rewards = np.array([])
+            self.pareto_front_values = np.array([])
+            self.pareto_states = np.array([])
+            self.reference_point = np.array([])
+            self.all_rewards = []
+            self.all_values = []
+            self.all_states = []
 
     def _load_training_state(self) -> None:
         """Load training state from checkpoint (unified or legacy format)."""
@@ -193,33 +223,23 @@ class HPPOTrainer:
             else:
                 self.start_episode = 0
             
-            # Load environment state
-            env_state = checkpoint_data.get('environment_state', {})
+            # Load Pareto data directly to class attributes (simple!)
             pareto_data = checkpoint_data.get('pareto_data', {})
+            self.pareto_front_rewards = pareto_data.get('pareto_front_rewards', np.array([]))
+            self.pareto_front_values = pareto_data.get('pareto_front_values', np.array([]))
+            self.pareto_states = pareto_data.get('pareto_states', np.array([]))
+            self.reference_point = pareto_data.get('reference_point', np.array([]))
+            self.all_rewards = pareto_data.get('all_rewards', np.array([])).tolist() if len(pareto_data.get('all_rewards', [])) > 0 else []
+            self.all_values = pareto_data.get('all_values', np.array([])).tolist() if len(pareto_data.get('all_values', [])) > 0 else []
+            self.all_states = pareto_data.get('all_states', np.array([])).tolist() if len(pareto_data.get('all_states', [])) > 0 else []
             
-            # Restore Pareto front
-            if 'current_front' in pareto_data and len(pareto_data['current_front']) > 0:
-                self.env.pareto_front = pareto_data['current_front']
-                print(f"Loaded Pareto front with {len(self.env.pareto_front)} points")
-            else:
-                self.env.pareto_front = np.empty((0, len(getattr(self.env, 'optimise_parameters', ['reflectivity', 'absorption']))))
-                print("No Pareto front in checkpoint, initializing empty")
+            # Also sync to environment for compatibility
+            if len(self.pareto_front_rewards) > 0:
+                self.env.pareto_front = self.pareto_front_rewards
+                print(f"Loaded Pareto front with {len(self.pareto_front_rewards)} points")
             
-            # Restore other environment data
-            if 'reference_point' in pareto_data:
-                self.env.reference_point = pareto_data['reference_point']
-            elif len(self.env.pareto_front) > 0:
-                self.env.reference_point = np.max(self.env.pareto_front, axis=0) * 1.1
-            
-            if 'all_points' in pareto_data:
-                self.env.saved_points = pareto_data['all_points'].tolist() if len(pareto_data['all_points']) > 0 else []
-            else:
-                self.env.saved_points = []
-                
-            if 'all_values' in pareto_data:
-                self.env.saved_data = pareto_data['all_values'].tolist() if len(pareto_data['all_values']) > 0 else []
-            else:
-                self.env.saved_data = []
+            if len(self.reference_point) > 0:
+                self.env.reference_point = self.reference_point
             
             # Load best states
             self.best_states = checkpoint_data.get('best_states', [])
@@ -227,20 +247,87 @@ class HPPOTrainer:
             self.continue_training = True
             print(f"Successfully loaded unified checkpoint from episode {self.start_episode}")
             
-            # Send initial pareto update to UI if we have callbacks and best_states
-            if hasattr(self, 'callbacks') and self.callbacks.ui_queue and self.best_states:
-                try:
-                    pareto_update = self._generate_pareto_update(self.start_episode)
-                    if pareto_update:
-                        self.callbacks.ui_queue.put(pareto_update, block=False)
-                        print(f"Sent initial Pareto update to UI with {len(self.best_states)} points")
-                except Exception as e:
-                    print(f"Warning: Could not send initial pareto update to UI: {e}")
-            
         except Exception as e:
-            print(f"Error loading unified checkpoint: {e}: traceback: {traceback.format_exc()}")
+            print(f"Error loading unified checkpoint: {e}")
             print("Falling back to legacy loading...")
             self._load_legacy_training_state()
+
+    def _update_pareto_tracking(self, state: np.ndarray, rewards_dict: Dict, vals_dict: Dict) -> None:
+        """
+        Update Pareto tracking attributes during training.
+        This is called for each episode to track all explored points.
+        
+        Args:
+            state: Episode state
+            rewards_dict: Reward values for this state
+            vals_dict: Physical values for this state
+        """
+        # Extract reward and value vectors for optimized parameters
+        reward_point = [rewards_dict.get(param, 0.0) for param in self.env.optimise_parameters]
+        value_point = [vals_dict.get(param, 0.0) for param in self.env.optimise_parameters]
+        
+        # Add to all explored points (HPPO only - genetic doesn't track all points)
+        self.all_rewards.append(reward_point)
+        self.all_values.append(value_point)
+        self.all_states.append(state.copy())
+        
+        # Update current Pareto front (this could be done periodically for efficiency)
+        if len(self.all_rewards) > 1:
+            self._recompute_pareto_front()
+
+    def _recompute_pareto_front(self) -> None:
+        """
+        Recompute Pareto front from all explored points and update class attributes.
+        """
+        if len(self.all_rewards) == 0:
+            return
+            
+        # Convert to arrays for Pareto computation
+        all_rewards_array = np.array(self.all_rewards)
+        all_values_array = np.array(self.all_values)
+        all_states_array = np.array(self.all_states)
+        
+        # Use environment's Pareto computation or NonDominatedSorting
+        try:
+            # Try using environment method first
+            if hasattr(self.env, 'compute_pareto_front'):
+                pareto_front_rewards = self.env.compute_pareto_front(all_rewards_array)
+                
+                # Find indices of Pareto points
+                pareto_indices = []
+                for pf_point in pareto_front_rewards:
+                    distances = np.sum((all_rewards_array - pf_point) ** 2, axis=1)
+                    closest_idx = np.argmin(distances)
+                    if closest_idx not in pareto_indices:
+                        pareto_indices.append(closest_idx)
+                        
+            else:
+                # Fallback to pymoo NonDominatedSorting
+                nds = NonDominatedSorting()
+                fronts = nds.do(-all_rewards_array)  # Minimize (negate for maximization)
+                
+                if len(fronts) > 0:
+                    pareto_indices = fronts[0]
+                    pareto_front_rewards = all_rewards_array[pareto_indices]
+                else:
+                    pareto_indices = []
+                    pareto_front_rewards = np.array([])
+            
+            # Update class attributes
+            if len(pareto_indices) > 0:
+                self.pareto_front_rewards = pareto_front_rewards if len(pareto_front_rewards) > 0 else all_rewards_array[pareto_indices]
+                self.pareto_front_values = all_values_array[pareto_indices]
+                self.pareto_states = all_states_array[pareto_indices]
+                
+                # Update reference point
+                self.reference_point = np.max(self.pareto_front_rewards, axis=0) * 1.1
+                
+                # Sync to environment for compatibility
+                self.env.pareto_front = self.pareto_front_rewards
+                self.env.reference_point = self.reference_point
+                
+        except Exception as e:
+            print(f"Warning: Failed to recompute Pareto front: {e}")
 
     def _load_legacy_training_state(self) -> None:
         """Load training state from legacy scattered files."""
@@ -418,6 +505,36 @@ class HPPOTrainer:
             
             # Run training episode
             episode_metrics, episode_data, episode_reward, final_state = self._run_training_episode(episode)
+            
+            # Process consolidation if enabled
+            if self.use_consolidation and self.consolidation:
+                # Prepare episode data for consolidation
+                consolidation_episode_data = {
+                    'episode': episode,
+                    'total_reward': episode_reward,
+                    'objectives': {},  # Will be populated from final_state
+                    'episode_data': episode_data
+                }
+                
+                # Extract objectives from final state if available
+                try:
+                    _, vals, rewards = self.env.compute_reward(final_state)
+                    if hasattr(rewards, 'keys'):
+                        consolidation_episode_data['objectives'] = rewards
+                    elif hasattr(self.env, 'optimise_parameters'):
+                        # Map values to parameter names
+                        consolidation_episode_data['objectives'] = {
+                            param: vals[i] for i, param in enumerate(self.env.optimise_parameters)
+                        }
+                except:
+                    pass  # Skip consolidation for this episode if objectives can't be extracted
+                
+                self.consolidation.process_episode(episode, consolidation_episode_data)
+                
+                # Perform consolidation update if interval reached
+                consolidation_loss = self.consolidation.update_consolidation(episode)
+                if consolidation_loss is not None:
+                    print(f"Episode {episode}: Consolidation loss = {consolidation_loss:.6f}")
             
             # Update best states and reward tracking
             self._update_episode_tracking(episode_data, all_means, all_stds, all_materials)
@@ -709,6 +826,8 @@ class HPPOTrainer:
             else:
                 episode_metrics[f"{obj_name}_reward_weights"] = 0.0
 
+        # Update Pareto tracking attributes (simple and direct!)
+        self._update_pareto_tracking(final_state, rewards, vals)
         
         # Add to metrics dataframe
         self.metrics = pd.concat([self.metrics, pd.DataFrame([episode_metrics])], ignore_index=True)
@@ -749,37 +868,39 @@ class HPPOTrainer:
     def _save_unified_checkpoint(self, episode: int, migration: bool = False) -> None:
         """
         Save complete training state using unified checkpoint system.
+        Simply saves the 7 Pareto tracking attributes directly.
         
         Args:
             episode: Current episode number
             migration: Whether this is a migration from legacy format
         """
         try:
-            # Prepare all data for unified saving
+            # Prepare simple pareto data from class attributes
+            pareto_data = {
+                'pareto_front_rewards': self.pareto_front_rewards,
+                'pareto_front_values': self.pareto_front_values,
+                'pareto_states': self.pareto_states,
+                'reference_point': self.reference_point,
+                'all_rewards': np.array(self.all_rewards) if self.all_rewards else np.array([]),
+                'all_values': np.array(self.all_values) if self.all_values else np.array([]),
+                'all_states': np.array(self.all_states) if self.all_states else np.array([]),
+            }
+            
             trainer_data = {
                 'metadata': {
                     'training_config': {
                         'n_iterations': self.n_iterations,
                         'n_layers': self.n_layers,
-                        'entropy_beta_start': self.entropy_beta_start,
-                        'entropy_beta_end': self.entropy_beta_end,
-                        'entropy_beta_decay_length': self.entropy_beta_decay_length,
-                        'entropy_beta_decay_start': self.entropy_beta_decay_start,
                         'n_epochs_per_update': self.n_epochs_per_update,
                         'use_obs': self.use_obs,
-                        'scheduler_start': self.scheduler_start,
-                        'scheduler_end': self.scheduler_end,
-                        'weight_network_save': self.weight_network_save,
                     },
                     'environment_config': {
                         'optimise_parameters': getattr(self.env, 'optimise_parameters', []),
                         'reward_function': getattr(self.env, 'reward_function', 'unknown'),
                         'n_materials': getattr(self.env, 'n_materials', 0),
-                        'max_thickness': getattr(self.env, 'max_thickness', 0),
-                        'min_thickness': getattr(self.env, 'min_thickness', 0),
                     },
                     'current_episode': episode,
-                    'migration_from_legacy': migration,
+                    'algorithm_type': 'hppo',
                 },
                 
                 'training_data': {
@@ -787,47 +908,11 @@ class HPPOTrainer:
                     'start_episode': self.start_episode,
                 },
                 
-                'pareto_data': {},
-                'environment_state': {},
+                'pareto_data': pareto_data,
                 'best_states': getattr(self, 'best_states', [])
             }
             
-            # Add Pareto front data if available
-            if hasattr(self.env, 'pareto_front') and self.env.pareto_front is not None and len(self.env.pareto_front) > 0:
-                # Ensure pareto_front is a numpy array with appropriate dtype
-                pareto_array = np.array(self.env.pareto_front)
-                if pareto_array.dtype == 'object':
-                    # Try to convert to float
-                    try:
-                        pareto_array = pareto_array.astype(float)
-                    except (ValueError, TypeError):
-                        print("Warning: Could not convert pareto_front to numeric, skipping...")
-                        pareto_array = None
-                
-                if pareto_array is not None:
-                    trainer_data['pareto_data']['current_front'] = pareto_array
-            
-            if hasattr(self.env, 'reference_point') and self.env.reference_point is not None:
-                ref_point = np.array(self.env.reference_point)
-                if ref_point.dtype != 'object':
-                    trainer_data['pareto_data']['reference_point'] = ref_point
-                
-            if hasattr(self.env, 'saved_points') and self.env.saved_points:
-                saved_points = np.array(self.env.saved_points)
-                if saved_points.dtype != 'object':
-                    trainer_data['pareto_data']['all_points'] = saved_points
-                
-            if hasattr(self.env, 'saved_data') and self.env.saved_data:
-                saved_data = np.array(self.env.saved_data)
-                if saved_data.dtype != 'object':
-                    trainer_data['pareto_data']['all_values'] = saved_data
-            
-            # Add environment state
-            for attr in ['optimise_parameters', 'final_weight_epoch', 'reward_function', 'n_materials']:
-                if hasattr(self.env, attr):
-                    trainer_data['environment_state'][attr] = getattr(self.env, attr)
-            
-            # Save checkpoint (network weights saved separately as .pt files)
+            # Save checkpoint
             start_time = time.time()
             self.checkpoint_manager.save_complete_checkpoint(trainer_data)
             
@@ -845,6 +930,17 @@ class HPPOTrainer:
             if not migration:  # Don't fallback during migration
                 print("Falling back to legacy save methods...")
                 self._fallback_legacy_saves(episode)
+
+    def _fallback_legacy_saves(self, episode: int) -> None:
+        """Fallback to legacy save methods if unified checkpoint fails."""
+        try:
+            self.write_metrics_to_file()
+            self._save_pareto_front_data(episode)
+            best_states_path = os.path.join(self.root_dir, HPPOConstants.BEST_STATES_FILE)
+            with open(best_states_path, "wb") as f:
+                pickle.dump(self.best_states, f)
+        except Exception as e:
+            print(f"Warning: Even legacy save failed: {e}")
 
     def _save_pareto_front_data(self, episode: int) -> None:
         """Save Pareto front data."""
@@ -1507,3 +1603,8 @@ def create_ui_callbacks(ui_queue, ui_stop_check) -> TrainingCallbacks:
         progress_interval=1,  # More frequent for UI
         ui_queue=ui_queue
     )
+
+
+# Backward compatibility aliases
+HPPOTrainer = UnifiedHPPOTrainer
+EnhancedHPPOTrainer = UnifiedHPPOTrainer

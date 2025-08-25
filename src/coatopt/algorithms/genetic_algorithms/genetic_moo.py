@@ -491,28 +491,44 @@ class GeneticTrainer:
         pareto_states: np.ndarray,
         pareto_results: Dict[str, np.ndarray]
     ):
-        """Save results to HDF5 file."""
+        """Save results to HDF5 file using consistent pareto_front_* keys."""
         hdf5_path = os.path.join(self.output_dir, "genetic_optimisation_results.h5")
         
         with h5py.File(hdf5_path, 'w') as f:
             # Save metadata
             meta_group = f.create_group('metadata')
+            meta_group.create_dataset('algorithm_type', data='genetic')
             meta_group.create_dataset('algorithm', data=self.config.algorithm)
             meta_group.create_dataset('population_size', data=self.config.population_size)
             meta_group.create_dataset('n_generations', data=self.config.n_generations)
             meta_group.create_dataset('objectives', data=[param.encode() for param in self.env.optimise_parameters])
             
-            # Save all population data
-            pop_group = f.create_group('population_data')
-            pop_group.create_dataset('states', data=all_states, compression='gzip')
-            for key, data in all_results.items():
-                pop_group.create_dataset(key, data=data, compression='gzip')
+            # Save pareto data using consistent keys (same as HPPO)
+            pareto_group = f.create_group('pareto_data')
             
-            # Save Pareto front data
-            pareto_group = f.create_group('pareto_front')
-            pareto_group.create_dataset('states', data=pareto_states, compression='gzip')
-            for key, data in pareto_results.items():
-                pareto_group.create_dataset(key, data=data, compression='gzip')
+            # Extract pareto front rewards and values using consistent format
+            pareto_front_rewards = []
+            pareto_front_values = []
+            
+            for param in self.env.optimise_parameters:
+                if f"{param}_rewards" in pareto_results:
+                    pareto_front_rewards.append(pareto_results[f"{param}_rewards"])
+                if f"{param}_vals" in pareto_results:
+                    pareto_front_values.append(pareto_results[f"{param}_vals"])
+            
+            if pareto_front_rewards and pareto_front_values:
+                # Transpose to get (n_points, n_objectives) format
+                pareto_group.create_dataset('pareto_front_rewards', data=np.array(pareto_front_rewards).T, compression='gzip')
+                pareto_group.create_dataset('pareto_front_values', data=np.array(pareto_front_values).T, compression='gzip')
+                pareto_group.create_dataset('pareto_states', data=pareto_states, compression='gzip')
+                
+                # Compute reference point (genetic doesn't compute this during optimization)
+                if len(pareto_front_rewards) > 0:
+                    reference_point = np.max(np.array(pareto_front_rewards).T, axis=0) * 1.1
+                    pareto_group.create_dataset('reference_point', data=reference_point, compression='gzip')
+            
+            # Note: genetic algorithms don't track all_rewards, all_values, all_states like HPPO
+            # so we don't include those keys (HPPO only)
 
     def save_optimizer_state(self):
         """Save the optimizer state including results and training history."""
@@ -557,6 +573,37 @@ class GeneticTrainer:
             f.write(f"  - states/: Individual coating visualizations\n")
         
         print(f"Optimization summary saved to: {summary_path}")
+
+    def load_pareto_data(self, hdf5_path: str = None) -> Dict[str, np.ndarray]:
+        """
+        Load Pareto data in consistent format for comparison with HPPO.
+        
+        Args:
+            hdf5_path: Path to HDF5 file (if None, uses default location)
+            
+        Returns:
+            Dictionary with consistent pareto_front_* keys
+        """
+        if hdf5_path is None:
+            hdf5_path = os.path.join(self.output_dir, "genetic_optimisation_results.h5")
+        
+        if not os.path.exists(hdf5_path):
+            raise FileNotFoundError(f"Results file not found: {hdf5_path}")
+        
+        pareto_data = {}
+        
+        with h5py.File(hdf5_path, 'r') as f:
+            if 'pareto_data' in f:
+                pareto_group = f['pareto_data']
+                
+                # Load using consistent keys
+                for key in ['pareto_front_rewards', 'pareto_front_values', 'pareto_states', 'reference_point']:
+                    if key in pareto_group:
+                        pareto_data[key] = pareto_group[key][:]
+                    else:
+                        pareto_data[key] = np.array([])
+        
+        return pareto_data
 
     def load_optimizer_state(self, result_path: str):
         """Load a previously saved optimizer state."""

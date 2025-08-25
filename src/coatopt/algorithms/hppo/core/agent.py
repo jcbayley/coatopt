@@ -10,8 +10,8 @@ from collections import deque
 import os
 
 from coatopt.utils.truncated_normal import TruncatedNormalDist
-from coatopt.algorithms.hppo.pre_networks import PreNetworkLinear, PreNetworkLSTM, PreNetworkAttention
-from coatopt.algorithms.hppo.replay_buffer import ReplayBuffer
+from coatopt.algorithms.hppo.core.networks.pre_networks import PreNetworkLinear, PreNetworkLSTM, PreNetworkAttention
+from coatopt.algorithms.hppo.core.replay_buffer import ReplayBuffer
 from coatopt.algorithms.config import HPPOConstants
 from coatopt.algorithms.action_utils import (
     prepare_state_input, prepare_layer_number, create_material_mask,
@@ -122,11 +122,8 @@ class PCHPPO:
             entropy_beta_continuous_end: Final entropy coefficient for continuous policy (optional)
             hyper_networks: Whether to use hypernetworks
         """
-        # Import network classes based on hyper_networks flag
-        if hyper_networks:
-            from coatopt.algorithms.hppo.hyper_policy_nets import DiscretePolicy, ContinuousPolicy, Value
-        else:
-            from coatopt.algorithms.hppo.policy_nets import DiscretePolicy, ContinuousPolicy, Value
+        # Import network classes - now using unified policy networks
+        from coatopt.algorithms.hppo.core.networks.policy_networks import DiscretePolicy, ContinuousPolicy, ValueNetwork as Value
 
         # Store configuration
         self.upper_bound = upper_bound
@@ -222,23 +219,22 @@ class PCHPPO:
                 self.pre_output_dim, num_discrete, discrete_hidden_size,
                 n_layers=n_discrete_layers, lower_bound=lower_bound, upper_bound=upper_bound,
                 include_layer_number=include_layer_number, activation=activation_function,
-                n_objectives=self.num_objectives
+                n_objectives=self.num_objectives, use_hyper_networks=self.hyper_networks
             ))
             
             # Continuous policy network
             setattr(self, f"policy_continuous{suffix}", ContinuousPolicy(
                 self.pre_output_dim, num_cont, continuous_hidden_size,
                 n_layers=n_continuous_layers, lower_bound=lower_bound, upper_bound=upper_bound,
-                include_layer_number=include_layer_number, include_material=include_material_in_policy,
-                activation=activation_function, n_objectives=self.num_objectives
+                include_layer_number=include_layer_number, activation=activation_function,
+                n_objectives=self.num_objectives, use_hyper_networks=self.hyper_networks
             ))
             
             # Value network
             setattr(self, f"value{suffix}", Value(
                 self.pre_output_dim, value_hidden_size, n_layers=n_value_layers,
-                lower_bound=lower_bound, upper_bound=upper_bound,
                 include_layer_number=include_layer_number, activation=activation_function,
-                n_objectives=self.num_objectives
+                n_objectives=self.num_objectives, use_hyper_networks=self.hyper_networks
             ))
 
         # Copy parameters to old networks
