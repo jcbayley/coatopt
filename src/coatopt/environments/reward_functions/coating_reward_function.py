@@ -2,192 +2,105 @@ import numpy as np
 from pymoo.indicators.hv import HV
 import copy
 
+def calculate_air_penalty_reward(state, air_material_index=0, design_criteria=None, 
+                                current_vals=None, penalty_strength=1.0, reward_strength=0.5, 
+                                min_real_layers=2):
+    """
+    Calculate penalty for air-only coatings when design criteria are NOT met,
+    or reward for more air layers when design criteria ARE met.
+    
+    Args:
+        state: Current coating state
+        air_material_index: Index of air material (usually 0)
+        design_criteria: Dict of design criteria thresholds
+        current_vals: Dict of current objective values
+        penalty_strength: How strong the penalty should be for air-only when criteria not met
+        reward_strength: How strong the reward should be for air layers when criteria are met
+        min_real_layers: Minimum number of non-air layers
+    
+    Returns:
+        Air penalty/reward value (negative = penalty, positive = reward)
+    """
+    if state is None or len(state) == 0:
+        return -penalty_strength  # Maximum penalty for empty state
+    
+    # Count non-air layers with significant thickness
+    non_air_layers = 0
+    total_non_air_thickness = 0
+    total_layers = 0
+    
+    for i, layer in enumerate(state):
+        if len(layer) <= 1:
+            continue
+            
+        thickness = layer[0] if len(layer) > 0 else 0
+        materials = layer[1:] if len(layer) > 1 else []
+        
+        if len(materials) == 0:
+            continue
+            
+        material_idx = np.argmax(materials)
+        
+        # Only consider layers with meaningful thickness
+        if thickness > 1e-9:  # 1 nm threshold
+            total_layers += 1
+            if material_idx != air_material_index:
+                non_air_layers += 1
+                total_non_air_thickness += thickness
+    
+    if total_layers == 0:
+        return -penalty_strength  # Maximum penalty for no layers
+    
+    # Check if design criteria are met
+    criteria_met = True
+    if design_criteria is not None and current_vals is not None:
+        for key, threshold in design_criteria.items():
+            if key in current_vals:
+                val = current_vals[key]
+                if key in ["reflectivity"]:
+                    # For reflectivity, higher is better
+                    if val < threshold:
+                        criteria_met = False
+                        break
+                elif key in ["thermal_noise", "absorption"]:
+                    # For thermal noise and absorption, lower is better
+                    if val > threshold:
+                        criteria_met = False
+                        break
+    
+    # Calculate air fraction
+    air_fraction = 1.0 - (non_air_layers / total_layers) if total_layers > 0 else 1.0
+    
+    if criteria_met:
+        # Design criteria are met - reward having more air (fewer layers)
+        # More air = simpler coating = better
+        if non_air_layers >= min_real_layers:
+            # We have enough real layers and meet criteria, so reward air
+            air_reward = reward_strength * air_fraction
+            return air_reward
+        else:
+            # Still need more real layers even though criteria are met
+            return 0
+    else:
+        # Design criteria not met - penalize air-heavy coatings
+        if non_air_layers == 0:
+            # Pure air stack - maximum penalty
+            return -penalty_strength
+        elif non_air_layers < min_real_layers:
+            # Too few real layers - scaled penalty
+            penalty = penalty_strength * (1.0 - non_air_layers / min_real_layers) * 0.8
+            return -penalty
+        else:
+            # Have enough real layers but criteria not met - small penalty for excess air
+            penalty = penalty_strength * air_fraction * 0.2
+            return -penalty
+
 def sigmoid(x, mean=0.5, a=0.01):
     return 1/(1+np.exp(-a*(x-mean)))
 
 def inv_sigmoid(x, mean=0.5, a=0.01):
     return -np.log((1/x) - 1)/a + mean
 
-def reward_function(reflectivity, thermal_noise, total_thickness, absorption, optimise_parameters, optimise_targets, combine="product", neg_reward=-1e3, weights=None):
-    """_summary_
-
-    Args:
-        reflectivity (_type_): _description_
-        thermal_noise (_type_): _description_
-        total_thickness (_type_): _description_
-        absorption (_type_): _description_
-        optimise_parameters (_type_): _description_
-        optimise_targets (_type_): _description_
-
-    Returns:
-        _type_: _description_
-    """
-
-    vals = {
-        "reflectivity": reflectivity,
-        "thermal_noise": thermal_noise,
-        "thickness": total_thickness,
-        "absorption": absorption
-    }
-    if weights is None:
-        weights = {key:1 for key in vals}
-
-    rewards = {key:0 for key in vals}
-
-    if "reflectivity" in optimise_parameters:
-        #log_reflect = np.log(1/np.abs(reflectivity - 1)+1)
-        #target_log_reflect = np.log(1/np.abs(optimise_targets["reflectivity"] - 1)+1)
-        log_reflect = -np.log10(1-reflectivity)
-        target_log_reflect = -np.log10(1-optimise_targets["reflectivity"])
-        rewards["reflectivity"] = log_reflect * sigmoid(log_reflect, mean=target_log_reflect, a=10)
-
-    if "thermal_noise" in optimise_parameters and thermal_noise is not None:
-        log_therm = -np.log10(thermal_noise)/10 
-        target_log_therm = -np.log10(optimise_targets["thermal_noise"])/10 
-        rewards["thermal_noise"] = log_therm * sigmoid(log_therm, mean=target_log_therm, a=10)
-
-    if "thickness" in optimise_parameters:
-        rewards["thickeness"] = -total_thickness
-    
-    if "absorption" in optimise_parameters:
-        #if absorption == 0:
-        #    log_absorption = -10
-        #else:
-        log_absorption = -np.log10(absorption) + 10
-        target_log_absorption = -np.log10((optimise_targets["absorption"])) + 10
-        rewards["absorption"] = log_absorption * sigmoid(log_absorption, mean=target_log_absorption, a=1)
-
-
-    if combine=="sum":
-        total_reward = np.sum([rewards[key]*weights[key] for key in optimise_parameters])
-    elif combine=="product":
-        total_reward = np.prod([rewards[key] for key in optimise_parameters])
-    elif combine=="logproduct":
-        total_reward = np.log(np.prod([rewards[key] for key in optimise_parameters]) )
-    else:
-        raise ValueError(f"combine must be either 'sum' or 'product' not {combine}")
-
-    if np.isnan(total_reward) or np.isinf(total_reward):
-        #rewards["total_reward"] = neg_reward
-        total_reward = neg_reward
-
-    rewards["total_reward"] = total_reward
-
-    return total_reward, vals, rewards
-
-
-
-def inv_reward_function(reflectivity, thermal_noise, total_thickness, absorption, optimise_parameters, optimise_targets, combine="product", neg_reward=-1e3, weights=None):
-    """_summary_
-
-    Args:
-        reflectivity (_type_): _description_
-        thermal_noise (_type_): _description_
-        total_thickness (_type_): _description_
-        absorption (_type_): _description_
-        optimise_parameters (_type_): _description_
-        optimise_targets (_type_): _description_
-
-    Returns:
-        _type_: _description_
-    """
-
-    rewards = {
-        "reflectivity": reflectivity,
-        "thermal_noise": thermal_noise,
-        "thickness": total_thickness,
-        "absorption": absorption
-    }
-    if weights is None:
-        weights = {key:1 for key in rewards}
-
-    vals = {key:0 for key in rewards}
-
-    if "reflectivity" in optimise_parameters:
-        target_log_reflect = -np.log10(1-optimise_targets["reflectivity"])
-        inv_sig = inv_sigmoid(reflectivity, mean=target_log_reflect, a=10)
-        vals["reflectivity"] = 1 - 10**(-reflectivity/inv_sig)
-
-    if "thermal_noise" in optimise_parameters and thermal_noise is not None:
-        target_log_therm = -np.log10(optimise_targets["thermal_noise"])/10
-        inv_sig = inv_sigmoid(thermal_noise, mean=target_log_therm, a=10)
-        vals["thermal_noise"] = 10**(-10*thermal_noise/inv_sig)
-
-    if "thickness" in optimise_parameters:
-        vals["thickeness"] = -total_thickness
-    
-    if "absorption" in optimise_parameters:
-        target_log_absorption = -np.log10(optimise_targets["absorption"]) + 10
-        inv_sig = inv_sigmoid(absorption, mean=target_log_absorption, a=10)
-        vals["absorption"] = 10**(-(absorption/inv_sig-10))
-
-
-    return None, vals, rewards
-
-
-def reward_function_norm(reflectivity, thermal_noise, total_thickness, absorption, optimise_parameters, optimise_targets, combine="product", neg_reward=-1e3, weights=None):
-    """_summary_
-
-    Args:
-        reflectivity (_type_): _description_
-        thermal_noise (_type_): _description_
-        total_thickness (_type_): _description_
-        absorption (_type_): _description_
-        optimise_parameters (_type_): _description_
-        optimise_targets (_type_): _description_
-
-    Returns:
-        _type_: _description_
-    """
-
-    vals = {
-        "reflectivity": reflectivity,
-        "thermal_noise": thermal_noise,
-        "thickness": total_thickness,
-        "absorption": absorption
-    }
-    if weights is None:
-        weights = {key:1 for key in vals}
-
-    rewards = {key:0 for key in vals}
-
-    if "reflectivity" in optimise_parameters:
-        #log_reflect = np.log(1/np.abs(reflectivity - 1)+1)
-        #target_log_reflect = np.log(1/np.abs(optimise_targets["reflectivity"] - 1)+1)
-        log_reflect = -np.log10(1-reflectivity)
-        target_log_reflect = -np.log10(1-optimise_targets["reflectivity"])
-        rewards["reflectivity"] = log_reflect/np.abs(target_log_reflect) * sigmoid(log_reflect, mean=target_log_reflect, a=10)
-
-    if "thermal_noise" in optimise_parameters and thermal_noise is not None:
-        log_therm = -np.log10(thermal_noise)
-        target_log_therm = -np.log10(optimise_targets["thermal_noise"]) 
-        rewards["thermal_noise"] = log_therm/np.abs(target_log_therm) * sigmoid(log_therm, mean=target_log_therm, a=10)
-
-    if "thickness" in optimise_parameters:
-        rewards["thickeness"] = -total_thickness
-    
-    if "absorption" in optimise_parameters:
-        log_absorption = -np.log10(absorption) 
-        target_log_absorption = -np.log10((optimise_targets["absorption"])) 
-        rewards["absorption"] = log_absorption/np.abs(target_log_absorption) * sigmoid(log_absorption, mean=target_log_absorption, a=10)
-
-
-    if combine=="sum":
-        total_reward = np.sum([rewards[key]*weights[key] for key in optimise_parameters])
-    elif combine=="product":
-        total_reward = np.prod([rewards[key] for key in optimise_parameters])
-    elif combine=="logproduct":
-        total_reward = np.log(np.prod([rewards[key] for key in optimise_parameters]) )
-    else:
-        raise ValueError(f"combine must be either 'sum' or 'product' not {combine}")
-
-    if np.isnan(total_reward) or np.isinf(total_reward):
-        #rewards["total_reward"] = neg_reward
-        total_reward = neg_reward
-
-    rewards["total_reward"] = total_reward
-
-    return total_reward, vals, rewards
 
 def reward_function_target(reflectivity, thermal_noise, total_thickness, absorption, optimise_parameters, optimise_targets, combine="product", neg_reward=-1e3, weights=None):
     """_summary_
@@ -431,6 +344,115 @@ def reward_function_normalise_log_targets(reflectivity, thermal_noise, total_thi
 
     return total_reward, vals, rewards
 
+
+def reward_function_normalise_log_targets_with_air_management(reflectivity, thermal_noise, total_thickness, absorption, 
+                                                             optimise_parameters, optimise_targets, env, 
+                                                             combine="product", neg_reward=-1e3, weights=None,
+                                                             design_criteria=None, air_penalty_strength=1.0, 
+                                                             air_reward_strength=0.5, min_real_layers=2):
+    """
+    Normalized log targets reward function with intelligent air management.
+    
+    - Penalizes air-only coatings when design criteria are NOT met
+    - Rewards air layers (simpler coatings) when design criteria ARE met
+    
+    Args:
+        reflectivity, thermal_noise, total_thickness, absorption: Current objective values
+        optimise_parameters: Parameters being optimized
+        optimise_targets: Target values for optimization 
+        env: Environment instance (needed to access current state and bounds)
+        combine: How to combine rewards ("sum", "product", "logproduct")
+        neg_reward: Negative reward for invalid states
+        weights: Optional weight dictionary
+        design_criteria: Dict of design criteria thresholds (e.g., {"reflectivity": 0.99999, "thermal_noise": 5e-21, "absorption": 0.01})
+        air_penalty_strength: Strength of penalty for air-only when criteria not met
+        air_reward_strength: Strength of reward for air layers when criteria are met  
+        min_real_layers: Minimum number of real layers before air management kicks in
+        
+    Returns:
+        Tuple of (total_reward, vals, rewards)
+    """
+    
+    vals = {
+        "reflectivity": reflectivity,
+        "thermal_noise": thermal_noise,
+        "thickness": total_thickness,
+        "absorption": absorption
+    }
+    if weights is None:
+        weights = {key:1 for key in vals}
+
+    rewards = {key:0 for key in vals}
+
+    if not hasattr(env, 'objective_bounds'):
+        env.objective_bounds = {
+            'reflectivity': {'min': 1e-6, 'max': 1e-1},      # Typical coating values
+            'absorption': {'min': 1e-4, 'max': 1000.0},      # Physical bounds
+            'thermal_noise': {'min': 1e-25, 'max': 1e-15},   # Typical noise values  
+            'thickness': {'min': 100, 'max': 50000}          # nm range
+        }
+
+    # Calculate normalized values as in original function
+    normed_vals = {}
+    normed_targets = {}
+    for key in vals.keys():
+        if key in optimise_parameters:
+            normed_vals[key] = (vals[key] - env.objective_bounds[key]['min']) / (env.objective_bounds[key]['max'] - env.objective_bounds[key]['min'])
+            normed_targets[key] = (optimise_targets[key] - env.objective_bounds[key]['min']) / (env.objective_bounds[key]['max'] - env.objective_bounds[key]['min'])
+
+    # Calculate standard reward components (same as original)
+    if "reflectivity" in optimise_parameters:
+        log_reflect = -np.log(np.abs(normed_vals["reflectivity"]-normed_targets["reflectivity"])) + 12
+        rewards["reflectivity"] = log_reflect 
+
+    if "thermal_noise" in optimise_parameters and thermal_noise is not None:
+        log_therm = np.log(1./np.abs(normed_vals["thermal_noise"]-normed_targets["thermal_noise"]))
+        rewards["thermal_noise"] = log_therm 
+
+    if "thickness" in optimise_parameters:
+        rewards["thickness"] = -normed_vals["thickness"]
+    
+    if "absorption" in optimise_parameters:
+        log_absorption = (-np.log(np.abs(normed_vals["absorption"]-normed_targets["absorption"])) + 12) 
+        rewards["absorption"] = log_absorption
+
+    # Calculate air penalty/reward
+    air_adjustment = 0
+    if env is not None and hasattr(env, 'current_state'):
+        air_adjustment = calculate_air_penalty_reward(
+            env.current_state, 
+            air_material_index=getattr(env, 'air_material_index', 0),
+            design_criteria=design_criteria,
+            current_vals=vals,
+            penalty_strength=air_penalty_strength,
+            reward_strength=air_reward_strength,
+            min_real_layers=min_real_layers
+        )
+    
+    # Combine base rewards  
+    if combine=="sum":
+        base_reward = np.sum([rewards[key]*weights[key] for key in optimise_parameters])
+    elif combine=="product":
+        base_reward = np.prod([rewards[key] for key in optimise_parameters])
+    elif combine=="logproduct":
+        base_reward = np.log(np.prod([rewards[key] for key in optimise_parameters]))
+    else:
+        raise ValueError(f"combine must be either 'sum' or 'product' not {combine}")
+    
+    # Add air adjustment to total reward
+    total_reward = base_reward + air_adjustment
+
+    if np.isnan(total_reward) or np.isinf(total_reward):
+        total_reward = neg_reward
+
+    rewards["total_reward"] = total_reward
+    rewards["base_reward"] = base_reward
+    rewards["air_adjustment"] = air_adjustment
+    rewards["air_penalty_active"] = air_adjustment < 0
+    rewards["air_reward_active"] = air_adjustment > 0
+
+    return total_reward, vals, rewards
+
 def reward_function_log_normalise_targets(reflectivity, thermal_noise, total_thickness, absorption, optimise_parameters, optimise_targets, env, combine="product", neg_reward=-1e3, weights=None):
     """_summary_
 
@@ -477,12 +499,6 @@ def reward_function_log_normalise_targets(reflectivity, thermal_noise, total_thi
         if key in optimise_parameters:
             if target_mapping[key][:-1] == "log":
                 normed_vals[key] = np.log(np.abs(vals[key] - optimise_targets[key])) / (np.log(env.objective_bounds[key]['max']) - np.log(env.objective_bounds[key]['min']))
-                #print("denom", key, (np.log(env.objective_bounds[key]['max']) - np.log(env.objective_bounds[key]['min'])))
-                #print("num", (np.log(vals[key]) - np.log(optimise_targets[key])))
-                #print("val", np.log(vals[key]), vals[key])
-                #print("opt", np.log(optimise_targets[key]), optimise_targets[key])
-                #print("nvals", normed_vals[key])
-                #print("-----------------------")
 
             elif target_mapping[key][:-1] == "linear":
                 normed_vals[key] = np.abs(vals[key] - optimise_targets[key]) / (env.objective_bounds[key]['max'] - env.objective_bounds[key]['min']) 
@@ -494,6 +510,7 @@ def reward_function_log_normalise_targets(reflectivity, thermal_noise, total_thi
             
             # Set the rewards dictionary with the normalized values
             rewards[key] = normed_vals[key]
+
 
 
     if combine=="sum":
