@@ -9,7 +9,7 @@ from torch.nn import functional as F
 from collections import deque
 import os
 
-from coatopt.utils.truncated_normal import TruncatedNormalDist
+from coatopt.utils.math_utils import TruncatedNormalDist
 from coatopt.algorithms.hppo.core.networks.pre_networks import PreNetworkLinear, PreNetworkLSTM, PreNetworkAttention
 from coatopt.algorithms.hppo.core.replay_buffer import ReplayBuffer
 from coatopt.algorithms.config import HPPOConstants
@@ -123,7 +123,7 @@ class PCHPPO:
             hyper_networks: Whether to use hypernetworks
         """
         # Import network classes - now using unified policy networks
-        from coatopt.algorithms.hppo.core.networks.policy_networks import DiscretePolicy, ContinuousPolicy, ValueNetwork as Value
+        from coatopt.algorithms.hppo.core.networks.policy_networks import DiscretePolicy, ContinuousPolicy, ValueNetwork 
 
         # Store configuration
         self.upper_bound = upper_bound
@@ -138,6 +138,7 @@ class PCHPPO:
         self.entropy_beta_end = entropy_beta_end
         self.entropy_beta_decay_start = entropy_beta_decay_start
         self.entropy_beta_decay_length = entropy_beta_decay_length
+        self.hyper_networks = hyper_networks
         
         # Set separate entropy coefficients for discrete and continuous policies
         self.entropy_beta_discrete_start = entropy_beta_discrete_start if entropy_beta_discrete_start is not None else entropy_beta_start
@@ -161,7 +162,7 @@ class PCHPPO:
 
         # Initialize policy and value networks (current and old versions)
         self._create_networks(
-            DiscretePolicy, ContinuousPolicy, Value,
+            DiscretePolicy, ContinuousPolicy, ValueNetwork,
             num_discrete, num_cont, discrete_hidden_size, continuous_hidden_size,
             value_hidden_size, n_discrete_layers, n_continuous_layers, n_value_layers,
             lower_bound, upper_bound, include_layer_number, activation_function,
@@ -410,9 +411,11 @@ class PCHPPO:
             actiond = discrete_dist.sample()
         
         # Get continuous action parameters and sample
-        continuous_means, continuous_std = self.policy_continuous(
+        continuous_means, continuous_log_std = self.policy_continuous(
             pre_output_c, layer_number, actiond.unsqueeze(1), objective_weights=objective_weights
         )
+        
+        continuous_std = torch.exp(continuous_log_std)
         
         continuous_dist = TruncatedNormalDist(
             continuous_means, continuous_std, self.lower_bound, self.upper_bound

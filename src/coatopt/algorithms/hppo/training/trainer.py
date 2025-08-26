@@ -17,10 +17,12 @@ import matplotlib.pyplot as plt
 from pymoo.util.nds.non_dominated_sorting import NonDominatedSorting
 
 from coatopt.algorithms.config import HPPOConstants
-from coatopt.algorithms.plotting_utils import make_reward_plot, make_val_plot, make_loss_plot, make_materials_plot
+from coatopt.utils.plotting.training import make_reward_plot, make_val_plot, make_loss_plot, make_materials_plot
+from coatopt.utils.plotting.stack import plot_stack
 from coatopt.algorithms.hppo.core.agent import PCHPPO
 from coatopt.algorithms.hppo.training.checkpoint_manager import TrainingCheckpointManager
 from coatopt.algorithms.hppo.training.consolidation import ConsolidationStrategy, ConsolidationConfig
+from coatopt.algorithms.hppo.training.weight_cycling import sample_reward_weights
 import traceback
 
 
@@ -664,7 +666,19 @@ class UnifiedHPPOTrainer:
         rewards_list = []
         
         # Sample objective weights for this rollout
-        objective_weights = self.env.sample_reward_weights(epoch=episode)
+        n_objectives = len(self.env.optimise_parameters)
+        
+        objective_weights = sample_reward_weights(
+            n_objectives=n_objectives,
+            cycle_weights=getattr(self.env, 'cycle_weights', 'random'),
+            epoch=episode,
+            final_weight_epoch=getattr(self.env, 'final_weight_epoch', 1000),
+            start_weight_alpha=getattr(self.env, 'start_weight_alpha', 1.0),
+            final_weight_alpha=getattr(self.env, 'final_weight_alpha', 1.0),
+            n_weight_cycles=getattr(self.env, 'n_weight_cycles', 2)
+        )
+        
+        
         
         # Run episode steps
         for step in range(HPPOConstants.MAX_EPISODE_STEPS):
@@ -970,7 +984,7 @@ class UnifiedHPPOTrainer:
             
         states_dir = os.path.join(self.root_dir, HPPOConstants.STATES_DIR)
         
-        fig, ax = self.env.plot_stack(state)
+        fig, ax = plot_stack(state, self.env.materials)
         opt_value = self.env.compute_state_value(state, return_separate=True)
         ax.set_title(f"Episode {episode}: Reward: {reward:.4f}, Value: {opt_value}")
         
@@ -1004,7 +1018,7 @@ class UnifiedHPPOTrainer:
                 sol_vals["absorption"].append(absorption)
                 sol_vals["thickness"].append(thickness)
             else:
-                _, _, rewards = self.env.select_reward(reflectivity, thermal_noise, thickness, absorption, weights=None)
+                _, _, rewards = self.env.reward_calculator.calculate(reflectivity, thermal_noise, thickness, absorption, weights=None)
                 
                 for key in sol_vals.keys():
                     sol_vals[key].append(rewards[key])
@@ -1053,7 +1067,15 @@ class UnifiedHPPOTrainer:
             
             # Get objective weights
             if random_weights:
-                objective_weights = self.env.sample_reward_weights(epoch=self.env.final_weight_epoch + 10)
+                objective_weights = sample_reward_weights(
+                    n_objectives=len(self.env.optimise_parameters),
+                    cycle_weights=getattr(self.env, 'cycle_weights', 'random'),
+                    epoch=self.env.final_weight_epoch + 10,
+                    final_weight_epoch=getattr(self.env, 'final_weight_epoch', 1000),
+                    start_weight_alpha=getattr(self.env, 'start_weight_alpha', 1.0),
+                    final_weight_alpha=getattr(self.env, 'final_weight_alpha', 1.0),
+                    n_weight_cycles=getattr(self.env, 'n_weight_cycles', 2)
+                )
             else:
                 if n >= len(objweights):
                     break

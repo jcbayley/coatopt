@@ -24,9 +24,8 @@ from pymoo.core.population import Population
 from pymoo.visualization.scatter import Scatter
 from pymoo.core.callback import Callback
 
-from coatopt.environments import coating_reward_function
 from coatopt.config.structured_config import GeneticConfig
-from coatopt.tools import plotting
+from coatopt.utils.plotting.stack import plot_stack
 
 
 class CoatingMOO(ElementwiseProblem):
@@ -224,7 +223,7 @@ class CheckpointCallback(Callback):
                 total_reward, vals, rewards = self.trainer.env.compute_reward(state)
                 
                 # Use existing plotting function
-                fig, ax = plotting.plot_stack(state, self.trainer.env.materials, rewards=rewards, vals=vals)
+                fig, ax = plot_stack(state, self.trainer.env.materials, rewards=rewards, vals=vals)
                 fig.suptitle(f"Generation {generation} - Sample {i+1}")
                 
                 plot_path = os.path.join(checkpoint_dir, f"coating_sample_{i+1}_gen_{generation}.png")
@@ -667,7 +666,7 @@ class GeneticTrainer:
             total_reward, vals, rewards = self.env.compute_reward(state)
             
             try:
-                fig, ax = plotting.plot_stack(state, self.env.materials, rewards=rewards, vals=vals)
+                fig, ax = plot_stack(state, self.env.materials, rewards=rewards, vals=vals)
                 fig.savefig(os.path.join(self.output_dir, "states", f"stack_{i}.png"), 
                           dpi=300, bbox_inches='tight')
                 plt.close(fig)

@@ -101,10 +101,6 @@ class DataConfig(BaseConfig):
     min_thickness: float
     max_thickness: float
     use_observation: bool
-    reward_shape: str
-    thermal_reward_shape: str
-    reflectivity_reward_shape: str
-    absorption_reward_shape: str
     use_intermediate_reward: bool
     ignore_air_option: bool
     ignore_substrate_option: bool
@@ -112,8 +108,6 @@ class DataConfig(BaseConfig):
     optimise_targets: Dict[str, float]
     optimise_weight_ranges: Dict[str, List[float]]
     design_criteria: Dict[str, float] 
-    use_ligo_reward: bool
-    include_random_rare_state: bool
     use_optical_thickness: bool
     combine: str
     reward_function: str

@@ -7,13 +7,13 @@ are now in separate, well-organized modules.
 """
 
 # Import the refactored classes for backward compatibility
-from coatopt.algorithms.hppo.replay_buffer import ReplayBuffer
-from coatopt.algorithms.hppo.pc_hppo_agent import PCHPPO
-from coatopt.algorithms.hppo.hppo_trainer import HPPOTrainer
+from coatopt.algorithms.hppo.core.replay_buffer import ReplayBuffer
+from coatopt.algorithms.hppo.core.agent import PCHPPO
+from coatopt.algorithms.hppo.training.trainer import HPPOTrainer
 from coatopt.algorithms.config import HPPOConstants
 
 # Import utility functions
-from coatopt.algorithms.plotting_utils import pad_lists
+from coatopt.utils.plotting.training import pad_lists
 
 # Re-export for backward compatibility
 __all__ = [

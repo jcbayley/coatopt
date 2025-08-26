@@ -15,7 +15,7 @@ CoatOpt supports multiple reward function types that can be specified using the 
 | `"raw"` | Raw objective values without transformation | Direct optimization of metrics |
 | `"log_targets"` | Logarithmic minimization with target scaling | Optimization with wide dynamic ranges |
 | `"hypervolume"` | Hypervolume-based reward for Pareto optimization | Multi-objective optimization focus |
-| `"normed_log_targets"` | Normalized logarithmic targets with environment scaling | Balanced multi-objective optimization |
+| `"normed_log_targets"` (recommended) | Normalized logarithmic targets with environment scaling | Balanced multi-objective optimization |
 | `"normed_log"` | Normalized logarithmic rewards | Standardized objective scaling |
 | `"area"` | Area-based Pareto front reward | Pareto front expansion |
 
@@ -32,10 +32,11 @@ CoatOpt supports multiple reward function types that can be specified using the 
 - Suitable for objectives with exponential behavior
 - Good for thermal noise and absorption optimization
 
-#### `"normed_log_targets"` - Normalized Log Targets  
+#### `"normed_log_targets"` - Normalized Log Targets  (recommended)
 - Normalizes objectives using environment statistics
 - Prevents any single objective from dominating
 - Ideal for balanced multi-objective optimization
+- Works best with Reflectivity, Absorption, Thermal noise
 
 #### `"hypervolume"` - Hypervolume Reward
 - Rewards solutions that increase Pareto front hypervolume  

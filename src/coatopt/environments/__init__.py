@@ -1,1 +1,0 @@
-from coatopt.environments.thermal_noise_environment import CoatingStack

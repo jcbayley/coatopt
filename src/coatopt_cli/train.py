@@ -24,7 +24,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from coatopt.config import read_config, read_materials
 from coatopt.config.structured_config import CoatingOptimisationConfig
 from coatopt.factories import setup_optimisation_pipeline
-from coatopt.algorithms.hppo.hppo_trainer import HPPOTrainer, create_cli_callbacks, HPPOConstants
+from coatopt.algorithms.hppo.training.trainer import HPPOTrainer, create_cli_callbacks, HPPOConstants
 from coatopt.utils.evaluation import run_evaluation_pipeline, create_enhanced_pareto_plots
 from coatopt.utils.plotting import TrainingPlotManager
 

@@ -111,6 +111,8 @@ class TruncatedNormalDist(TruncatedStandardNormal):
 
     def __init__(self, loc, scale, a, b, validate_args=None):
         self.loc, self.scale, a, b = broadcast_all(loc, scale, a, b)
+        if (self.scale < 0).any():
+            raise ValueError('Scale must be non-negative')
         a = (a - self.loc) / self.scale
         b = (b - self.loc) / self.scale
         super(TruncatedNormalDist, self).__init__(a, b, validate_args=validate_args)
