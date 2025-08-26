@@ -7,7 +7,8 @@ import numpy as np
 import matplotlib.pyplot as plt
 import h5py
 from typing import Dict, List, Tuple, Any, Optional
-import coatopt.environments.coating_utils as coating_utils
+import coatopt.environments.utils.coating_utils as coating_utils
+from coatopt.utils.plotting.stack import plot_stack
 import pandas as pd
 from pymoo.util.nds.non_dominated_sorting import NonDominatedSorting
 
@@ -143,7 +144,7 @@ def generate_optimal_states_analysis(env, output_dir: str) -> None:
             if env.use_optical_thickness:
                 optimal_state = convert_state_to_physical(optimal_state, env)
             
-            fig, ax = env.plot_stack(optimal_state)
+            fig, ax = plot_stack(optimal_state, env.materials)
             ax.set_title(f"{title}\nOptimal Value: {optimal_value}")
             fig.tight_layout()
             fig.savefig(os.path.join(output_dir, filename), dpi=150)
@@ -167,7 +168,7 @@ def generate_optimal_states_analysis(env, output_dir: str) -> None:
                 if env.use_optical_thickness:
                     optimal_state = convert_state_to_physical(optimal_state, env)
                 
-                fig, ax = env.plot_stack(optimal_state)
+                fig, ax = plot_stack(optimal_state, env.materials)
                 ax.set_title(f"{title}\nOptimal Value: {optimal_value}")
                 fig.tight_layout()
                 fig.savefig(os.path.join(output_dir, filename), dpi=150)
