@@ -1,5 +1,5 @@
 import numpy as np
-from .EFI_tmm import CalculateEFI_tmm, physical_to_optical
+from .EFI_tmm import CalculateEFI_tmm,  physical_to_optical
 from .YAM_CoatingBrownian import getCoatingThermalNoise
 import copy
 import logging

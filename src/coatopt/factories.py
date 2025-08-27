@@ -15,6 +15,7 @@ Supported Algorithm Types:
 from typing import Dict, Any, Tuple, Optional, Union
 from coatopt.algorithms import hppo
 from coatopt.algorithms.genetic_algorithms.genetic_moo import GeneticTrainer
+from coatopt.algorithms.hppo.training.hypervolume_trainer import HypervolumeTrainer
 from coatopt.environments.hppo_environment import HPPOEnvironment
 from coatopt.environments.multiobjective_environment import MultiObjectiveEnvironment
 from coatopt.environments.genetic_environment import GeneticCoatingStack
@@ -198,7 +199,7 @@ def create_pc_hppo_agent(config: CoatingOptimisationConfig, env: Union[HPPOEnvir
     return agent
 
 
-def create_trainer(config: CoatingOptimisationConfig, agent: hppo.PCHPPO, env: Union[HPPOEnvironment, MultiObjectiveEnvironment], continue_training: bool = False) -> hppo.HPPOTrainer:
+def create_trainer(config: CoatingOptimisationConfig, agent: hppo.PCHPPO, env: Union[HPPOEnvironment, MultiObjectiveEnvironment], continue_training: bool = False) -> Union[hppo.HPPOTrainer, HypervolumeTrainer]:
     """
     Create HPPO trainer from structured configuration.
     
@@ -209,25 +210,42 @@ def create_trainer(config: CoatingOptimisationConfig, agent: hppo.PCHPPO, env: U
         continue_training: Whether to continue from existing checkpoint
         
     Returns:
-        Configured HPPO trainer
+        Configured HPPO trainer (standard or hypervolume-enhanced)
     """
-    trainer = hppo.HPPOTrainer(
-        agent=agent,
-        env=env,
-        n_iterations=config.training.n_iterations,
-        n_layers=config.data.n_layers,
-        root_dir=config.general.root_dir,
-        use_obs=config.data.use_observation,
-        entropy_beta_start=config.training.entropy_beta_start,
-        entropy_beta_end=config.training.entropy_beta_end,
-        entropy_beta_decay_length=config.training.entropy_beta_decay_length,
-        entropy_beta_decay_start=config.training.entropy_beta_decay_start,
-        n_epochs_per_update=config.training.n_epochs_per_update,
-        scheduler_start=config.training.scheduler_start,
-        scheduler_end=config.training.scheduler_end,
-        continue_training=continue_training,
-        weight_network_save=config.training.weight_network_save,
-    )
+    # Check if hypervolume training is enabled
+    use_hypervolume = getattr(config.training, 'use_hypervolume_trainer', False)
+    
+    trainer_kwargs = {
+        'agent': agent,
+        'env': env,
+        'n_iterations': config.training.n_iterations,
+        'n_layers': config.data.n_layers,
+        'root_dir': config.general.root_dir,
+        'use_obs': config.data.use_observation,
+        'entropy_beta_start': config.training.entropy_beta_start,
+        'entropy_beta_end': config.training.entropy_beta_end,
+        'entropy_beta_decay_length': config.training.entropy_beta_decay_length,
+        'entropy_beta_decay_start': config.training.entropy_beta_decay_start,
+        'n_epochs_per_update': config.training.n_epochs_per_update,
+        'scheduler_start': config.training.scheduler_start,
+        'scheduler_end': config.training.scheduler_end,
+        'continue_training': continue_training,
+        'weight_network_save': config.training.weight_network_save,
+    }
+    
+    if use_hypervolume:
+        # Add hypervolume-specific parameters
+        trainer_kwargs.update({
+            'use_hypervolume_loss': getattr(config.training, 'use_hypervolume_loss', False),
+            'hv_loss_weight': getattr(config.training, 'hv_loss_weight', 0.5),
+            'hv_update_interval': getattr(config.training, 'hv_update_interval', 10),
+            'adaptive_reference_point': getattr(config.training, 'adaptive_reference_point', True),
+        })
+        print("Creating hypervolume-enhanced trainer...")
+        trainer = HypervolumeTrainer(**trainer_kwargs)
+    else:
+        trainer = hppo.HPPOTrainer(**trainer_kwargs)
+    
     return trainer
 
 
@@ -248,7 +266,7 @@ def load_model_if_needed(agent: hppo.PCHPPO, config: CoatingOptimisationConfig, 
         print(f"Loaded model from: {config.general.load_model_path if config.general.load_model_path != 'root' else config.general.root_dir}")
 
 
-def setup_optimisation_pipeline(config: CoatingOptimisationConfig, materials: Dict[int, Dict[str, Any]], continue_training: bool = False, init_pareto_front: bool = True) -> Tuple[Union[HPPOEnvironment, MultiObjectiveEnvironment], hppo.PCHPPO, hppo.HPPOTrainer]:
+def setup_optimisation_pipeline(config: CoatingOptimisationConfig, materials: Dict[int, Dict[str, Any]], continue_training: bool = False, init_pareto_front: bool = True) -> Tuple[Union[HPPOEnvironment, MultiObjectiveEnvironment], hppo.PCHPPO, Union[hppo.HPPOTrainer, HypervolumeTrainer]]:
     """
     Complete setup of the optimisation pipeline.
     

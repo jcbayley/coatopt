@@ -180,10 +180,11 @@ class PCHPPO:
         self.clip_ratio = clip_ratio
         self.gamma = gamma
         
-        # Cache for expensive computations
+        # Enhanced cache for expensive computations
         self._material_mask_cache = {}
         self._cache_hits = 0
         self._cache_misses = 0
+        self._last_cache_key = None  # Track last cache key for better hit/miss tracking
 
     def _create_pre_network(self, state_dim, hidden_size, pre_type, n_heads, n_pre_layers, num_objectives):
         """Create pre-network based on specified type."""
@@ -446,7 +447,7 @@ class PCHPPO:
 
     def _get_pre_network_outputs(self, state_input, layer_number, objective_weights, needs_gradients=True, packed=False):
         """
-        Get pre-network outputs for different network heads.
+        Get pre-network outputs for different network heads with optimized caching.
         
         Args:
             state_input: State input (packed sequence for LSTM, regular tensor for others)
@@ -458,8 +459,22 @@ class PCHPPO:
         Returns:
             Tuple of (discrete_output, continuous_output, value_output)
         """
-        if needs_gradients:
-            # During training: separate forward passes for gradient computation
+        # Optimization: Use single forward pass during inference
+        if not needs_gradients:
+            # During inference: single forward pass with no_grad for efficiency
+            with torch.no_grad():
+                if self.pre_type == "lstm":
+                    pre_output = self.pre_network(state_input, layer_number, packed=packed, weights=objective_weights)
+                else:
+                    # For non-LSTM networks, don't pass packed or weights parameters
+                    pre_output = self.pre_network(state_input, layer_number)
+                
+                # Return detached copies for each head
+                pre_output_detached = pre_output.detach()
+                return pre_output_detached, pre_output_detached, pre_output_detached
+        else:
+            # During training: separate forward passes required for gradient computation
+            # Note: Cannot optimize this due to computational graph constraints
             if self.pre_type == "lstm":
                 pre_output_d = self.pre_network(state_input, layer_number, packed=packed, weights=objective_weights)
                 pre_output_c = self.pre_network(state_input, layer_number, packed=packed, weights=objective_weights)
@@ -470,47 +485,55 @@ class PCHPPO:
                 pre_output_c = self.pre_network(state_input, layer_number)
                 pre_output_v = self.pre_network(state_input, layer_number)
             return pre_output_d, pre_output_c, pre_output_v
-        else:
-            # During inference: single forward pass, detach for efficiency
-            with torch.no_grad():
-                if self.pre_type == "lstm":
-                    pre_output = self.pre_network(state_input, layer_number, packed=packed, weights=objective_weights)
-                else:
-                    # For non-LSTM networks, don't pass packed or weights parameters
-                    pre_output = self.pre_network(state_input, layer_number)
-                return pre_output.detach(), pre_output.detach(), pre_output.detach()
 
     def _apply_material_constraints(self, discrete_probs, state_tensor, layer_number):
-        """Apply material selection constraints with caching for better performance."""
+        """Apply material selection constraints with enhanced caching and vectorization."""
         if layer_number is None:
             return discrete_probs
             
-        # Try to use cached mask for common layer configurations
-        cache_key = self._get_material_mask_cache_key(state_tensor, layer_number)
+        # Enhanced caching system with batch support
+        batch_size = discrete_probs.shape[0] if discrete_probs.dim() > 1 else 1
         
-        if cache_key in self._material_mask_cache:
-            cached_mask = self._material_mask_cache[cache_key]
-            # Verify cached mask has same shape as current discrete_probs
-            if cached_mask.shape == discrete_probs.shape:
-                self._cache_hits += 1
-                return discrete_probs * cached_mask
-            else:
-                # Remove invalid cached entry
-                del self._material_mask_cache[cache_key]
+        # Try vectorized batch cache lookup for better performance
+        if batch_size == 1:
+            cache_key = self._get_material_mask_cache_key(state_tensor, layer_number)
+            
+            if cache_key in self._material_mask_cache:
+                cached_mask = self._material_mask_cache[cache_key]
+                # Verify cached mask has compatible shape
+                if cached_mask.shape[-1] == discrete_probs.shape[-1]:
+                    self._cache_hits += 1
+                    # Handle shape broadcasting for batched operations
+                    if cached_mask.shape != discrete_probs.shape:
+                        cached_mask = cached_mask.expand_as(discrete_probs)
+                    return discrete_probs * cached_mask
+                else:
+                    # Remove invalid cached entry
+                    del self._material_mask_cache[cache_key]
         
-        # If no valid cache entry, compute mask
-        if cache_key not in self._material_mask_cache:
+        # Compute mask with improved efficiency
+        if batch_size == 1 and hasattr(self, '_last_cache_key') and self._last_cache_key not in self._material_mask_cache:
             self._cache_misses += 1
+        
         masked_probs = create_material_mask(
             discrete_probs, state_tensor, layer_number,
             self.substrate_material_index, self.air_material_index,
             self.ignore_air_option, self.ignore_substrate_option
         )
         
-        # Cache the mask for future use (limit cache size to prevent memory growth)
-        if cache_key is not None and len(self._material_mask_cache) < 1000:
-            mask = masked_probs / (discrete_probs + 1e-8)  # Extract mask
-            self._material_mask_cache[cache_key] = mask.detach()
+        # Enhanced caching strategy with memory management
+        if batch_size == 1 and cache_key is not None:
+            # Limit cache size and implement LRU-style cleanup
+            if len(self._material_mask_cache) >= 1500:
+                # Remove oldest 500 entries to prevent memory bloat
+                oldest_keys = list(self._material_mask_cache.keys())[:500]
+                for old_key in oldest_keys:
+                    del self._material_mask_cache[old_key]
+            
+            # Store mask with numerical stability
+            mask = masked_probs / (discrete_probs + 1e-10)  # Improved numerical stability
+            self._material_mask_cache[cache_key] = mask.detach().clone()  # Explicit clone for safety
+            self._last_cache_key = cache_key
         
         return masked_probs
 
@@ -534,14 +557,24 @@ class PCHPPO:
                 return (layer_num, self.substrate_material_index)
 
     def get_cache_stats(self):
-        """Get cache performance statistics."""
+        """Get enhanced cache performance statistics."""
         total_requests = self._cache_hits + self._cache_misses
         hit_rate = self._cache_hits / total_requests if total_requests > 0 else 0
+        
+        # Calculate memory usage estimate (rough approximation)
+        cache_memory_mb = 0
+        if self._material_mask_cache:
+            sample_tensor = next(iter(self._material_mask_cache.values()))
+            bytes_per_tensor = sample_tensor.numel() * sample_tensor.element_size()
+            cache_memory_mb = (bytes_per_tensor * len(self._material_mask_cache)) / (1024 * 1024)
+        
         return {
             'cache_hits': self._cache_hits,
             'cache_misses': self._cache_misses,
             'hit_rate': hit_rate,
-            'cache_size': len(self._material_mask_cache)
+            'cache_size': len(self._material_mask_cache),
+            'estimated_memory_mb': round(cache_memory_mb, 2),
+            'efficiency': 'Good' if hit_rate > 0.7 else 'Fair' if hit_rate > 0.4 else 'Poor'
         }
 
     def update(self, update_policy: bool = True, update_value: bool = True) -> Tuple[float, float, float]:

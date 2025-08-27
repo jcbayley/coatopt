@@ -3,8 +3,8 @@ from pymoo.indicators.hv import HV
 import copy
 
 def calculate_air_penalty_reward(state, air_material_index=0, design_criteria=None, 
-                                current_vals=None, penalty_strength=1.0, reward_strength=0.5, 
-                                min_real_layers=2):
+                                current_vals=None, optimise_parameters=None, penalty_strength=20.0, reward_strength=0.5, 
+                                min_real_layers=5):
     """
     Calculate penalty for air-only coatings when design criteria are NOT met,
     or reward for more air layers when design criteria ARE met.
@@ -14,86 +14,55 @@ def calculate_air_penalty_reward(state, air_material_index=0, design_criteria=No
         air_material_index: Index of air material (usually 0)
         design_criteria: Dict of design criteria thresholds
         current_vals: Dict of current objective values
-        penalty_strength: How strong the penalty should be for air-only when criteria not met
+        penalty_strength: How strong the penalty should be
         reward_strength: How strong the reward should be for air layers when criteria are met
-        min_real_layers: Minimum number of non-air layers
+        min_real_layers: Minimum number of non-air layers (default 5)
     
     Returns:
         Air penalty/reward value (negative = penalty, positive = reward)
     """
     if state is None or len(state) == 0:
-        return -penalty_strength  # Maximum penalty for empty state
+        return -penalty_strength
     
-    # Count non-air layers with significant thickness
-    non_air_layers = 0
-    total_non_air_thickness = 0
-    total_layers = 0
+    # Count non-air layers using air material column
+    if len(state) > 0:
+        # Get the air material column (1 for air, 0 for non-air)
+        air_column = state[:, air_material_index + 1]
+        # Count non-air layers (where air_column is 0)
+        non_air_layers = np.sum(air_column == 0)
+    else:
+        non_air_layers = 0
     
-    for i, layer in enumerate(state):
-        if len(layer) <= 1:
-            continue
-            
-        thickness = layer[0] if len(layer) > 0 else 0
-        materials = layer[1:] if len(layer) > 1 else []
-        
-        if len(materials) == 0:
-            continue
-            
-        material_idx = np.argmax(materials)
-        
-        # Only consider layers with meaningful thickness
-        if thickness > 1e-9:  # 1 nm threshold
-            total_layers += 1
-            if material_idx != air_material_index:
-                non_air_layers += 1
-                total_non_air_thickness += thickness
-    
-    if total_layers == 0:
-        return -penalty_strength  # Maximum penalty for no layers
+    # Calculate air fraction
+    total_layers = len(state)
+    air_fraction = 1.0 - (non_air_layers / total_layers) if total_layers > 0 else 1.0
     
     # Check if design criteria are met
-    criteria_met = True
+    criteria_met = True if design_criteria is None else False
     if design_criteria is not None and current_vals is not None:
         for key, threshold in design_criteria.items():
-            if key in current_vals:
+            if key in current_vals and key in optimise_parameters:
                 val = current_vals[key]
                 if key in ["reflectivity"]:
-                    # For reflectivity, higher is better
                     if val < threshold:
                         criteria_met = False
                         break
                 elif key in ["thermal_noise", "absorption"]:
-                    # For thermal noise and absorption, lower is better
                     if val > threshold:
                         criteria_met = False
                         break
     
-    # Calculate air fraction
-    air_fraction = 1.0 - (non_air_layers / total_layers) if total_layers > 0 else 1.0
-    
     if criteria_met:
-        # Design criteria are met - reward having more air (fewer layers)
-        # More air = simpler coating = better
-        if non_air_layers >= min_real_layers:
-            # We have enough real layers and meet criteria, so reward air
-            air_reward = reward_strength * air_fraction
-            return air_reward
-        else:
-            # Still need more real layers even though criteria are met
-            return 0
+        # Design criteria met - small reward for more air layers
+        return reward_strength * air_fraction
     else:
-        # Design criteria not met - penalize air-heavy coatings
-        if non_air_layers == 0:
-            # Pure air stack - maximum penalty
+        # Design criteria not met
+        if non_air_layers < min_real_layers:
+            # Large penalty for too few real layers
             return -penalty_strength
-        elif non_air_layers < min_real_layers:
-            # Too few real layers - scaled penalty
-            penalty = penalty_strength * (1.0 - non_air_layers / min_real_layers) * 0.8
-            return -penalty
         else:
-            # Have enough real layers but criteria not met - small penalty for excess air
-            penalty = penalty_strength * air_fraction * 0.2
-            return -penalty
+            # Fractional penalty for excess air beyond minimum
+            return -penalty_strength * air_fraction * 0.5
 
 def sigmoid(x, mean=0.5, a=0.01):
     return 1/(1+np.exp(-a*(x-mean)))
@@ -102,7 +71,7 @@ def inv_sigmoid(x, mean=0.5, a=0.01):
     return -np.log((1/x) - 1)/a + mean
 
 
-def reward_function_target(reflectivity, thermal_noise, total_thickness, absorption, optimise_parameters, optimise_targets, combine="product", neg_reward=-1e3, weights=None):
+def reward_function_target(reflectivity, thermal_noise, total_thickness, absorption, optimise_parameters, optimise_targets, combine="product", neg_reward=-1e3, weights=None, env=None, **kwargs):
     """_summary_
 
     Args:
@@ -164,7 +133,7 @@ def reward_function_target(reflectivity, thermal_noise, total_thickness, absorpt
     return total_reward, vals, rewards
 
 
-def reward_function_raw(reflectivity, thermal_noise, total_thickness, absorption, optimise_parameters, optimise_targets, combine="product", neg_reward=-1e3, weights=None):
+def reward_function_raw(reflectivity, thermal_noise, total_thickness, absorption, optimise_parameters, optimise_targets, combine="product", neg_reward=-1e3, weights=None, env=None, **kwargs):
     """_summary_
 
     Args:
@@ -208,7 +177,7 @@ def reward_function_raw(reflectivity, thermal_noise, total_thickness, absorption
     return total_reward, vals, rewards
 
 
-def reward_function_log_minimise(reflectivity, thermal_noise, total_thickness, absorption, optimise_parameters, optimise_targets, combine="product", neg_reward=-1e3, weights=None):
+def reward_function_log_minimise(reflectivity, thermal_noise, total_thickness, absorption, optimise_parameters, optimise_targets, combine="product", neg_reward=-1e3, weights=None, env=None, **kwargs):
     """_summary_
 
     Args:
@@ -270,7 +239,7 @@ def reward_function_log_minimise(reflectivity, thermal_noise, total_thickness, a
     return total_reward, vals, rewards
 
 
-def reward_function_normalise_log_targets(reflectivity, thermal_noise, total_thickness, absorption, optimise_parameters, optimise_targets, env, combine="product", neg_reward=-1e3, weights=None):
+def reward_function_normalise_log_targets(reflectivity, thermal_noise, total_thickness, absorption, optimise_parameters, optimise_targets, env, combine="product", neg_reward=-1e3, weights=None, **kwargs):
     """_summary_
 
     Args:
@@ -348,8 +317,8 @@ def reward_function_normalise_log_targets(reflectivity, thermal_noise, total_thi
 def reward_function_normalise_log_targets_with_air_management(reflectivity, thermal_noise, total_thickness, absorption, 
                                                              optimise_parameters, optimise_targets, env, 
                                                              combine="product", neg_reward=-1e3, weights=None,
-                                                             design_criteria=None, air_penalty_strength=1.0, 
-                                                             air_reward_strength=0.5, min_real_layers=2):
+                                                             design_criteria=None, air_penalty_strength=50.0, 
+                                                             air_reward_strength=1, min_real_layers=2):
     """
     Normalized log targets reward function with intelligent air management.
     
@@ -418,11 +387,12 @@ def reward_function_normalise_log_targets_with_air_management(reflectivity, ther
 
     # Calculate air penalty/reward
     air_adjustment = 0
-    if env is not None and hasattr(env, 'current_state'):
+    if env is not None and hasattr(env, 'current_state'):    
         air_adjustment = calculate_air_penalty_reward(
             env.current_state, 
             air_material_index=getattr(env, 'air_material_index', 0),
-            design_criteria=design_criteria,
+            design_criteria=getattr(env, 'design_criteria'),
+            optimise_parameters=optimise_parameters,
             current_vals=vals,
             penalty_strength=air_penalty_strength,
             reward_strength=air_reward_strength,
@@ -453,7 +423,7 @@ def reward_function_normalise_log_targets_with_air_management(reflectivity, ther
 
     return total_reward, vals, rewards
 
-def reward_function_log_normalise_targets(reflectivity, thermal_noise, total_thickness, absorption, optimise_parameters, optimise_targets, env, combine="product", neg_reward=-1e3, weights=None):
+def reward_function_log_normalise_targets(reflectivity, thermal_noise, total_thickness, absorption, optimise_parameters, optimise_targets, env, combine="product", neg_reward=-1e3, weights=None, **kwargs):
     """_summary_
 
     Args:
@@ -531,7 +501,7 @@ def reward_function_log_normalise_targets(reflectivity, thermal_noise, total_thi
     return total_reward, vals, rewards
 
 
-def reward_function_normalise_log(reflectivity, thermal_noise, total_thickness, absorption, optimise_parameters, optimise_targets, env, combine="product", neg_reward=-1e3, weights=None):
+def reward_function_normalise_log(reflectivity, thermal_noise, total_thickness, absorption, optimise_parameters, optimise_targets, env, combine="product", neg_reward=-1e3, weights=None, **kwargs):
     """_summary_
 
     Args:

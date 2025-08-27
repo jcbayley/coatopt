@@ -22,7 +22,7 @@ from coatopt.utils.plotting.stack import plot_stack
 from coatopt.algorithms.hppo.core.agent import PCHPPO
 from coatopt.algorithms.hppo.training.checkpoint_manager import TrainingCheckpointManager
 from coatopt.algorithms.hppo.training.consolidation import ConsolidationStrategy, ConsolidationConfig
-from coatopt.algorithms.hppo.training.weight_cycling import sample_reward_weights
+from coatopt.algorithms.hppo.training.weight_cycling import sample_reward_weights, WeightArchive
 import traceback
 
 
@@ -159,6 +159,9 @@ class UnifiedHPPOTrainer:
             self._load_training_state()
         else:
             self._initialize_training_state()
+        
+        # Phase 2 Enhancement: Initialize weight archive for adaptive exploration
+        self.weight_archive = WeightArchive(max_size=50)  # Track last 50 weight vectors
 
     def _setup_directories(self) -> None:
         """Create necessary directories for training outputs."""
@@ -668,6 +671,11 @@ class UnifiedHPPOTrainer:
         # Sample objective weights for this rollout
         n_objectives = len(self.env.optimise_parameters)
         
+        # Get current Pareto front for adaptive weight strategies
+        current_pareto_front = None
+        if hasattr(self.env, 'pareto_front') and len(self.env.pareto_front) > 0:
+            current_pareto_front = self.env.pareto_front
+        
         objective_weights = sample_reward_weights(
             n_objectives=n_objectives,
             cycle_weights=getattr(self.env, 'cycle_weights', 'random'),
@@ -675,7 +683,10 @@ class UnifiedHPPOTrainer:
             final_weight_epoch=getattr(self.env, 'final_weight_epoch', 1000),
             start_weight_alpha=getattr(self.env, 'start_weight_alpha', 1.0),
             final_weight_alpha=getattr(self.env, 'final_weight_alpha', 1.0),
-            n_weight_cycles=getattr(self.env, 'n_weight_cycles', 2)
+            n_weight_cycles=getattr(self.env, 'n_weight_cycles', 2),
+            pareto_front=current_pareto_front,  # Phase 2 enhancement
+            weight_archive=self.weight_archive if hasattr(self, 'weight_archive') else None,  # Phase 2 enhancement
+            all_rewards=self.all_rewards if hasattr(self, 'all_rewards') else None  # New: pass all rewards for coverage analysis
         )
         
         
@@ -1067,6 +1078,11 @@ class UnifiedHPPOTrainer:
             
             # Get objective weights
             if random_weights:
+                # Get current Pareto front for adaptive strategies
+                current_pareto_front = None
+                if hasattr(self.env, 'pareto_front') and len(self.env.pareto_front) > 0:
+                    current_pareto_front = self.env.pareto_front
+                
                 objective_weights = sample_reward_weights(
                     n_objectives=len(self.env.optimise_parameters),
                     cycle_weights=getattr(self.env, 'cycle_weights', 'random'),
@@ -1074,7 +1090,10 @@ class UnifiedHPPOTrainer:
                     final_weight_epoch=getattr(self.env, 'final_weight_epoch', 1000),
                     start_weight_alpha=getattr(self.env, 'start_weight_alpha', 1.0),
                     final_weight_alpha=getattr(self.env, 'final_weight_alpha', 1.0),
-                    n_weight_cycles=getattr(self.env, 'n_weight_cycles', 2)
+                    n_weight_cycles=getattr(self.env, 'n_weight_cycles', 2),
+                    pareto_front=current_pareto_front,  # Phase 2 enhancement
+                    weight_archive=self.weight_archive if hasattr(self, 'weight_archive') else None,  # Phase 2 enhancement
+                    all_rewards=self.all_rewards if hasattr(self, 'all_rewards') else None  # New: pass all rewards for coverage analysis
                 )
             else:
                 if n >= len(objweights):

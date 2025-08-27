@@ -9,6 +9,7 @@ import copy
 
 from ..config.structured_config import CoatingOptimisationConfig
 from pymoo.util.nds.non_dominated_sorting import NonDominatedSorting
+from .utils.pareto_utils import incremental_pareto_update, EfficientParetoTracker
 
 class MultiObjectiveEnvironment(HPPOEnvironment):
     """
@@ -23,6 +24,21 @@ class MultiObjectiveEnvironment(HPPOEnvironment):
         # Enable multi-objective optimization
         self.multi_objective = True
         self.pareto_objectives = ["reflectivity", "thermal_noise", "absorption"]
+        
+        # Enhanced Pareto tracking with efficient algorithms
+        self.pareto_update_interval = kwargs.get('pareto_update_interval', 10)  # Update every N steps
+        self.use_efficient_pareto = kwargs.get('use_efficient_pareto', True)  # Use optimized algorithms
+        
+        if self.use_efficient_pareto:
+            self.pareto_tracker = EfficientParetoTracker(
+                update_interval=self.pareto_update_interval,
+                max_pending=50
+            )
+        else:
+            # Legacy tracking
+            self.steps_since_pareto_update = 0
+            self.pending_pareto_points = []  # Buffer points between updates
+            self.force_pareto_update = False  # Flag to force immediate update
 
     def setup_multiobjective_specific_attributes(self, **kwargs):
         """Setup multi-objective specific attributes."""
@@ -54,7 +70,7 @@ class MultiObjectiveEnvironment(HPPOEnvironment):
 
     def update_pareto_front(self, pareto_front, new_point):
         """
-        Update the Pareto front with a new point and check if it updates the front.
+        Update the Pareto front with a new point using efficient algorithms.
 
         Parameters:
             pareto_front (numpy.ndarray or list): Current Pareto front points (shape: [n_points, n_dimensions]).
@@ -64,35 +80,112 @@ class MultiObjectiveEnvironment(HPPOEnvironment):
             numpy.ndarray: Updated Pareto front.
             bool: Whether the Pareto front was updated or not.
         """
+        if self.use_efficient_pareto:
+            return self._efficient_pareto_update(pareto_front, new_point)
+        else:
+            return self._legacy_pareto_update(pareto_front, new_point)
+    
+    def _efficient_pareto_update(self, pareto_front, new_point):
+        """Use efficient Pareto tracker for updates."""
+        # Initialize tracker if needed
+        if not hasattr(self, 'pareto_tracker') or self.pareto_tracker is None:
+            self.pareto_tracker = EfficientParetoTracker(
+                update_interval=self.pareto_update_interval,
+                max_pending=50
+            )
+            
+        # Handle empty front initialization
+        if len(pareto_front) == 0 or (isinstance(pareto_front, np.ndarray) and pareto_front.size == 0):
+            if new_point.ndim == 1:
+                new_point = new_point.reshape(1, -1)
+            self.pareto_tracker.current_front = new_point.copy()
+            return new_point.copy(), True
+        
+        # Sync tracker with current front if needed
+        if self.pareto_tracker.current_front.size == 0:
+            if isinstance(pareto_front, list):
+                pareto_front = np.array(pareto_front)
+            self.pareto_tracker.current_front = pareto_front.copy()
+        
+        # Add new point using efficient tracker
+        updated_front, was_updated = self.pareto_tracker.add_point(new_point)
+        return updated_front, was_updated
+    
+    def _legacy_pareto_update(self, pareto_front, new_point):
+        """Legacy Pareto update method for backward compatibility."""
         # Handle empty Pareto front case
         if len(pareto_front) == 0 or (isinstance(pareto_front, np.ndarray) and pareto_front.size == 0):
-            # Warning when Pareto front is empty - this might indicate missing data from previous training
-            print("WARNING: Pareto front is empty. This may occur when:")
-            print("  - Starting fresh training (normal)")
-            print("  - Continuing training but previous Pareto front wasn't loaded (check save/load logic)")
+            # Warning when Pareto front is empty
+            print("WARNING: Pareto front is empty. Starting fresh front.")
             
-            # If pareto front is empty, the new point becomes the first point
             new_point_array = np.array([new_point]) if new_point.ndim == 1 else new_point
             updated_pareto_front = self.compute_pareto_front(new_point_array)
+            self._reset_pareto_update_tracking()
             return updated_pareto_front, True
         
-        # Convert pareto_front to numpy array if it's a list
+        # Add to pending points buffer for lazy evaluation
+        if new_point.ndim == 1:
+            new_point = new_point.reshape(1, -1)
+        self.pending_pareto_points.append(new_point.copy())
+        self.steps_since_pareto_update += 1
+        
+        # Check if we should perform a batch Pareto update
+        should_update = (
+            self.steps_since_pareto_update >= self.pareto_update_interval or
+            self.force_pareto_update or
+            len(self.pending_pareto_points) >= 50
+        )
+        
+        if should_update:
+            return self._perform_batch_pareto_update(pareto_front)
+        else:
+            return pareto_front, False
+    
+    def _perform_batch_pareto_update(self, pareto_front):
+        """Perform batch Pareto front update with all pending points."""
+        if not self.pending_pareto_points:
+            return pareto_front, False
+        
         if isinstance(pareto_front, list):
             pareto_front = np.array(pareto_front)
         
-        # Ensure new_point is properly shaped (1D -> 2D)
-        if new_point.ndim == 1:
-            new_point = new_point.reshape(1, -1)
+        # Use efficient incremental update
+        all_pending = np.vstack(self.pending_pareto_points)
+        updated_pareto_front, pareto_updated = incremental_pareto_update(pareto_front, all_pending)
         
-        # Combine the current Pareto front with the new point
-        combined_points = np.vstack([pareto_front, new_point])
-
-        updated_pareto_front = self.compute_pareto_front(combined_points)
-
-        # Check if the Pareto front was updated
-        pareto_updated = not np.array_equal(updated_pareto_front, pareto_front)
-
+        # Reset tracking
+        self._reset_pareto_update_tracking()
         return updated_pareto_front, pareto_updated
+    
+    def _reset_pareto_update_tracking(self):
+        """Reset lazy Pareto update tracking variables."""
+        if hasattr(self, 'pending_pareto_points'):
+            self.pending_pareto_points = []
+        if hasattr(self, 'steps_since_pareto_update'):
+            self.steps_since_pareto_update = 0
+        if hasattr(self, 'force_pareto_update'):
+            self.force_pareto_update = False
+    
+    def force_pareto_front_update(self):
+        """Force immediate Pareto front update on next call."""
+        if self.use_efficient_pareto and hasattr(self, 'pareto_tracker'):
+            self.pareto_tracker._perform_update()
+        else:
+            self.force_pareto_update = True
+    
+    def get_pareto_stats(self):
+        """Get Pareto front management statistics."""
+        if self.use_efficient_pareto and hasattr(self, 'pareto_tracker'):
+            stats = self.pareto_tracker.get_stats()
+            stats['algorithm'] = 'efficient'
+            return stats
+        else:
+            return {
+                'algorithm': 'legacy',
+                'front_size': len(self.pareto_front) if hasattr(self, 'pareto_front') else 0,
+                'pending_points': len(getattr(self, 'pending_pareto_points', [])),
+                'steps_since_update': getattr(self, 'steps_since_pareto_update', 0)
+            }
     
     def compute_reward(self, new_state, max_value=0.0, target_reflectivity=1.0, objective_weights=None):
         """reward is the improvement of the state over the previous one
@@ -195,6 +288,8 @@ class MultiObjectiveEnvironment(HPPOEnvironment):
         # Update Pareto front if episode finished and front was updated
         if finished and rewards.get("front_updated", False):
             self.pareto_front = rewards["updated_pareto_front"]
+            # Force final update to ensure we have the most current front
+            self.force_pareto_front_update()
 
         # Update tracking variables
         self.previous_material = material

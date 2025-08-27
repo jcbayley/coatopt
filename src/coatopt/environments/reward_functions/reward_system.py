@@ -73,11 +73,14 @@ class RewardCalculator:
         # Get the reward function once at initialization
         self.reward_function = self.registry.get_function(self.reward_type)
     
-    def calculate(self, reflectivity, thermal_noise, thickness, absorption, weights=None, **extra_kwargs):
+    def calculate(self, reflectivity, thermal_noise, thickness, absorption, env=None, weights=None, **extra_kwargs):
         """Calculate reward using the selected function."""
         # Merge initialization kwargs with call-time kwargs
         call_kwargs = {**self.kwargs, **extra_kwargs}
         
+        # Always try to pass env if available - most functions can use it
+        if env is not None:
+            call_kwargs['env'] = env
 
         return self.reward_function(
                 reflectivity=reflectivity,
@@ -105,10 +108,11 @@ def reward_function_plugin(name: str = None):
 # Example of how to add new reward functions easily:
 @reward_function_plugin("example_new")
 def reward_function_example_new(reflectivity, thermal_noise, total_thickness, absorption, 
-                               optimise_parameters, optimise_targets, **kwargs):
+                               optimise_parameters, optimise_targets, env=None, **kwargs):
     """
     Example of how to add a new reward function.
     Just define it with this decorator and it's automatically available.
+    All reward functions should accept env as a parameter to access environment state.
     """
     # Simple example: negative sum of all parameters
     return -(reflectivity + thermal_noise + total_thickness + absorption)

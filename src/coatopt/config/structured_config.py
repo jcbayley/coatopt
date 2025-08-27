@@ -170,6 +170,13 @@ class TrainingConfig(BaseConfig):
     n_weight_cycles: int
     weight_network_save: bool
 
+    # Phase 3.2: Hypervolume-based training options
+    use_hypervolume_trainer: Optional[bool] = False
+    use_hypervolume_loss: Optional[bool] = False
+    hv_loss_weight: Optional[float] = 0.5
+    hv_update_interval: Optional[int] = 10
+    adaptive_reference_point: Optional[bool] = True
+
     # Separate entropy coefficients for discrete and continuous policies
     entropy_beta_discrete_start: Optional[float] = None
     entropy_beta_discrete_end: Optional[float] = None
@@ -226,7 +233,12 @@ class CoatingOptimisationConfig:
         }
         
         training_defaults = {
-            'cycle_weights': False
+            'cycle_weights': False,
+            'use_hypervolume_trainer': False,
+            'use_hypervolume_loss': False,
+            'hv_loss_weight': 0.5,
+            'hv_update_interval': 10,
+            'adaptive_reference_point': True
         }
         
         genetic_defaults = {
