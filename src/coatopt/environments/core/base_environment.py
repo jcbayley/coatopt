@@ -69,6 +69,10 @@ class BaseCoatingEnvironment:
         self.optimise_weight_ranges = config.data.optimise_weight_ranges
         self.design_criteria = config.data.design_criteria
         
+        # Objective bounds for reward normalization (if provided in config)
+        if hasattr(config.data, 'objective_bounds') and config.data.objective_bounds:
+            self.objective_bounds = config.data.objective_bounds
+        
         # Reward parameters from DataConfig
         self.reward_function = config.data.reward_function
         self.use_intermediate_reward = config.data.use_intermediate_reward
@@ -125,7 +129,8 @@ class BaseCoatingEnvironment:
                                  final_weight_alpha=1.0, 
                                  cycle_weights=False, 
                                  n_weight_cycles=2, 
-                                 combine="product"):
+                                 combine="product",
+                                 objective_bounds=None):
         """Legacy parameter initialization for backward compatibility."""
         
         self.max_layers = max_layers
@@ -152,6 +157,10 @@ class BaseCoatingEnvironment:
         self.cycle_weights = cycle_weights
         self.n_weight_cycles = n_weight_cycles
         self.combine = combine
+        
+        # Objective bounds for reward normalization (if provided)
+        if objective_bounds is not None:
+            self.objective_bounds = objective_bounds
 
     def _setup_common_attributes(self):
         """Setup attributes common to both initialization methods."""

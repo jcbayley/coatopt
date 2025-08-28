@@ -111,6 +111,15 @@ class DataConfig(BaseConfig):
     use_optical_thickness: bool
     combine: str
     reward_function: str
+    
+    # Objective bounds for reward normalization and optimization constraints
+    objective_bounds: Dict[str, Dict[str, float]] = field(default_factory=dict)
+    
+    # Reward normalization parameters
+    use_reward_normalization: bool = False
+    reward_normalization_mode: str = "fixed"  # "fixed" or "adaptive"
+    reward_normalization_ranges: Dict[str, List[float]] = field(default_factory=dict)
+    reward_normalization_alpha: float = 0.1
 
 
 @dataclass
@@ -130,6 +139,14 @@ class NetworkConfig(BaseConfig):
     continuous_hidden_size: int
     value_hidden_size: int
     buffer_size: int = 10000  # Default buffer size for replay memory
+    
+    # Mixture of Experts configuration
+    use_mixture_of_experts: bool = False
+    moe_n_experts: int = 5
+    moe_expert_specialization: str = "sobol_sequence"  # "sobol_sequence" or "random"
+    moe_gate_hidden_dim: int = 64
+    moe_gate_temperature: float = 1.0
+    moe_load_balancing_weight: float = 0.01
 
 
 @dataclass
@@ -216,11 +233,14 @@ class CoatingOptimisationConfig:
         
         # Define defaults for optional fields
         data_defaults = {
-            'reflectivity_reward_shape': 'none',
-            'absorption_reward_shape': 'none',
             'optimise_weight_ranges': {},
             'use_optical_thickness': True,
-            'combine': 'logproduct'
+            'combine': 'logproduct',
+            # Reward normalization defaults
+            'use_reward_normalization': False,
+            'reward_normalization_mode': 'fixed',
+            'reward_normalization_ranges': {},
+            'reward_normalization_alpha': 0.1
         }
         
         network_defaults = {

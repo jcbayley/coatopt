@@ -10,20 +10,47 @@ import copy
 from ..config.structured_config import CoatingOptimisationConfig
 from pymoo.util.nds.non_dominated_sorting import NonDominatedSorting
 from .utils.pareto_utils import incremental_pareto_update, EfficientParetoTracker
+from .core.base_environment import BaseCoatingEnvironment
+from .reward_functions.reward_system import RewardCalculator
+from typing import Dict, List, Optional, Union, Tuple, Any
+import numpy as np
+import random
+import logging
 
 class MultiObjectiveEnvironment(HPPOEnvironment):
     """
     Coating environment with Pareto multi-objective optimization.
     This extends the base functionality to support multi-objective optimization.
     """
-    
-    def __init__(self, config: Optional[CoatingOptimisationConfig] = None, **kwargs):
+    def __init__(self, config: Optional[CoatingOptimisationConfig] = None, 
+                 use_reward_normalization=False, reward_normalization_mode="fixed",
+                 reward_normalization_ranges=None, reward_normalization_alpha=0.1, **kwargs):
         """Initialize Pareto environment."""
         super().__init__(config, **kwargs)
         
         # Enable multi-objective optimization
         self.multi_objective = True
         self.pareto_objectives = ["reflectivity", "thermal_noise", "absorption"]
+        
+        # Store normalization parameters
+        self.use_reward_normalization = use_reward_normalization
+        self.reward_normalization_mode = reward_normalization_mode
+        self.reward_normalization_ranges = reward_normalization_ranges or {}
+        self.reward_normalization_alpha = reward_normalization_alpha
+        
+        # Override reward calculator with normalization support
+        reward_type = "default" if self.reward_function is None else str(self.reward_function)
+        self.reward_calculator = RewardCalculator(
+            reward_type=reward_type,
+            optimise_parameters=self.optimise_parameters,
+            optimise_targets=self.optimise_targets,
+            combine=self.combine, 
+            env=self,
+            use_reward_normalization=use_reward_normalization,
+            reward_normalization_mode=reward_normalization_mode,
+            reward_normalization_ranges=reward_normalization_ranges,
+            reward_normalization_alpha=reward_normalization_alpha
+        )
         
         # Enhanced Pareto tracking with efficient algorithms
         self.pareto_update_interval = kwargs.get('pareto_update_interval', 10)  # Update every N steps
@@ -199,17 +226,18 @@ class MultiObjectiveEnvironment(HPPOEnvironment):
         
         if objective_weights is not None:
             weights = {
-                key:objective_weights[i] for i,key in enumerate(self.optimise_parameters)
+                key: objective_weights[i] for i, key in enumerate(self.optimise_parameters)
             }
         else:
-            weights=None
+            weights = None
 
+        # RewardCalculator now handles normalization internally
         total_reward, vals, rewards = self.reward_calculator.calculate(
                 reflectivity=new_reflectivity,
                 thermal_noise=new_thermal_noise,
                 thickness=new_total_thickness,
                 absorption=new_E_integrated,
-                weights=weights
+                weights=weights  # Pass weights directly to calculator
             )
         
         new_point = np.zeros((len(self.optimise_parameters),))

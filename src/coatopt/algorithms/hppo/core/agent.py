@@ -1,7 +1,3 @@
-"""
-PC-HPPO (Proximal Constrained Hierarchical Proximal Policy optimisation) Agent.
-Refactored from pc_hppo_oml.py for improved readability and maintainability.
-"""
 from typing import Union, Optional, Tuple, List
 import numpy as np
 import torch
@@ -72,7 +68,13 @@ class PCHPPO:
         entropy_beta_continuous_start: Optional[float] = None,
         entropy_beta_continuous_end: Optional[float] = None,
         hyper_networks: bool = False,
-        buffer_size: int = 10000
+        buffer_size: int = 10000,
+        use_mixture_of_experts: bool = False,
+        moe_n_experts: int = 5,
+        moe_expert_specialization: str = "weight_regions",
+        moe_gate_hidden_dim: int = 64,
+        moe_gate_temperature: float = 0.5,
+        moe_load_balancing_weight: float = 0.01
     ):
         """
         Initialize PC-HPPO agent.
@@ -121,9 +123,21 @@ class PCHPPO:
             entropy_beta_continuous_start: Initial entropy coefficient for continuous policy (optional)
             entropy_beta_continuous_end: Final entropy coefficient for continuous policy (optional)
             hyper_networks: Whether to use hypernetworks
+            use_mixture_of_experts: Whether to use Mixture of Experts networks
+            moe_n_experts: Number of expert networks in MoE
+            moe_expert_specialization: How experts specialize ('weight_regions' or 'random')
+            moe_gate_hidden_dim: Hidden dimension for MoE gating network
+            moe_gate_temperature: Temperature for MoE gating softmax
+            moe_load_balancing_weight: Weight for MoE load balancing loss
         """
         # Import network classes - now using unified policy networks
         from coatopt.algorithms.hppo.core.networks.policy_networks import DiscretePolicy, ContinuousPolicy, ValueNetwork 
+        
+        # Import MoE networks if needed
+        if use_mixture_of_experts:
+            from coatopt.algorithms.hppo.core.networks.mixture_of_experts import (
+                MoEDiscretePolicy, MoEContinuousPolicy, MoEValueNetwork
+            ) 
 
         # Store configuration
         self.upper_bound = upper_bound
@@ -139,6 +153,14 @@ class PCHPPO:
         self.entropy_beta_decay_start = entropy_beta_decay_start
         self.entropy_beta_decay_length = entropy_beta_decay_length
         self.hyper_networks = hyper_networks
+        
+        # MoE configuration
+        self.use_mixture_of_experts = use_mixture_of_experts
+        self.moe_n_experts = moe_n_experts
+        self.moe_expert_specialization = moe_expert_specialization
+        self.moe_gate_hidden_dim = moe_gate_hidden_dim
+        self.moe_gate_temperature = moe_gate_temperature
+        self.moe_load_balancing_weight = moe_load_balancing_weight
         
         # Set separate entropy coefficients for discrete and continuous policies
         self.entropy_beta_discrete_start = entropy_beta_discrete_start if entropy_beta_discrete_start is not None else entropy_beta_start
@@ -161,13 +183,22 @@ class PCHPPO:
         )
 
         # Initialize policy and value networks (current and old versions)
-        self._create_networks(
-            DiscretePolicy, ContinuousPolicy, ValueNetwork,
-            num_discrete, num_cont, discrete_hidden_size, continuous_hidden_size,
-            value_hidden_size, n_discrete_layers, n_continuous_layers, n_value_layers,
-            lower_bound, upper_bound, include_layer_number, activation_function,
-            include_material_in_policy
-        )
+        if use_mixture_of_experts:
+            self._create_moe_networks(
+                MoEDiscretePolicy, MoEContinuousPolicy, MoEValueNetwork,
+                num_discrete, num_cont, discrete_hidden_size, continuous_hidden_size,
+                value_hidden_size, n_discrete_layers, n_continuous_layers, n_value_layers,
+                lower_bound, upper_bound, include_layer_number, activation_function,
+                include_material_in_policy
+            )
+        else:
+            self._create_networks(
+                DiscretePolicy, ContinuousPolicy, ValueNetwork,
+                num_discrete, num_cont, discrete_hidden_size, continuous_hidden_size,
+                value_hidden_size, n_discrete_layers, n_continuous_layers, n_value_layers,
+                lower_bound, upper_bound, include_layer_number, activation_function,
+                include_material_in_policy
+            )
 
         # Initialize optimizers and schedulers
         self._setup_optimizers(optimiser, lr_discrete_policy, lr_continuous_policy, lr_value)
@@ -237,6 +268,58 @@ class PCHPPO:
                 self.pre_output_dim, value_hidden_size, n_layers=n_value_layers,
                 include_layer_number=include_layer_number, activation=activation_function,
                 n_objectives=self.num_objectives, use_hyper_networks=self.hyper_networks
+            ))
+
+        # Copy parameters to old networks
+        self.policy_discrete_old.load_state_dict(self.policy_discrete.state_dict())
+        self.policy_continuous_old.load_state_dict(self.policy_continuous.state_dict())
+        self.value_old.load_state_dict(self.value.state_dict())
+
+    def _create_moe_networks(self, MoEDiscretePolicy, MoEContinuousPolicy, MoEValueNetwork,
+                            num_discrete, num_cont, discrete_hidden_size, continuous_hidden_size,
+                            value_hidden_size, n_discrete_layers, n_continuous_layers, n_value_layers,
+                            lower_bound, upper_bound, include_layer_number, activation_function,
+                            include_material_in_policy):
+        """Create Mixture of Experts policy and value networks (current and old versions)."""
+        for i in range(2):
+            suffix = "" if i == 0 else "_old"
+            
+            # MoE Discrete policy network
+            setattr(self, f"policy_discrete{suffix}", MoEDiscretePolicy(
+                self.pre_output_dim, num_discrete, discrete_hidden_size,
+                n_layers=n_discrete_layers, lower_bound=lower_bound, upper_bound=upper_bound,
+                include_layer_number=include_layer_number, activation=activation_function,
+                n_objectives=self.num_objectives, n_experts=self.moe_n_experts,
+                expert_specialization=self.moe_expert_specialization,
+                gate_hidden_dim=self.moe_gate_hidden_dim,
+                gate_temperature=self.moe_gate_temperature,
+                load_balancing_weight=self.moe_load_balancing_weight,
+                use_hyper_networks=self.hyper_networks
+            ))
+            
+            # MoE Continuous policy network
+            setattr(self, f"policy_continuous{suffix}", MoEContinuousPolicy(
+                self.pre_output_dim, num_cont, continuous_hidden_size,
+                n_layers=n_continuous_layers, lower_bound=lower_bound, upper_bound=upper_bound,
+                include_layer_number=include_layer_number, include_material=include_material_in_policy,
+                activation=activation_function, n_objectives=self.num_objectives,
+                n_experts=self.moe_n_experts, expert_specialization=self.moe_expert_specialization,
+                gate_hidden_dim=self.moe_gate_hidden_dim,
+                gate_temperature=self.moe_gate_temperature,
+                load_balancing_weight=self.moe_load_balancing_weight,
+                use_hyper_networks=self.hyper_networks
+            ))
+            
+            # MoE Value network
+            setattr(self, f"value{suffix}", MoEValueNetwork(
+                self.pre_output_dim, value_hidden_size, n_layers=n_value_layers,
+                include_layer_number=include_layer_number, activation=activation_function,
+                n_objectives=self.num_objectives, n_experts=self.moe_n_experts,
+                expert_specialization=self.moe_expert_specialization,
+                gate_hidden_dim=self.moe_gate_hidden_dim,
+                gate_temperature=self.moe_gate_temperature,
+                load_balancing_weight=self.moe_load_balancing_weight,
+                use_hyper_networks=self.hyper_networks
             ))
 
         # Copy parameters to old networks
@@ -364,7 +447,7 @@ class PCHPPO:
         packed: bool = False,
         objective_weights: Optional[torch.Tensor] = None
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, 
-               torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+               torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, dict]:
         """
         Select action based on current state and layer number.
         
@@ -377,11 +460,22 @@ class PCHPPO:
             objective_weights: Multi-objective optimisation weights
             
         Returns:
-            Tuple containing action components, probabilities, and values
+            Tuple containing action components, probabilities, values, and MoE auxiliary losses
         """
         # Prepare inputs
         state_tensor = prepare_state_input(state, self.pre_type)
         layer_number, layer_numbers_validated = prepare_layer_number(layer_number)
+        
+        # Ensure objective_weights is properly formatted as float tensor
+        if objective_weights is not None:
+            if not isinstance(objective_weights, torch.Tensor):
+                objective_weights = torch.FloatTensor(objective_weights)
+            else:
+                objective_weights = objective_weights.float()  # Ensure float dtype
+            
+            # Ensure correct batch dimension
+            if objective_weights.dim() == 1:
+                objective_weights = objective_weights.unsqueeze(0)
         
         # Pack state sequence only for LSTM processing
         if self.pre_type == "lstm":
@@ -398,7 +492,12 @@ class PCHPPO:
         )
         
         # Get discrete action probabilities
-        discrete_probs = self.policy_discrete(pre_output_d, layer_number, objective_weights=objective_weights)
+        if self.use_mixture_of_experts:
+            discrete_probs, discrete_aux = self.policy_discrete(pre_output_d, objective_weights, layer_number)
+        else:
+            discrete_probs = self.policy_discrete(pre_output_d, layer_number, objective_weights=objective_weights)
+            discrete_aux = None
+            
         validate_probabilities(discrete_probs, "discrete_probs")
         
         # Apply material constraints
@@ -412,9 +511,15 @@ class PCHPPO:
             actiond = discrete_dist.sample()
         
         # Get continuous action parameters and sample
-        continuous_means, continuous_log_std = self.policy_continuous(
-            pre_output_c, layer_number, actiond.unsqueeze(1), objective_weights=objective_weights
-        )
+        if self.use_mixture_of_experts:
+            continuous_means, continuous_log_std, continuous_aux = self.policy_continuous(
+                pre_output_c, objective_weights, layer_number, actiond.unsqueeze(1)
+            )
+        else:
+            continuous_means, continuous_log_std = self.policy_continuous(
+                pre_output_c, layer_number, actiond.unsqueeze(1), objective_weights=objective_weights
+            )
+            continuous_aux = None
         
         continuous_std = torch.exp(continuous_log_std)
         
@@ -434,15 +539,37 @@ class PCHPPO:
         entropy_continuous = torch.sum(continuous_dist._entropy, dim=-1)
         
         # Get state value
-        state_value = self.value(pre_output_v, layer_number, objective_weights=objective_weights)
+        if self.use_mixture_of_experts:
+            state_value, value_aux = self.value(pre_output_v, layer_number, objective_weights=objective_weights)
+        else:
+            state_value = self.value(pre_output_v, layer_number, objective_weights=objective_weights)
+            value_aux = None
         
         # Format output action
         action = format_action_output(actiond, actionc)
         
+        # Collect auxiliary losses from MoE networks
+        moe_aux_losses = {}
+        if self.use_mixture_of_experts:
+            if discrete_aux is not None:
+                moe_aux_losses['discrete_specialization_loss'] = discrete_aux['specialization_loss']
+                moe_aux_losses['discrete_load_balance_loss'] = discrete_aux['load_balance_loss']
+                moe_aux_losses['discrete_total_aux_loss'] = discrete_aux['total_aux_loss']
+                
+            if continuous_aux is not None:
+                moe_aux_losses['continuous_specialization_loss'] = continuous_aux['specialization_loss']
+                moe_aux_losses['continuous_load_balance_loss'] = continuous_aux['load_balance_loss']
+                moe_aux_losses['continuous_total_aux_loss'] = continuous_aux['total_aux_loss']
+                
+            if value_aux is not None:
+                moe_aux_losses['value_specialization_loss'] = value_aux['specialization_loss']
+                moe_aux_losses['value_load_balance_loss'] = value_aux['load_balance_loss']
+                moe_aux_losses['value_total_aux_loss'] = value_aux['total_aux_loss']
+        
         return (
             action, actiond, actionc, log_prob_discrete, log_prob_continuous,
             discrete_probs, continuous_means, continuous_std, state_value,
-            entropy_discrete, entropy_continuous
+            entropy_discrete, entropy_continuous, moe_aux_losses
         )
 
     def _get_pre_network_outputs(self, state_input, layer_number, objective_weights, needs_gradients=True, packed=False):
@@ -604,7 +731,7 @@ class PCHPPO:
         actionsd = torch.cat(list(self.replay_buffer.discrete_actions), dim=-1).detach()
 
         # Perform multiple update epochs
-        for _ in range(self.n_updates):
+        for epoch_idx in range(self.n_updates):
             # Prepare states and layer numbers
             states = torch.tensor(np.array(list(self.replay_buffer.states))).to(torch.float32)
             layer_numbers = (
@@ -613,21 +740,36 @@ class PCHPPO:
             )
 
             # Get current policy outputs
-            _, _, _, log_prob_discrete, log_prob_continuous, _, _, _, state_value, entropy_discrete, entropy_continuous = self.select_action(
+            (_, _, _, log_prob_discrete, log_prob_continuous, _, _, _, state_value, 
+             entropy_discrete, entropy_continuous, moe_aux_losses) = self.select_action(
                 states, layer_numbers, actionsc, actionsd, packed=True, objective_weights=objective_weights
             )
 
             # Calculate advantages
             advantage = returns.detach() - state_value.detach()
 
-            # Calculate policy losses
+            # Calculate policy losses (including MoE auxiliary losses)
             discrete_policy_loss = self._calculate_discrete_policy_loss(
                 log_prob_discrete, old_lprobs_discrete, advantage, entropy_discrete, self.beta_discrete
             )
+            
+            # Add MoE auxiliary losses to discrete policy loss
+            if self.use_mixture_of_experts and 'discrete_total_aux_loss' in moe_aux_losses:
+                discrete_policy_loss += moe_aux_losses['discrete_total_aux_loss']
+            
             continuous_policy_loss = self._calculate_continuous_policy_loss(
                 log_prob_continuous, old_lprobs_continuous, advantage, entropy_continuous, self.beta_continuous
             )
+            
+            # Add MoE auxiliary losses to continuous policy loss
+            if self.use_mixture_of_experts and 'continuous_total_aux_loss' in moe_aux_losses:
+                continuous_policy_loss += moe_aux_losses['continuous_total_aux_loss']
+            
             value_loss = self.mse_loss(returns.to(torch.float32).squeeze(), state_value.squeeze())
+            
+            # Add MoE auxiliary losses to value loss
+            if self.use_mixture_of_experts and 'value_total_aux_loss' in moe_aux_losses:
+                value_loss += moe_aux_losses['value_total_aux_loss']
 
             # Update networks
             if update_policy:

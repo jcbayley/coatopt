@@ -667,6 +667,7 @@ class UnifiedHPPOTrainer:
         total_reward = 0
         means, stds, materials = [], [], []
         rewards_list = []
+        moe_aux_losses_accumulator = {}
         
         # Sample objective weights for this rollout
         n_objectives = len(self.env.optimise_parameters)
@@ -699,9 +700,23 @@ class UnifiedHPPOTrainer:
             objective_weights_tensor = torch.tensor(objective_weights).unsqueeze(0).to(torch.float32)
             
             # Select action
-            action, actiond, actionc, log_prob_discrete, log_prob_continuous, d_prob, c_means, c_std, value, entropy_discrete, entropy_continuous = self.agent.select_action(
+            action_output = self.agent.select_action(
                 obs, step_tensor, objective_weights=objective_weights_tensor
             )
+            
+            # Handle both MoE (12 outputs) and standard (11 outputs) return signatures
+            if len(action_output) == 12:
+                (action, actiond, actionc, log_prob_discrete, log_prob_continuous, 
+                 d_prob, c_means, c_std, value, entropy_discrete, entropy_continuous, moe_aux_losses) = action_output
+                # Accumulate MoE auxiliary losses
+                for loss_name, loss_value in moe_aux_losses.items():
+                    if loss_name not in moe_aux_losses_accumulator:
+                        moe_aux_losses_accumulator[loss_name] = []
+                    moe_aux_losses_accumulator[loss_name].append(loss_value)
+            else:
+                (action, actiond, actionc, log_prob_discrete, log_prob_continuous, 
+                 d_prob, c_means, c_std, value, entropy_discrete, entropy_continuous) = action_output
+                moe_aux_losses = {}
             
             # Scale continuous action to environment bounds
             action[1] = action[1] * (self.env.max_thickness - self.env.min_thickness) + self.env.min_thickness
@@ -743,7 +758,8 @@ class UnifiedHPPOTrainer:
             'means': means,
             'stds': stds,
             'materials': materials,
-            'objective_weights': objective_weights
+            'objective_weights': objective_weights,
+            'moe_aux_losses': moe_aux_losses_accumulator
         }
 
     def _update_episode_tracking(self, episode_data: Dict, all_means: List, all_stds: List, all_materials: List) -> None:
