@@ -28,6 +28,9 @@ class MultiObjectiveEnvironment(HPPOEnvironment):
         """Initialize Pareto environment."""
         super().__init__(config, **kwargs)
         
+        # Parse optimization directions from optimise_parameters
+        self.optimization_directions = self._parse_optimization_parameters()
+        
         # Enable multi-objective optimization
         self.multi_objective = True
         self.pareto_objectives = ["reflectivity", "thermal_noise", "absorption"]
@@ -42,7 +45,7 @@ class MultiObjectiveEnvironment(HPPOEnvironment):
         reward_type = "default" if self.reward_function is None else str(self.reward_function)
         self.reward_calculator = RewardCalculator(
             reward_type=reward_type,
-            optimise_parameters=self.optimise_parameters,
+            optimise_parameters=self.get_parameter_names(),  # Use clean parameter names
             optimise_targets=self.optimise_targets,
             combine=self.combine, 
             env=self,
@@ -76,22 +79,100 @@ class MultiObjectiveEnvironment(HPPOEnvironment):
         self.all_points = []
         self.all_vals = []
     
-    def compute_pareto_front(self, points):        
+    def _parse_optimization_parameters(self):
+        """
+        Parse optimization parameters and directions from config.
+        
+        Supports formats like:
+        - ["reflectivity:max", "absorption:min"] 
+        - ["reflectivity", "absorption"] (fallback to defaults)
+        
+        Returns:
+            dict: {parameter_name: direction} where direction is 'max' or 'min'
+        """
+        optimization_directions = {}
+        
+        for param in self.optimise_parameters:
+            if isinstance(param, str) and ':' in param:
+                # New format: "parameter:direction"
+                param_name, direction = param.split(':', 1)
+                param_name = param_name.strip()
+                direction = direction.strip().lower()
+                
+                if direction in ['max', 'maximize', 'maximum']:
+                    optimization_directions[param_name] = 'max'
+                elif direction in ['min', 'minimize', 'minimum']:
+                    optimization_directions[param_name] = 'min'
+                else:
+                    print(f"Warning: Unknown optimization direction '{direction}' for {param_name}, defaulting to 'min'")
+                    optimization_directions[param_name] = 'min'
+            else:
+                # Legacy format: just parameter name, use defaults
+                param_name = param if isinstance(param, str) else str(param)
+                if param_name.lower() == 'reflectivity':
+                    optimization_directions[param_name] = 'max'  # Default: maximize reflectivity
+                else:
+                    optimization_directions[param_name] = 'min'  # Default: minimize others
+                    
+        return optimization_directions
+    
+    def compute_pareto_front(self, points, maximize=None):        
         """
         Compute the Pareto front from a set of points.
 
         Parameters:
             points (numpy.ndarray): Array of points (shape: [n_points, n_dimensions]).
+            maximize (bool or None): Whether to maximize all objectives (True), minimize all (False),
+                                   or use mixed directions from config (None, default).
 
         Returns:
             numpy.ndarray: Pareto front points.
         """
-        # Perform non-dominated sorting
+        if len(points) == 0:
+            return np.array([])
+            
         nds = NonDominatedSorting()
-        fronts = nds.do(points) 
+        
+        if maximize is None:
+            # Use mixed optimization directions from config
+            if not hasattr(self, 'optimization_directions'):
+                # Fallback to default behavior
+                print("Warning: No optimization_directions found, using legacy defaults")
+                maximize = True
+            
+            # Create minimization objectives array based on config directions
+            minimization_points = np.zeros_like(points)
+            param_names = self.get_parameter_names() if hasattr(self, 'optimise_parameters') else []
+            
+            for i in range(points.shape[1]):
+                if i < len(param_names):
+                    param_name = param_names[i]
+                    direction = self.optimization_directions.get(param_name, 'min')
+                    
+                    if direction == 'max':
+                        # Maximize: negate for NDS (which assumes minimization)
+                        minimization_points[:, i] = -points[:, i]
+                    else:
+                        # Minimize: use as-is
+                        minimization_points[:, i] = points[:, i]
+                else:
+                    # Fallback for extra dimensions
+                    minimization_points[:, i] = points[:, i]
+                    
+            fronts = nds.do(minimization_points)
+            
+        elif maximize:
+            # Legacy behavior: maximize all objectives
+            fronts = nds.do(-points)
+        else:
+            # Legacy behavior: minimize all objectives  
+            fronts = nds.do(points)
     
         # Extract the Pareto front (the first front)
-        pareto_front = points[fronts[0]]
+        if len(fronts) > 0 and len(fronts[0]) > 0:
+            pareto_front = points[fronts[0]]
+        else:
+            pareto_front = np.array([])
     
         return pareto_front
 
@@ -226,7 +307,7 @@ class MultiObjectiveEnvironment(HPPOEnvironment):
         
         if objective_weights is not None:
             weights = {
-                key: objective_weights[i] for i, key in enumerate(self.optimise_parameters)
+                key: objective_weights[i] for i, key in enumerate(self.get_parameter_names())
             }
         else:
             weights = None
@@ -237,13 +318,15 @@ class MultiObjectiveEnvironment(HPPOEnvironment):
                 thermal_noise=new_thermal_noise,
                 thickness=new_total_thickness,
                 absorption=new_E_integrated,
-                weights=weights  # Pass weights directly to calculator
+                weights=weights,  # Pass weights directly to calculator
+                expert_constraints=self.current_expert_constraints,
+                env=self
             )
         
         new_point = np.zeros((len(self.optimise_parameters),))
 
         i = 0
-        for key in self.optimise_parameters:
+        for key in self.get_parameter_names():
             new_point[i] = rewards[key]
             i += 1
 

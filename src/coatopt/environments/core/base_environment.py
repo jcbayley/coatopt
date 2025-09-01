@@ -45,6 +45,9 @@ class BaseCoatingEnvironment:
         
         # Common initialization regardless of how parameters were provided
         self._setup_common_attributes()
+        
+        # Expert constraints for adaptive constraint specialization
+        self.current_expert_constraints = None
 
     def _init_from_config(self, config: CoatingOptimisationConfig):
         """Initialize from structured configuration object."""
@@ -65,6 +68,10 @@ class BaseCoatingEnvironment:
         
         # Optimization parameters from DataConfig
         self.optimise_parameters = config.data.optimise_parameters
+        
+        # Extract clean parameter names (removing direction suffixes like ":max")
+        self.optimise_parameter_names = self._extract_parameter_names(self.optimise_parameters)
+        
         self.optimise_targets = config.data.optimise_targets
         self.optimise_weight_ranges = config.data.optimise_weight_ranges
         self.design_criteria = config.data.design_criteria
@@ -101,6 +108,35 @@ class BaseCoatingEnvironment:
             self.final_weight_alpha = 1.0
             self.cycle_weights = False
             self.n_weight_cycles = 2
+
+    def _extract_parameter_names(self, param_list):
+        """
+        Extract clean parameter names from potentially suffixed parameter list.
+        
+        Args:
+            param_list: List that may contain "parameter:direction" format
+            
+        Returns:
+            list: Clean parameter names without direction suffixes
+        """
+        clean_names = []
+        for param in param_list:
+            if isinstance(param, str) and ':' in param:
+                # New format: "parameter:direction" -> extract just parameter
+                param_name, _ = param.split(':', 1)
+                clean_names.append(param_name.strip())
+            else:
+                # Legacy format: just parameter name
+                param_name = param if isinstance(param, str) else str(param)
+                clean_names.append(param_name)
+        return clean_names
+        
+    def get_parameter_names(self):
+        """Get clean parameter names for compatibility."""
+        if hasattr(self, 'optimise_parameter_names'):
+            return self.optimise_parameter_names
+        else:
+            return self._extract_parameter_names(getattr(self, 'optimise_parameters', []))
 
     def _init_from_legacy_params(self, 
                                  max_layers=20, 
@@ -183,7 +219,7 @@ class BaseCoatingEnvironment:
         reward_type = "default" if self.reward_function is None else str(self.reward_function)
         self.reward_calculator = RewardCalculator(
             reward_type=reward_type,
-            optimise_parameters=self.optimise_parameters,
+            optimise_parameters=self.get_parameter_names(),  # Use clean parameter names
             optimise_targets=self.optimise_targets,
             combine=self.combine, env=self
         )
@@ -300,7 +336,7 @@ class BaseCoatingEnvironment:
         
         if objective_weights is not None:
             weights = {
-                key:objective_weights[i] for i,key in enumerate(self.optimise_parameters)
+                key:objective_weights[i] for i,key in enumerate(self.get_parameter_names())
             }
         else:
             weights=None
@@ -310,9 +346,24 @@ class BaseCoatingEnvironment:
                 thermal_noise=new_thermal_noise,
                 thickness=new_total_thickness,
                 absorption=new_E_integrated,
-                weights=weights
+                weights=weights,
+                expert_constraints=self.current_expert_constraints,
+                env=self
             )
         return total_reward, vals, rewards
+    
+    def set_expert_constraints(self, constraints: Dict[str, float]):
+        """
+        Set expert constraints for adaptive constraint specialization.
+        
+        Args:
+            constraints: Dict mapping parameter names to target reward values
+        """
+        self.current_expert_constraints = constraints
+    
+    def clear_expert_constraints(self):
+        """Clear expert constraints."""
+        self.current_expert_constraints = None
     
     def update_state(self, current_state, thickness, material):
         """new state is the current action choice
@@ -427,7 +478,7 @@ class BaseCoatingEnvironment:
         self.reward_function = reward_type
         self.reward_calculator = RewardCalculator(
             reward_type=reward_type,
-            optimise_parameters=self.optimise_parameters,
+            optimise_parameters=self.get_parameter_names(),  # Use clean parameter names
             optimise_targets=self.optimise_targets,
             combine=self.combine
         )

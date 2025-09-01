@@ -280,7 +280,14 @@ class PCHPPO:
                             value_hidden_size, n_discrete_layers, n_continuous_layers, n_value_layers,
                             lower_bound, upper_bound, include_layer_number, activation_function,
                             include_material_in_policy):
-        """Create Mixture of Experts policy and value networks (current and old versions)."""
+        """Create Mixture of Experts policy networks with shared value network (current and old versions).
+        
+        Note: Uses a single shared ValueNetwork instead of MoEValueNetwork for simplified value estimation.
+        The policy networks remain as MoE (multiple experts), but the value network is shared across all experts.
+        """
+        # Import standard ValueNetwork for shared value network
+        from coatopt.algorithms.hppo.core.networks.policy_networks import ValueNetwork
+        
         for i in range(2):
             suffix = "" if i == 0 else "_old"
             
@@ -310,16 +317,11 @@ class PCHPPO:
                 use_hyper_networks=self.hyper_networks
             ))
             
-            # MoE Value network
-            setattr(self, f"value{suffix}", MoEValueNetwork(
+            # Shared Value network (standard ValueNetwork, not MoE)
+            setattr(self, f"value{suffix}", ValueNetwork(
                 self.pre_output_dim, value_hidden_size, n_layers=n_value_layers,
                 include_layer_number=include_layer_number, activation=activation_function,
-                n_objectives=self.num_objectives, n_experts=self.moe_n_experts,
-                expert_specialization=self.moe_expert_specialization,
-                gate_hidden_dim=self.moe_gate_hidden_dim,
-                gate_temperature=self.moe_gate_temperature,
-                load_balancing_weight=self.moe_load_balancing_weight,
-                use_hyper_networks=self.hyper_networks
+                n_objectives=self.num_objectives, use_hyper_networks=self.hyper_networks
             ))
 
         # Copy parameters to old networks
@@ -540,7 +542,9 @@ class PCHPPO:
         
         # Get state value
         if self.use_mixture_of_experts:
-            state_value, value_aux = self.value(pre_output_v, layer_number, objective_weights=objective_weights)
+            # With shared value network, we still only get a single value (no aux info from value network)
+            state_value = self.value(pre_output_v, layer_number, objective_weights=objective_weights)
+            value_aux = None  # No auxiliary info from shared value network
         else:
             state_value = self.value(pre_output_v, layer_number, objective_weights=objective_weights)
             value_aux = None

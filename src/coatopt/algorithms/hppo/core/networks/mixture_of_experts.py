@@ -89,6 +89,10 @@ class MixtureOfExpertsBase(nn.Module):
         # Define expert specialization regions
         self.expert_regions = self._define_expert_regions()
         
+        # Initialize constraint targets (for adaptive_constraints mode)
+        self.constraint_targets = {}
+        self.constraint_penalties = {}  # Will store constraint penalty weights
+        
     def _define_expert_regions(self) -> List[torch.Tensor]:
         """
         Define weight regions that each expert should specialize in.
@@ -98,9 +102,11 @@ class MixtureOfExpertsBase(nn.Module):
             return self._generate_sobol_sequence()
         elif self.expert_specialization == "random":
             return self._generate_random_regions()
+        elif self.expert_specialization == "adaptive_constraints":
+            return self._generate_adaptive_constraint_regions()
         else:
             raise ValueError(f"Unknown expert specialization: {self.expert_specialization}. "
-                           f"Valid options are: 'sobol_sequence', 'random'")
+                           f"Valid options are: 'sobol_sequence', 'random', 'adaptive_constraints'")
     
     def _generate_sobol_sequence(self) -> List[torch.Tensor]:
         """
@@ -161,6 +167,132 @@ class MixtureOfExpertsBase(nn.Module):
             
         return regions
     
+    def _generate_adaptive_constraint_regions(self) -> List[torch.Tensor]:
+        """
+        Generate expert regions for adaptive constraint-based specialization.
+        
+        Phase 1 (initial): Pure objective experts + balanced expert
+        Phase 2 (adaptive): After reward history analysis, adds constraint experts
+        
+        Expert allocation:
+        - First n_objectives experts: Pure specialists (one per objective)
+        - Middle experts: Constraint specialists (fixed reward targets)
+        - Last expert: Balanced multi-objective
+        """
+        regions = []
+        
+        # Phase 1: Pure objective experts
+        for i in range(self.n_objectives):
+            weights = np.zeros(self.n_objectives)
+            weights[i] = 1.0  # Pure specialist for objective i
+            regions.append(torch.tensor(weights, dtype=torch.float32))
+        
+        # Calculate remaining experts after pure specialists and balanced expert
+        remaining_experts = self.n_experts - self.n_objectives - 1
+        
+        if remaining_experts > 0:
+            # Phase 1: Fill with equal weight regions (will be updated in Phase 2)
+            # Each constraint expert gets equal weights initially
+            for _ in range(remaining_experts):
+                weights = np.ones(self.n_objectives) / self.n_objectives
+                regions.append(torch.tensor(weights, dtype=torch.float32))
+        
+        # Last expert: Balanced multi-objective
+        balanced_weights = np.ones(self.n_objectives) / self.n_objectives
+        regions.append(torch.tensor(balanced_weights, dtype=torch.float32))
+        
+        return regions
+    
+    def update_constraint_expert_regions(self, reward_histories: Dict[str, List[float]], n_constraint_experts_per_objective: int = 2):
+        """
+        Update expert regions for constraint-based specialization after Phase 1 training.
+        
+        Args:
+            reward_histories: Dict mapping objective names to reward history lists
+            n_constraint_experts_per_objective: Number of constraint experts per objective
+        """
+        if self.expert_specialization != "adaptive_constraints":
+            return
+            
+        # Validate we have enough experts
+        required_experts = self.n_objectives + (self.n_objectives * n_constraint_experts_per_objective) + 1
+        if self.n_experts < required_experts:
+            print(f"Warning: Need at least {required_experts} experts for constraint specialization, "
+                  f"but only have {self.n_experts}. Using available experts.")
+            n_constraint_experts_per_objective = max(1, (self.n_experts - self.n_objectives - 1) // self.n_objectives)
+        
+        # Analyze reward histories to determine constraint targets
+        constraint_targets = self._analyze_reward_histories(reward_histories, n_constraint_experts_per_objective)
+        
+        # Update expert regions
+        regions = []
+        expert_idx = 0
+        
+        # Pure objective experts (unchanged)
+        for i in range(self.n_objectives):
+            weights = np.zeros(self.n_objectives)
+            weights[i] = 1.0
+            regions.append(torch.tensor(weights, dtype=torch.float32))
+            expert_idx += 1
+        
+        # Constraint experts
+        objective_names = list(constraint_targets.keys())
+        for obj_idx, obj_name in enumerate(objective_names):
+            for target_reward in constraint_targets[obj_name]:
+                if expert_idx >= self.n_experts - 1:  # Save last slot for balanced expert
+                    break
+                    
+                # Create constraint expert: fix obj_name at target_reward, optimize others
+                # For now, use equal weights (actual constraints handled in reward function)
+                weights = np.ones(self.n_objectives) / self.n_objectives
+                regions.append(torch.tensor(weights, dtype=torch.float32))
+                expert_idx += 1
+        
+        # Last expert: Balanced multi-objective
+        if expert_idx < self.n_experts:
+            balanced_weights = np.ones(self.n_objectives) / self.n_objectives
+            regions.append(torch.tensor(balanced_weights, dtype=torch.float32))
+        
+        # Update the expert regions
+        self.expert_regions = regions
+        
+        # Store constraint targets for use in reward computation
+        self.constraint_targets = constraint_targets
+        
+    def _analyze_reward_histories(self, reward_histories: Dict[str, List[float]], n_targets_per_objective: int) -> Dict[str, List[float]]:
+        """
+        Analyze reward histories to determine constraint targets.
+        
+        Args:
+            reward_histories: Dict mapping objective names to reward history lists  
+            n_targets_per_objective: Number of constraint targets per objective
+            
+        Returns:
+            Dict mapping objective names to list of target reward values
+        """
+        constraint_targets = {}
+        
+        for obj_name, rewards in reward_histories.items():
+            if len(rewards) == 0:
+                continue
+                
+            # Get min and max from history
+            min_reward = min(rewards)
+            max_reward = max(rewards)
+            
+            # Create equally spaced targets between min and max
+            if n_targets_per_objective == 1:
+                targets = [(min_reward + max_reward) / 2]
+            else:
+                targets = []
+                for i in range(n_targets_per_objective):
+                    target = min_reward + (i + 1) * (max_reward - min_reward) / (n_targets_per_objective + 1)
+                    targets.append(target)
+            
+            constraint_targets[obj_name] = targets
+            
+        return constraint_targets
+
     def _stick_breaking_to_simplex(self, uniform_sample: np.ndarray) -> np.ndarray:
         """Convert uniform sample to simplex using stick-breaking construction."""
         # Stick-breaking: convert (n-1) uniform variables to n simplex coordinates
@@ -212,6 +344,46 @@ class MixtureOfExpertsBase(nn.Module):
         
         return specialization_loss
     
+    def get_expert_constraints(self, expert_idx: int) -> Dict[str, float]:
+        """
+        Get constraint targets for a specific expert.
+        
+        Args:
+            expert_idx: Index of the expert
+            
+        Returns:
+            Dict mapping objective names to constraint target rewards (empty if no constraints)
+        """
+        if self.expert_specialization != "adaptive_constraints" or not hasattr(self, 'constraint_targets'):
+            return {}
+        
+        # Pure objective experts (first n_objectives) have no constraints
+        if expert_idx < self.n_objectives:
+            return {}
+            
+        # Balanced expert (last one) has no constraints
+        if expert_idx == self.n_experts - 1:
+            return {}
+            
+        # Constraint experts
+        constraint_expert_idx = expert_idx - self.n_objectives
+        objective_names = list(self.constraint_targets.keys())
+        
+        # Map constraint expert index to objective and target
+        targets_per_obj = len(next(iter(self.constraint_targets.values()))) if self.constraint_targets else 0
+        if targets_per_obj == 0:
+            return {}
+            
+        obj_idx = constraint_expert_idx // targets_per_obj
+        target_idx = constraint_expert_idx % targets_per_obj
+        
+        if obj_idx < len(objective_names):
+            obj_name = objective_names[obj_idx]
+            if target_idx < len(self.constraint_targets[obj_name]):
+                return {obj_name: self.constraint_targets[obj_name][target_idx]}
+        
+        return {}
+
     def _get_expert_activation_mask(self, objective_weights: torch.Tensor, threshold: float = 0.5) -> torch.Tensor:
         """
         Determine which experts should be active based on objective weights.

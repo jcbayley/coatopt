@@ -487,13 +487,23 @@ class TrainingPlotManager:
         """Plot standard 2D Pareto front for CLI mode."""
         ax = self.pareto_fig.add_subplot(1, 1, 1)
         
-        # Plot background points
+        # Plot background points with training progression gradient
         if best_points is not None and len(best_points) > 0:
             try:
                 best_points_array = np.array(best_points)
                 if len(best_points_array.shape) == 2 and best_points_array.shape[1] >= 2:
-                    ax.scatter(best_points_array[:, 0], best_points_array[:, 1],
-                             c='lightblue', alpha=0.3, s=10, label='All Solutions')
+                    # Create color gradient based on order (training progression)
+                    n_points = len(best_points_array)
+                    if n_points > 1:
+                        # Create colormap from blue (early) to red (late)
+                        colors = plt.cm.coolwarm(np.linspace(0, 1, n_points))
+                        ax.scatter(best_points_array[:, 0], best_points_array[:, 1],
+                                 c=colors, alpha=0.6, s=8, 
+                                 label='All Solutions (Blue→Red: Training Progression)')
+                    else:
+                        # Single point case
+                        ax.scatter(best_points_array[:, 0], best_points_array[:, 1],
+                                 c='lightblue', alpha=0.3, s=10, label='All Solutions')
             except Exception as e:
                 print(f"Error plotting background points: {e}")
         
@@ -537,13 +547,23 @@ class TrainingPlotManager:
         self.pareto_ax = pareto_ax
         self.coating_ax = coating_ax
         
-        # Plot background points
+        # Plot background points with training progression gradient
         if best_points is not None and len(best_points) > 0:
             try:
                 best_points_array = np.array(best_points)
                 if len(best_points_array.shape) == 2 and best_points_array.shape[1] >= 2:
-                    pareto_ax.scatter(best_points_array[:, 0], best_points_array[:, 1],
-                                    c='lightblue', alpha=0.3, s=10, label='All Solutions')
+                    # Create color gradient based on order (training progression)
+                    n_points = len(best_points_array)
+                    if n_points > 1:
+                        # Create colormap from blue (early) to red (late)
+                        colors = plt.cm.coolwarm(np.linspace(0, 1, n_points))
+                        pareto_ax.scatter(best_points_array[:, 0], best_points_array[:, 1],
+                                        c=colors, alpha=0.6, s=8, 
+                                        label='All Solutions (Blue→Red: Training Progression)')
+                    else:
+                        # Single point case
+                        pareto_ax.scatter(best_points_array[:, 0], best_points_array[:, 1],
+                                        c='lightblue', alpha=0.3, s=10, label='All Solutions')
             except Exception as e:
                 print(f"Error plotting background points: {e}")
         
@@ -813,13 +833,23 @@ class TrainingPlotManager:
                     
                 ax = self.pareto_fig.add_subplot(n_rows, n_cols, pair_idx + 1)
                 
-                # Plot background points
+                # Plot background points with training progression gradient
                 if best_points is not None and len(best_points) > 0:
                     try:
                         best_points_array = np.array(best_points)
                         if best_points_array.shape[1] > max(i, j):
-                            ax.scatter(best_points_array[:, i], best_points_array[:, j],
-                                     c='lightblue', alpha=0.3, s=5, label='All Solutions')
+                            # Create color gradient based on order (training progression)
+                            n_points = len(best_points_array)
+                            if n_points > 1:
+                                # Create colormap from blue (early) to red (late)
+                                colors = plt.cm.coolwarm(np.linspace(0, 1, n_points))
+                                ax.scatter(best_points_array[:, i], best_points_array[:, j],
+                                         c=colors, alpha=0.6, s=4, 
+                                         label='All Solutions (Blue→Red: Training)')
+                            else:
+                                # Single point case
+                                ax.scatter(best_points_array[:, i], best_points_array[:, j],
+                                         c='lightblue', alpha=0.3, s=5, label='All Solutions')
                     except:
                         pass
                 

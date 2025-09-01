@@ -143,10 +143,15 @@ class NetworkConfig(BaseConfig):
     # Mixture of Experts configuration
     use_mixture_of_experts: bool = False
     moe_n_experts: int = 5
-    moe_expert_specialization: str = "sobol_sequence"  # "sobol_sequence" or "random"
+    moe_expert_specialization: str = "sobol_sequence"  # "sobol_sequence", "random", or "adaptive_constraints"
     moe_gate_hidden_dim: int = 64
     moe_gate_temperature: float = 1.0
     moe_load_balancing_weight: float = 0.01
+    
+    # Adaptive constraints configuration (for moe_expert_specialization = "adaptive_constraints")
+    moe_constraint_experts_per_objective: int = 2  # Number of constraint experts per objective
+    moe_constraint_penalty_weight: float = 100.0  # Penalty weight for constraint violations
+    moe_phase1_episodes: int = 1000  # Episodes to train pure experts before switching to constraints
 
 
 @dataclass

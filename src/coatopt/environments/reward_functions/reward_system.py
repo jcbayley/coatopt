@@ -4,7 +4,7 @@ Makes it easy to add new reward functions without modifying selectors.
 """
 import importlib
 import inspect
-from typing import Dict, Callable, Any, List, Optional
+from typing import Dict, Callable, Any, List, Optional, Tuple
 import numpy as np
 from collections import deque
 
@@ -125,7 +125,21 @@ class RewardCalculator:
             if param not in bounds:
                 continue
                 
+            # Expect bounds in [min, max] format from config
+            if not isinstance(bounds[param], (list, tuple)) or len(bounds[param]) != 2:
+                print(f"Warning: Expected [min, max] format for {param}, got: {bounds[param]}")
+                continue
+                
             min_bound, max_bound = bounds[param]
+            
+            # Ensure bounds are numeric
+            try:
+                min_bound = float(min_bound)
+                max_bound = float(max_bound)
+            except (ValueError, TypeError):
+                print(f"Warning: Non-numeric bounds for {param}: min={min_bound}, max={max_bound}")
+                continue
+                
             reward_values = []
             
             # Test at min and max bounds only (rewards are monotonic)
@@ -145,7 +159,7 @@ class RewardCalculator:
                         optimise_targets={param: self.optimise_targets.get(param, test_value)},
                         weights={param: 1.0},
                         env=env,
-                        **self.kwargs
+                        **{k: v for k, v in self.kwargs.items() if k != 'env'}  # Exclude 'env' from kwargs
                     )
                     
                     if param in rewards:
@@ -215,8 +229,15 @@ class RewardCalculator:
                 
         return normalized_rewards
 
-    def calculate(self, reflectivity, thermal_noise, thickness, absorption, env=None, weights=None, **extra_kwargs):
-        """Calculate reward using the selected function with optional normalization."""
+    def calculate(self, reflectivity, thermal_noise, thickness, absorption, env=None, weights=None, 
+                  expert_constraints=None, constraint_penalty_weight=100.0, **extra_kwargs):
+        """
+        Calculate reward using the selected function with optional normalization and constraints.
+        
+        Args:
+            expert_constraints: Dict mapping parameter names to constraint target reward values
+            constraint_penalty_weight: Weight for constraint violation penalties
+        """
         # Merge initialization kwargs with call-time kwargs
         call_kwargs = {**self.kwargs, **extra_kwargs}
         
@@ -243,7 +264,8 @@ class RewardCalculator:
             **call_kwargs
         )
         
-        # Apply normalization if enabled and weights are provided
+        # Apply normalization first (always if enabled)
+        normalized_rewards = {}
         if self.use_reward_normalization and weights is not None:
             # Extract individual rewards from the rewards dict
             individual_rewards = {param: rewards.get(param, 0.0) for param in self.optimise_parameters}
@@ -251,15 +273,66 @@ class RewardCalculator:
             # Normalize individual rewards
             normalized_rewards = self._normalize_rewards(individual_rewards)
             
-            # Recompute total reward using normalized values and weights
-            total_reward = sum(weights.get(param, 0.0) * normalized_rewards.get(param, 0.0) 
-                             for param in self.optimise_parameters)
-            
-            # Update rewards dict with normalized values (optional - for debugging/logging)
+            # Update rewards dict with normalized values (for debugging/logging)
             for param in self.optimise_parameters:
                 rewards[f"{param}_normalized"] = normalized_rewards[param]
+        else:
+            # No normalization - use original rewards
+            normalized_rewards = {param: rewards.get(param, 0.0) for param in self.optimise_parameters}
+        
+        # Apply constraints if provided (to normalized rewards)
+        if expert_constraints:
+            total_reward, rewards = self._apply_expert_constraints(
+                total_reward, rewards, expert_constraints, constraint_penalty_weight, normalized_rewards
+            )
+        else:
+            # No constraints - use standard weighted sum of normalized rewards
+            if weights is not None:
+                total_reward = sum(weights.get(param, 0.0) * normalized_rewards.get(param, 0.0) 
+                                 for param in self.optimise_parameters)
         
         return total_reward, vals, rewards
+    
+    def _apply_expert_constraints(self, total_reward: float, rewards: Dict[str, float], 
+                                  expert_constraints: Dict[str, float], 
+                                  constraint_penalty_weight: float = 100.0,
+                                  normalized_rewards: Dict[str, float] = None) -> Tuple[float, Dict[str, float]]:
+        """
+        Apply expert constraints to modify reward calculation.
+        
+        For constrained objectives: Apply large penalty for deviation from target reward
+        For unconstrained objectives: Use normalized reward contribution
+        
+        Args:
+            total_reward: Original total reward
+            rewards: Dict of individual parameter rewards
+            expert_constraints: Dict mapping parameter names to target reward values
+            constraint_penalty_weight: Weight for constraint violation penalties
+            normalized_rewards: Dict of normalized reward values to use for unconstrained params
+            
+        Returns:
+            Tuple of (modified_total_reward, updated_rewards_dict)
+        """
+        if normalized_rewards is None:
+            normalized_rewards = {param: rewards.get(param, 0.0) for param in self.optimise_parameters}
+            
+        constrained_reward = 0.0
+        updated_rewards = rewards.copy()
+        
+        for param in self.optimise_parameters:
+            normalized_reward = normalized_rewards.get(param, 0.0)
+            
+            if param in expert_constraints:
+                # This parameter is constrained - apply penalty for deviation from target
+                target_reward = expert_constraints[param]
+                constraint_penalty = -abs(normalized_reward - target_reward) * constraint_penalty_weight
+                updated_rewards[f"{param}_constraint_penalty"] = constraint_penalty
+                constrained_reward += constraint_penalty
+            else:
+                # This parameter is unconstrained - use normalized reward
+                constrained_reward += normalized_reward
+        
+        return constrained_reward, updated_rewards
 
 
 # Decorator for easy reward function registration

@@ -195,9 +195,9 @@ optimise_targets = {
 
 # Optional: Specify objective bounds for reward normalization
 objective_bounds = {
-    "reflectivity": {"min": 1e-6, "max": 1e-1},
-    "absorption": {"min": 1e-4, "max": 1000.0},
-    "thermal_noise": {"min": 1e-25, "max": 1e-15}
+    "reflectivity": [1e-6, 1e-1],
+    "absorption": [1e-4, 1000.0],
+    "thermal_noise": [1e-25, 1e-15]
 }
 ```
 
@@ -208,7 +208,7 @@ Objective bounds define the expected range for each optimization parameter and a
 - **Optimization constraints**: Helps the algorithm understand the feasible parameter space
 - **Default behavior**: If not specified, reward functions set default bounds automatically
 
-The bounds use the format: `{"parameter": {"min": min_value, "max": max_value}}`
+The bounds use the format: `{"parameter": [min_value, max_value]}`
 
 ## Model Types
 

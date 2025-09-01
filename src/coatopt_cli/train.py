@@ -103,9 +103,16 @@ class CommandLineTrainer:
                 output_dir=self.config.general.root_dir,
                 ui_mode=False
             )
-            target_list = [self.config.data.optimise_targets[param] for param in self.config.data.optimise_parameters]
-            design_list = [self.config.data.design_criteria[param] for param in self.config.data.optimise_parameters]
-            self.plot_manager.set_objective_info(self.config.data.optimise_parameters, target_list, design_list)
+            # Extract clean parameter names for lookups in targets/criteria dicts
+            if hasattr(self.env, 'get_parameter_names'):
+                param_names = self.env.get_parameter_names()
+            else:
+                # Fallback: assume no direction suffixes in legacy configs
+                param_names = self.config.data.optimise_parameters
+                
+            target_list = [self.config.data.optimise_targets[param] for param in param_names]
+            design_list = [self.config.data.design_criteria[param] for param in param_names]
+            self.plot_manager.set_objective_info(param_names, target_list, design_list)
         
         # Create callbacks for progress reporting
         callbacks = create_cli_callbacks(verbose=self.verbose, plot_manager=self.plot_manager)

@@ -10,11 +10,11 @@ import queue
 import shutil
 from typing import List, Dict, Tuple, Any, Optional, Callable
 from dataclasses import dataclass
+from collections import defaultdict
 import numpy as np
 import torch
 import pandas as pd
 import matplotlib.pyplot as plt
-from pymoo.util.nds.non_dominated_sorting import NonDominatedSorting
 
 from coatopt.algorithms.config import HPPOConstants
 from coatopt.utils.plotting.training import make_reward_plot, make_val_plot, make_loss_plot, make_materials_plot
@@ -128,6 +128,7 @@ class UnifiedHPPOTrainer:
         self.pareto_front_rewards = np.array([])      # Pareto front in reward space
         self.pareto_front_values = np.array([])       # Pareto front in physical values space
         self.pareto_states = np.array([])             # States corresponding to Pareto front
+        self.pareto_state_rewards = np.array([])      # Rewards corresponding to Pareto states
         self.reference_point = np.array([])           # Reference point for hypervolume
         self.all_rewards = []                         # All rewards explored (HPPO only)
         self.all_values = []                          # All physical values explored (HPPO only)  
@@ -160,6 +161,9 @@ class UnifiedHPPOTrainer:
         else:
             self._initialize_training_state()
         
+        # Initialize adaptive MoE tracking (if using adaptive_constraints)
+        self._setup_adaptive_moe_tracking()
+        
         # Phase 2 Enhancement: Initialize weight archive for adaptive exploration
         self.weight_archive = WeightArchive(max_size=50)  # Track last 50 weight vectors
 
@@ -170,6 +174,46 @@ class UnifiedHPPOTrainer:
         if self.weight_network_save:
             self.network_weights_dir = os.path.join(self.root_dir, HPPOConstants.NETWORK_WEIGHTS_DIR)
             os.makedirs(self.network_weights_dir, exist_ok=True)
+
+    def _setup_adaptive_moe_tracking(self) -> None:
+        """Setup adaptive MoE tracking if using adaptive_constraints specialization."""
+        # Check if agent uses MoE with adaptive constraints
+        self.use_adaptive_moe = False
+        self.adaptive_moe_phase = 1
+        self.adaptive_moe_reward_histories = {}
+        self.adaptive_moe_phase_switched = False
+        
+        # Check if we're using MoE with adaptive constraints
+        if hasattr(self.agent, 'actor') and hasattr(self.agent.actor, 'use_mixture_of_experts'):
+            if self.agent.actor.use_mixture_of_experts:
+                # Check specialization type from discrete or continuous policy
+                specialization = None
+                if hasattr(self.agent.actor.discrete_policy, 'expert_specialization'):
+                    specialization = self.agent.actor.discrete_policy.expert_specialization
+                elif hasattr(self.agent.actor.continuous_policy, 'expert_specialization'):
+                    specialization = self.agent.actor.continuous_policy.expert_specialization
+                    
+                if specialization == "adaptive_constraints":
+                    self.use_adaptive_moe = True
+                    n_objectives = len(self.env.get_parameter_names())
+                    
+                    # Get configuration from agent's network config
+                    config = getattr(self.agent, 'config', None)
+                    if config and hasattr(config, 'network'):
+                        self.moe_phase1_episodes = getattr(config.network, 'moe_phase1_episodes', 1000)
+                        self.moe_constraint_experts_per_obj = getattr(config.network, 'moe_constraint_experts_per_objective', 2)
+                        self.moe_constraint_penalty_weight = getattr(config.network, 'moe_constraint_penalty_weight', 100.0)
+                    else:
+                        # Fallback defaults
+                        self.moe_phase1_episodes = 1000
+                        self.moe_constraint_experts_per_obj = 2
+                        self.moe_constraint_penalty_weight = 100.0
+                    
+                    # Initialize reward histories for each objective
+                    for param in self.env.get_parameter_names():
+                        self.adaptive_moe_reward_histories[param] = []
+                    
+                    print(f"Adaptive MoE enabled: Phase 1 will run for {self.moe_phase1_episodes} episodes")
 
     def _initialize_training_state(self) -> None:
         """Initialize training state for new training run."""
@@ -191,6 +235,7 @@ class UnifiedHPPOTrainer:
             self.pareto_front_rewards = np.array([])
             self.pareto_front_values = np.array([])
             self.pareto_states = np.array([])
+            self.pareto_state_rewards = np.array([])
             self.reference_point = np.array([])
             self.all_rewards = []
             self.all_values = []
@@ -233,6 +278,7 @@ class UnifiedHPPOTrainer:
             self.pareto_front_rewards = pareto_data.get('pareto_front_rewards', np.array([]))
             self.pareto_front_values = pareto_data.get('pareto_front_values', np.array([]))
             self.pareto_states = pareto_data.get('pareto_states', np.array([]))
+            self.pareto_state_rewards = pareto_data.get('pareto_state_rewards', self.pareto_front_rewards)  # Fallback to pareto_front_rewards
             self.reference_point = pareto_data.get('reference_point', np.array([]))
             self.all_rewards = pareto_data.get('all_rewards', np.array([])).tolist() if len(pareto_data.get('all_rewards', [])) > 0 else []
             self.all_values = pareto_data.get('all_values', np.array([])).tolist() if len(pareto_data.get('all_values', [])) > 0 else []
@@ -268,8 +314,8 @@ class UnifiedHPPOTrainer:
             vals_dict: Physical values for this state
         """
         # Extract reward and value vectors for optimized parameters
-        reward_point = [rewards_dict.get(param, 0.0) for param in self.env.optimise_parameters]
-        value_point = [vals_dict.get(param, 0.0) for param in self.env.optimise_parameters]
+        reward_point = [rewards_dict.get(param, 0.0) for param in self.env.get_parameter_names()]
+        value_point = [vals_dict.get(param, 0.0) for param in self.env.get_parameter_names()]
         
         # Add to all explored points (HPPO only - genetic doesn't track all points)
         self.all_rewards.append(reward_point)
@@ -279,6 +325,43 @@ class UnifiedHPPOTrainer:
         # Update current Pareto front (this could be done periodically for efficiency)
         if len(self.all_rewards) > 1:
             self._recompute_pareto_front()
+
+    def _compute_pareto_front(self, data_array: np.ndarray, data_type: str = 'rewards') -> Tuple[np.ndarray, np.ndarray]:
+        """
+        Unified Pareto front computation using the environment's method.
+        
+        Args:
+            data_array: Array of points (n_points, n_objectives)
+            data_type: Either 'rewards' (all maximized) or 'values' (mixed optimization from config)
+            
+        Returns:
+            Tuple of (pareto_indices, pareto_points)
+        """
+        if len(data_array) == 0:
+            return np.array([]), np.array([])
+            
+        if not hasattr(self.env, 'compute_pareto_front'):
+            raise ValueError("Environment does not have compute_pareto_front method")
+            
+        # Use environment's method with appropriate optimization approach
+        if data_type == 'rewards':
+            # Rewards are all maximized - use legacy maximize=True
+            pareto_points = self.env.compute_pareto_front(data_array, maximize=True)
+        elif data_type == 'values':
+            # Values use mixed optimization directions from config - use new maximize=None
+            pareto_points = self.env.compute_pareto_front(data_array, maximize=None)
+        else:
+            raise ValueError(f"data_type must be 'rewards' or 'values', got {data_type}")
+        
+        # Find indices of the Pareto points in the original array
+        pareto_indices = []
+        for pf_point in pareto_points:
+            distances = np.sum((data_array - pf_point) ** 2, axis=1)
+            closest_idx = np.argmin(distances)
+            if closest_idx not in pareto_indices:
+                pareto_indices.append(closest_idx)
+                
+        return np.array(pareto_indices), pareto_points
 
     def _recompute_pareto_front(self) -> None:
         """
@@ -292,47 +375,40 @@ class UnifiedHPPOTrainer:
         all_values_array = np.array(self.all_values)
         all_states_array = np.array(self.all_states)
         
-        # Use environment's Pareto computation or NonDominatedSorting
+        # Use environment's Pareto computation method
         try:
-            # Try using environment method first
-            if hasattr(self.env, 'compute_pareto_front'):
-                pareto_front_rewards = self.env.compute_pareto_front(all_rewards_array)
-                
-                # Find indices of Pareto points
-                pareto_indices = []
-                for pf_point in pareto_front_rewards:
-                    distances = np.sum((all_rewards_array - pf_point) ** 2, axis=1)
-                    closest_idx = np.argmin(distances)
-                    if closest_idx not in pareto_indices:
-                        pareto_indices.append(closest_idx)
-                        
-            else:
-                # Fallback to pymoo NonDominatedSorting
-                nds = NonDominatedSorting()
-                fronts = nds.do(-all_rewards_array)  # Minimize (negate for maximization)
-                
-                if len(fronts) > 0:
-                    pareto_indices = fronts[0]
-                    pareto_front_rewards = all_rewards_array[pareto_indices]
-                else:
-                    pareto_indices = []
-                    pareto_front_rewards = np.array([])
+            # Compute reward Pareto front (all maximized) - this is the primary Pareto front
+            reward_pareto_indices, reward_pareto_points = self._compute_pareto_front(all_rewards_array, data_type='rewards')
             
-            # Update class attributes
-            if len(pareto_indices) > 0:
-                self.pareto_front_rewards = pareto_front_rewards if len(pareto_front_rewards) > 0 else all_rewards_array[pareto_indices]
-                self.pareto_front_values = all_values_array[pareto_indices]
-                self.pareto_states = all_states_array[pareto_indices]
+            if len(reward_pareto_points) > 0:
+                # Ensure all arrays have same length by using the same indices
+                self.pareto_front_rewards = reward_pareto_points
+                self.pareto_states = all_states_array[reward_pareto_indices]
+                self.pareto_state_rewards = reward_pareto_points  # Same as pareto_front_rewards
                 
-                # Update reference point
-                self.reference_point = np.max(self.pareto_front_rewards, axis=0) * 1.1
+                # Get corresponding value points for the same Pareto indices
+                self.pareto_front_values = all_values_array[reward_pareto_indices]
                 
-                # Sync to environment for compatibility
-                self.env.pareto_front = self.pareto_front_rewards
-                self.env.reference_point = self.reference_point
+            else:
+                self.pareto_front_rewards = np.array([])
+                self.pareto_front_values = np.array([])
+                self.pareto_states = np.array([])
+                self.pareto_state_rewards = np.array([])
                 
         except Exception as e:
-            print(f"Warning: Failed to recompute Pareto front: {e}")
+            print(f"Warning: Failed to compute Pareto front: {e}")
+            self.pareto_front_rewards = np.array([])
+            self.pareto_front_values = np.array([])
+            self.pareto_states = np.array([])
+            self.pareto_state_rewards = np.array([])
+            
+        # Update reference point if we have rewards
+        if hasattr(self, 'pareto_front_rewards') and len(self.pareto_front_rewards) > 0:
+            self.reference_point = np.max(self.pareto_front_rewards, axis=0) * 1.1
+            
+            # Sync to environment for compatibility
+            self.env.pareto_front = self.pareto_front_rewards
+            self.env.reference_point = self.reference_point
 
     def _load_legacy_training_state(self) -> None:
         """Load training state from legacy scattered files."""
@@ -382,7 +458,7 @@ class UnifiedHPPOTrainer:
                 print(f"Loaded Pareto front with {len(pareto_front)} points")
             else:
                 print("No Pareto front file found, initializing empty Pareto front")
-                self.env.pareto_front = np.empty((0, len(self.env.optimise_parameters)))
+                self.env.pareto_front = np.empty((0, len(self.env.get_parameter_names())))
             
             # Load saved points and data if they exist
             if os.path.exists(all_points_file):
@@ -404,7 +480,7 @@ class UnifiedHPPOTrainer:
         except Exception as e:
             print(f"Warning: Failed to load Pareto front data: {e}")
             print("Initializing empty Pareto front")
-            self.env.pareto_front = np.empty((0, len(self.env.optimise_parameters)))
+            self.env.pareto_front = np.empty((0, len(self.env.get_parameter_names())))
             self.env.saved_points = []
             self.env.saved_data = []
 
@@ -529,7 +605,7 @@ class UnifiedHPPOTrainer:
                     elif hasattr(self.env, 'optimise_parameters'):
                         # Map values to parameter names
                         consolidation_episode_data['objectives'] = {
-                            param: vals[i] for i, param in enumerate(self.env.optimise_parameters)
+                            param: vals[i] for i, param in enumerate(self.env.get_parameter_names())
                         }
                 except:
                     pass  # Skip consolidation for this episode if objectives can't be extracted
@@ -610,6 +686,89 @@ class UnifiedHPPOTrainer:
         """Get initial maximum reward from existing metrics."""
         return np.max(self.metrics["reward"]) if len(self.metrics) > 0 else -np.inf
 
+    def _handle_adaptive_moe_step(self, episode: int, rewards: Dict, objective_weights_tensor, action_output):
+        """
+        Handle adaptive MoE logic during training step.
+        
+        Args:
+            episode: Current episode number
+            rewards: Reward dictionary from environment step
+            objective_weights_tensor: Current objective weights
+            action_output: Action output from agent (contains expert info if MoE)
+        """
+        # Phase 1: Collect reward histories from pure experts
+        if self.adaptive_moe_phase == 1:
+            # Extract expert index if available (from MoE action output)
+            expert_idx = None
+            if len(action_output) > 11:  # MoE output includes additional info
+                expert_aux = action_output[11]  # MoE auxiliary information
+                if 'selected_expert' in expert_aux:
+                    expert_idx = expert_aux['selected_expert']
+            
+            # Collect reward history from pure objective experts only
+            if expert_idx is not None and expert_idx < len(self.env.get_parameter_names()):
+                objective_name = self.env.get_parameter_names()[expert_idx]
+                if objective_name in rewards and objective_name in self.adaptive_moe_reward_histories:
+                    self.adaptive_moe_reward_histories[objective_name].append(rewards[objective_name])
+                    
+            # Check if we should switch to Phase 2
+            if episode >= self.moe_phase1_episodes and not self.adaptive_moe_phase_switched:
+                self._switch_to_adaptive_moe_phase2(episode)
+                
+        # Phase 2: Apply expert constraints
+        elif self.adaptive_moe_phase == 2:
+            # Get expert constraints for current expert
+            expert_idx = None
+            if len(action_output) > 11:
+                expert_aux = action_output[11]
+                if 'selected_expert' in expert_aux:
+                    expert_idx = expert_aux['selected_expert']
+            
+            if expert_idx is not None:
+                # Get constraints from MoE networks
+                constraints = None
+                if hasattr(self.agent.actor.discrete_policy, 'get_expert_constraints'):
+                    constraints = self.agent.actor.discrete_policy.get_expert_constraints(expert_idx)
+                elif hasattr(self.agent.actor.continuous_policy, 'get_expert_constraints'):
+                    constraints = self.agent.actor.continuous_policy.get_expert_constraints(expert_idx)
+                
+                # Apply constraints to environment for next step
+                if constraints:
+                    self.env.set_expert_constraints(constraints)
+                else:
+                    self.env.clear_expert_constraints()
+
+    def _switch_to_adaptive_moe_phase2(self, episode: int):
+        """Switch from Phase 1 to Phase 2 for adaptive MoE."""
+        print(f"\n=== Switching to Adaptive MoE Phase 2 at episode {episode} ===")
+        
+        # Log collected reward histories
+        for obj_name, history in self.adaptive_moe_reward_histories.items():
+            if history:
+                min_r, max_r = min(history), max(history)
+                avg_r = sum(history) / len(history)
+                print(f"  {obj_name}: {len(history)} samples, range=[{min_r:.3f}, {max_r:.3f}], avg={avg_r:.3f}")
+        
+        # Update MoE networks with constraint targets
+        networks_to_update = []
+        if hasattr(self.agent.actor, 'discrete_policy') and hasattr(self.agent.actor.discrete_policy, 'update_constraint_expert_regions'):
+            networks_to_update.append(self.agent.actor.discrete_policy)
+        if hasattr(self.agent.actor, 'continuous_policy') and hasattr(self.agent.actor.continuous_policy, 'update_constraint_expert_regions'):
+            networks_to_update.append(self.agent.actor.continuous_policy)
+        if hasattr(self.agent.actor, 'value_network') and hasattr(self.agent.actor.value_network, 'update_constraint_expert_regions'):
+            networks_to_update.append(self.agent.actor.value_network)
+        
+        for network in networks_to_update:
+            network.update_constraint_expert_regions(
+                dict(self.adaptive_moe_reward_histories),
+                self.moe_constraint_experts_per_obj
+            )
+        
+        # Switch to Phase 2
+        self.adaptive_moe_phase = 2
+        self.adaptive_moe_phase_switched = True
+        print("=== Phase 2 initialized ===\n")
+
     def _run_training_episode(self, episode: int) -> Tuple[Dict, Dict, float, np.ndarray]:
         """
         Run a single training episode with multiple environment rollouts.
@@ -670,7 +829,7 @@ class UnifiedHPPOTrainer:
         moe_aux_losses_accumulator = {}
         
         # Sample objective weights for this rollout
-        n_objectives = len(self.env.optimise_parameters)
+        n_objectives = len(self.env.get_parameter_names())
         
         # Get current Pareto front for adaptive weight strategies
         current_pareto_front = None
@@ -721,9 +880,13 @@ class UnifiedHPPOTrainer:
             # Scale continuous action to environment bounds
             action[1] = action[1] * (self.env.max_thickness - self.env.min_thickness) + self.env.min_thickness
             
-            # Take environment step
+            # Take environment step  
             next_state, rewards, done, finished, _, full_action, vals = self.env.step(action, objective_weights=objective_weights)
             reward = rewards["total_reward"]
+            
+            # Handle adaptive MoE if enabled
+            if self.use_adaptive_moe:
+                self._handle_adaptive_moe_step(episode, rewards, objective_weights_tensor, action_output)
             
             # Store experience in replay buffer
             self.agent.replay_buffer.update(
@@ -859,7 +1022,7 @@ class UnifiedHPPOTrainer:
         
         # Store objective weights (use last rollout's weights)
         objective_weights = episode_data['objective_weights']
-        objective_names = self.env.optimise_parameters if hasattr(self.env, 'optimise_parameters') else ['reflectivity', 'thermal_noise', 'absorption']
+        objective_names = self.env.get_parameter_names() if hasattr(self.env, 'get_parameter_names') else ['reflectivity', 'thermal_noise', 'absorption']
         
         for i, obj_name in enumerate(objective_names):
             if i < len(objective_weights):
@@ -921,6 +1084,7 @@ class UnifiedHPPOTrainer:
                 'pareto_front_rewards': self.pareto_front_rewards,
                 'pareto_front_values': self.pareto_front_values,
                 'pareto_states': self.pareto_states,
+                'pareto_state_rewards': self.pareto_front_rewards,  # Same as pareto_front_rewards for consistency
                 'reference_point': self.reference_point,
                 'all_rewards': np.array(self.all_rewards) if self.all_rewards else np.array([]),
                 'all_values': np.array(self.all_values) if self.all_values else np.array([]),
@@ -1051,7 +1215,7 @@ class UnifiedHPPOTrainer:
                     sol_vals[key].append(rewards[key])
 
         # Create Pareto front from objective values
-        vals = np.array([sol_vals[key] for key in self.env.optimise_parameters]).T
+        vals = np.array([sol_vals[key] for key in self.env.get_parameter_names()]).T
         
         pareto_front = self.env.compute_pareto_front(vals)
         
@@ -1100,7 +1264,7 @@ class UnifiedHPPOTrainer:
                     current_pareto_front = self.env.pareto_front
                 
                 objective_weights = sample_reward_weights(
-                    n_objectives=len(self.env.optimise_parameters),
+                    n_objectives=len(self.env.get_parameter_names()),
                     cycle_weights=getattr(self.env, 'cycle_weights', 'random'),
                     epoch=self.env.final_weight_epoch + 10,
                     final_weight_epoch=getattr(self.env, 'final_weight_epoch', 1000),
@@ -1198,7 +1362,7 @@ class UnifiedHPPOTrainer:
                 point = []
                 val_point = []
                 
-                for param in self.env.optimise_parameters:
+                for param in self.env.get_parameter_names():
                     if param in vals:
                         val = vals[param]
                         val_point.append(val)
@@ -1224,32 +1388,38 @@ class UnifiedHPPOTrainer:
             
             best_state_data.append(state)
         
-        # Recompute Pareto front
+        # Recompute Pareto front using unified method
         recomputed_pareto_front = []
         pareto_indices = []
         
         if len(best_vals_list) > 0:
             vals_array = np.array(best_vals_list)
             
-            # Create minimization objectives array
-            if hasattr(self.env, 'optimise_parameters') and len(self.env.optimise_parameters) > 1:
-                minimization_objectives = np.zeros_like(vals_array)
+            # Use the unified Pareto computation method
+            try:
+                pareto_indices, pareto_points = self._compute_pareto_front(vals_array, data_type='values')
                 
-                for i, param in enumerate(self.env.optimise_parameters):
-                    if param == 'reflectivity':
-                        minimization_objectives[:, i] = 1 - vals_array[:, i]  # Minimize 1-R
-                    else:
-                        minimization_objectives[:, i] = vals_array[:, i]  # Minimize as-is
-            else:
-                # Fallback to 2-objective case
-                minimization_objectives = np.column_stack([1 - vals_array[:, 0], vals_array[:, 1]])
-            
-            nds = NonDominatedSorting()
-            fronts = nds.do(minimization_objectives)
-            
-            if len(fronts) > 0 and len(fronts[0]) > 0:
-                pareto_indices = fronts[0]
-                recomputed_pareto_front = [best_points[i] for i in pareto_indices]
+                # Convert to expected format for UI
+                if len(pareto_points) > 0:
+                    # Transform pareto points for plotting (reflectivity -> 1-reflectivity for minimization display)
+                    for i, vals in enumerate(pareto_points):
+                        point = []
+                        if hasattr(self.env, 'get_parameter_names'):
+                            for j, param in enumerate(self.env.get_parameter_names()):
+                                if param == 'reflectivity':
+                                    point.append(1 - vals[j])  # Convert to 1-R for minimization display
+                                else:
+                                    point.append(vals[j])  # Other objectives use as-is
+                        else:
+                            # Fallback to 2-objective case
+                            point = [1 - vals[0], vals[1]]  # reflectivity -> 1-R, absorption as-is
+                        recomputed_pareto_front.append(point)
+                        
+            except Exception as e:
+                print(f"Warning: Failed to compute Pareto front in _generate_pareto_update: {e}")
+                # Fallback to empty result
+                pareto_indices = []
+                recomputed_pareto_front = []
         
         return {
             'type': 'pareto_data',
@@ -1268,7 +1438,7 @@ class UnifiedHPPOTrainer:
         
         ranges = {}
         pf = self.env.pareto_front
-        for i, param in enumerate(self.env.optimise_parameters):
+        for i, param in enumerate(self.env.get_parameter_names()):
             obj_values = [pt[i] for pt in pf]
             ranges[param] = (min(obj_values), max(obj_values))
         return ranges
@@ -1294,8 +1464,8 @@ class UnifiedHPPOTrainer:
             summary['pareto_front_size'] = len(self.env.pareto_front) if self.env.pareto_front is not None else 0
         if hasattr(self.env, 'saved_points'):
             summary['total_points_explored'] = len(self.env.saved_points)
-        if hasattr(self.env, 'optimise_parameters'):
-            summary['objectives_count'] = len(self.env.optimise_parameters)
+        if hasattr(self.env, 'get_parameter_names'):
+            summary['objectives_count'] = len(self.env.get_parameter_names())
             
         return summary
 
@@ -1440,9 +1610,9 @@ class UnifiedHPPOTrainer:
                     _, _, state, rewards, vals = state_data[:5]
                     
                     # Calculate expected front point from this state
-                    if hasattr(self.env, 'optimise_parameters'):
+                    if hasattr(self.env, 'get_parameter_names'):
                         expected_point = []
-                        for param in self.env.optimise_parameters:
+                        for param in self.env.get_parameter_names():
                             if param in vals:
                                 val = vals[param]
                                 if param == 'reflectivity':

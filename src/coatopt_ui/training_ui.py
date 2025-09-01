@@ -1146,13 +1146,23 @@ class TrainingMonitorUI:
 
     def plot_single_2d_pair(self, ax, pareto_front, best_points, i, j, obj_labels, obj_scales, episode, enable_click=False):
         """Plot a single 2D pair of objectives."""
-        # Plot all best points in background
+        # Plot all best points in background with training progression gradient
         if best_points is not None and len(best_points) > 0:
             try:
                 best_points_array = np.array(best_points)
                 if len(best_points_array.shape) == 2 and best_points_array.shape[1] > max(i, j):
-                    ax.scatter(best_points_array[:, i], best_points_array[:, j],
-                             c='lightblue', alpha=0.3, s=10, label='All Solutions')
+                    # Create color gradient based on order (training progression)
+                    n_points = len(best_points_array)
+                    if n_points > 1:
+                        # Create colormap from blue (early) to red (late)
+                        colors = plt.cm.coolwarm(np.linspace(0, 1, n_points))
+                        ax.scatter(best_points_array[:, i], best_points_array[:, j],
+                                 c=colors, alpha=0.6, s=8, 
+                                 label='All Solutions (Blue→Red: Training Progression)')
+                    else:
+                        # Single point case
+                        ax.scatter(best_points_array[:, i], best_points_array[:, j],
+                                 c='lightblue', alpha=0.3, s=10, label='All Solutions')
             except Exception as e:
                 print(f"Error plotting background points: {e}")
         
@@ -1257,9 +1267,18 @@ class TrainingMonitorUI:
                         else:
                             best_normalized[:, i] = 0.5
                     
-                    # Plot background lines
-                    for idx in range(len(best_normalized)):
-                        ax.plot(range(n_objectives), best_normalized[idx], 'b-', alpha=0.1, linewidth=0.5)
+                    # Plot background lines with training progression gradient
+                    n_points = len(best_normalized)
+                    if n_points > 1:
+                        # Create colormap from blue (early) to red (late)
+                        colors = plt.cm.coolwarm(np.linspace(0, 1, n_points))
+                        for idx in range(len(best_normalized)):
+                            ax.plot(range(n_objectives), best_normalized[idx], 
+                                   color=colors[idx], alpha=0.3, linewidth=0.5)
+                    else:
+                        # Single point case
+                        for idx in range(len(best_normalized)):
+                            ax.plot(range(n_objectives), best_normalized[idx], 'b-', alpha=0.1, linewidth=0.5)
             except Exception as e:
                 print(f"Error plotting background parallel coords: {e}")
         
@@ -1287,13 +1306,23 @@ class TrainingMonitorUI:
         
         # Use first 3 dimensions
         if pareto_front.shape[1] >= 3:
-            # Plot background points
+            # Plot background points with training progression gradient
             if best_points is not None and len(best_points) > 0:
                 try:
                     best_points_array = np.array(best_points)
                     if best_points_array.shape[1] >= 3:
-                        ax.scatter(best_points_array[:, 0], best_points_array[:, 1], best_points_array[:, 2],
-                                 c='lightblue', alpha=0.3, s=10, label='All Solutions')
+                        # Create color gradient based on order (training progression)
+                        n_points = len(best_points_array)
+                        if n_points > 1:
+                            # Create colormap from blue (early) to red (late)
+                            colors = plt.cm.coolwarm(np.linspace(0, 1, n_points))
+                            ax.scatter(best_points_array[:, 0], best_points_array[:, 1], best_points_array[:, 2],
+                                     c=colors, alpha=0.6, s=8, 
+                                     label='All Solutions (Blue→Red: Training Progression)')
+                        else:
+                            # Single point case
+                            ax.scatter(best_points_array[:, 0], best_points_array[:, 1], best_points_array[:, 2],
+                                     c='lightblue', alpha=0.3, s=10, label='All Solutions')
                 except Exception as e:
                     print(f"Error plotting 3D background: {e}")
             
