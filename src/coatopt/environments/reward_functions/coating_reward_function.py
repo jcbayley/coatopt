@@ -528,19 +528,31 @@ def reward_function_log_normalise_targets(reflectivity, thermal_noise, total_thi
     return total_reward, vals, rewards
 
 
-def reward_function_log_targets_limits(reflectivity, thermal_noise, total_thickness, absorption, optimise_parameters, optimise_targets, env, combine="product", neg_reward=-1e3, weights=None, use_air_penalty=True, air_penalty_weight=1.0,**kwargs):
-    """_summary_
+def reward_function_log_targets_limits(reflectivity, thermal_noise, total_thickness, absorption, optimise_parameters, optimise_targets, env, combine="product", neg_reward=-1e3, weights=None, use_air_penalty=True, air_penalty_weight=1.0, use_divergence_penalty=True, divergence_penalty_weight=1.0, **kwargs):
+    """Reward function with log-based normalization and optional divergence penalty.
+    
+    This function normalizes objective values based on their bounds and applies log scaling
+    for better numerical behavior. It supports an optional divergence penalty that encourages
+    both objectives to be high simultaneously, with penalty strength adjusted by the weight balance.
 
     Args:
-        reflectivity (_type_): _description_
-        thermal_noise (_type_): _description_
-        total_thickness (_type_): _description_
-        absorption (_type_): _description_
-        optimise_parameters (_type_): _description_
-        optimise_targets (_type_): _description_
+        reflectivity: Current reflectivity value
+        thermal_noise: Current thermal noise value  
+        total_thickness: Current coating thickness
+        absorption: Current absorption value
+        optimise_parameters: List of parameters to optimize
+        optimise_targets: Dict of target values for each parameter
+        env: Environment object containing objective bounds
+        combine: How to combine rewards ('sum', 'product', 'logproduct')
+        neg_reward: Reward value for invalid/NaN results
+        weights: Dict of weights for each parameter
+        use_air_penalty: Whether to apply air layer penalties
+        air_penalty_weight: Weight for air penalty
+        use_divergence_penalty: Whether to apply divergence penalty (for 2-objective problems)
+        divergence_penalty_weight: Weight for divergence penalty
 
     Returns:
-        _type_: _description_
+        tuple: (total_reward, vals_dict, rewards_dict)
     """
 
     vals = {
@@ -623,6 +635,33 @@ def reward_function_log_targets_limits(reflectivity, thermal_noise, total_thickn
             # Set the rewards dictionary with the normalized values
             rewards[key] = normed_vals[key]
 
+    # Calculate divergence penalty to encourage both rewards to be high
+    divergence_penalty = 0.0
+    if use_divergence_penalty and len(optimise_parameters) == 2:
+        # Only apply divergence penalty for 2-objective optimization
+        reward_values = [rewards[key] for key in optimise_parameters]
+        param_weights = [weights.get(key, 1.0) for key in optimise_parameters]
+        
+        # Only apply divergence penalty if both weights are significant (> 0.01)
+        # This prevents penalty when one objective has zero or very low weight
+        min_weight = min(param_weights)
+        if min_weight > 0.01:
+            # Calculate divergence as difference between individual rewards
+            max_reward = max(reward_values)
+            min_reward = min(reward_values)
+            divergence = max_reward - min_reward
+            
+            # Scale penalty by minimum weight - less penalty when one objective is less important
+            # This ensures that when weights are [1,0] or close to it, penalty is minimal
+            divergence_penalty = -divergence * min_weight * 0.5 * divergence_penalty_weight
+            
+            # Additional penalty if both rewards are very low (quality control)
+            if min_reward < 0.1:
+                divergence_penalty -= (0.1 - min_reward) * min_weight * divergence_penalty_weight
+        else:
+            # No penalty when one weight is effectively zero
+            divergence_penalty = 0.0
+
     if combine=="sum":
         total_reward = np.sum([rewards[key]*weights[key] for key in optimise_parameters])
     elif combine=="product":
@@ -632,6 +671,8 @@ def reward_function_log_targets_limits(reflectivity, thermal_noise, total_thickn
     else:
         raise ValueError(f"combine must be either 'sum' or 'product' not {combine}")
 
+    # Apply divergence penalty
+    total_reward += divergence_penalty
 
     # Add air penalty if enabled
     air_penalty = 0.0
@@ -654,6 +695,12 @@ def reward_function_log_targets_limits(reflectivity, thermal_noise, total_thickn
         #rewards["total_reward"] = neg_reward
         total_reward = neg_reward
 
+    # Store additional info in rewards dict for debugging
+    if use_divergence_penalty and len(optimise_parameters) == 2:
+        rewards["divergence_penalty"] = divergence_penalty
+    if use_air_penalty:
+        rewards["air_penalty"] = air_penalty
+    
     rewards["total_reward"] = total_reward
 
     return total_reward, vals, rewards
