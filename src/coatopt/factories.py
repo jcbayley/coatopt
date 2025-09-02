@@ -418,26 +418,11 @@ def create_genetic_environment(config: CoatingOptimisationConfig, materials: Dic
     Returns:
         Configured GeneticCoatingStack environment
     """
+    # Create environment with standard parameters (thickness_sigma will be handled by genetic environment)
     env = GeneticCoatingStack(
-        max_layers=config.data.n_layers,
-        min_thickness=config.data.min_thickness,
-        max_thickness=config.data.max_thickness,
+        config=config,
         materials=materials,
-        opt_init=False,
-        use_intermediate_reward=config.data.use_intermediate_reward,
-        reflectivity_reward_shape=config.data.reflectivity_reward_shape,
-        thermal_reward_shape=config.data.thermal_reward_shape,
-        absorption_reward_shape=config.data.absorption_reward_shape,
-        ignore_air_option=config.data.ignore_air_option,
-        ignore_substrate_option=config.data.ignore_substrate_option,
-        use_ligo_reward=config.data.use_ligo_reward,
-        optimise_parameters=config.data.optimise_parameters,
-        optimise_targets=config.data.optimise_targets,
-        include_random_rare_state=config.data.include_random_rare_state,
-        use_optical_thickness=config.data.use_optical_thickness,
         thickness_sigma=config.genetic.thickness_sigma,
-        combine=config.data.combine,
-        reward_function=config.data.reward_function,
     )
     return env
 

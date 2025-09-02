@@ -24,11 +24,16 @@ class GeneticCoatingStack(BaseCoatingEnvironment):
             **kwargs: Individual parameters (legacy approach), including:
                      thickness_sigma: Standard deviation for thickness mutations
         """
+        # Extract genetic-specific parameters before calling super()
+        genetic_params = {}
+        if 'thickness_sigma' in kwargs:
+            genetic_params['thickness_sigma'] = kwargs.pop('thickness_sigma')
+        
         # Initialize base environment with all standard parameters
         super().__init__(config, **kwargs)
         
         # Genetic-specific initialization
-        self._setup_genetic_specific_attributes(**kwargs)
+        self._setup_genetic_specific_attributes(**genetic_params)
 
     def _setup_genetic_specific_attributes(self, **kwargs):
         """Setup genetic algorithm specific attributes."""
