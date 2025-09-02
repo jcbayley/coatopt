@@ -528,7 +528,7 @@ def reward_function_log_normalise_targets(reflectivity, thermal_noise, total_thi
     return total_reward, vals, rewards
 
 
-def reward_function_log_targets_limits(reflectivity, thermal_noise, total_thickness, absorption, optimise_parameters, optimise_targets, env, combine="product", neg_reward=-1e3, weights=None, use_air_penalty=True, air_penalty_weight=1.0, use_divergence_penalty=True, divergence_penalty_weight=1.0, **kwargs):
+def reward_function_log_targets_limits(reflectivity, thermal_noise, total_thickness, absorption, optimise_parameters, optimise_targets, env, combine="product", neg_reward=-1e3, weights=None, use_air_penalty=True, air_penalty_weight=1.0, use_divergence_penalty=False, divergence_penalty_weight=1.0, **kwargs):
     """Reward function with log-based normalization and optional divergence penalty.
     
     This function normalizes objective values based on their bounds and applies log scaling
@@ -597,7 +597,7 @@ def reward_function_log_targets_limits(reflectivity, thermal_noise, total_thickn
     if "absorption" in optimise_parameters:
         log_absorption = (-np.log(np.abs(absorption-optimise_targets["absorption"])))
         rewards["absorption"] = log_absorption
-    """
+    
     normed_vals = {}
     for key in vals.keys():
         if key in optimise_parameters:
@@ -651,7 +651,7 @@ def reward_function_log_targets_limits(reflectivity, thermal_noise, total_thickn
             
             # Set the rewards dictionary with the normalized values
             rewards[key] = normed_vals[key]
-    """
+    
     # Calculate divergence penalty to encourage both rewards to be high
     divergence_penalty = 0.0
     if use_divergence_penalty and len(optimise_parameters) == 2:
@@ -678,7 +678,7 @@ def reward_function_log_targets_limits(reflectivity, thermal_noise, total_thickn
         else:
             # No penalty when one weight is effectively zero
             divergence_penalty = 0.0
-
+    
     if combine=="sum":
         total_reward = np.sum([rewards[key]*weights[key] for key in optimise_parameters])
     elif combine=="product":
