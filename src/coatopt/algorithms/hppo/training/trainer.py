@@ -67,6 +67,10 @@ class UnifiedHPPOTrainer:
         entropy_beta_end: float = 0.001,
         entropy_beta_decay_length: Optional[int] = None,
         entropy_beta_decay_start: int = 0,
+        entropy_beta_discrete_start: Optional[float] = None,
+        entropy_beta_discrete_end: Optional[float] = None,
+        entropy_beta_continuous_start: Optional[float] = None,
+        entropy_beta_continuous_end: Optional[float] = None,
         n_epochs_per_update: int = 10,
         use_obs: bool = True,
         scheduler_start: int = 0,
@@ -88,10 +92,14 @@ class UnifiedHPPOTrainer:
             n_iterations: Number of training iterations
             n_layers: Number of layers in coating
             root_dir: Root directory for outputs
-            entropy_beta_start: Initial entropy coefficient
-            entropy_beta_end: Final entropy coefficient
+            entropy_beta_start: Initial entropy coefficient (default for both policies)
+            entropy_beta_end: Final entropy coefficient (default for both policies)
             entropy_beta_decay_length: Entropy decay length
             entropy_beta_decay_start: Episode to start entropy decay
+            entropy_beta_discrete_start: Initial entropy coefficient for discrete policy (optional)
+            entropy_beta_discrete_end: Final entropy coefficient for discrete policy (optional)  
+            entropy_beta_continuous_start: Initial entropy coefficient for continuous policy (optional)
+            entropy_beta_continuous_end: Final entropy coefficient for continuous policy (optional)
             n_epochs_per_update: Episodes per training iteration
             use_obs: Whether to use observations vs raw states
             scheduler_start: Episode to start learning rate scheduling
@@ -112,12 +120,30 @@ class UnifiedHPPOTrainer:
         self.entropy_beta_end = entropy_beta_end
         self.entropy_beta_decay_length = entropy_beta_decay_length
         self.entropy_beta_decay_start = entropy_beta_decay_start
+        self.entropy_beta_discrete_start = entropy_beta_discrete_start
+        self.entropy_beta_discrete_end = entropy_beta_discrete_end
+        self.entropy_beta_continuous_start = entropy_beta_continuous_start
+        self.entropy_beta_continuous_end = entropy_beta_continuous_end
         self.n_epochs_per_update = n_epochs_per_update
         self.use_obs = use_obs
         self.weight_network_save = weight_network_save
         self.use_unified_checkpoints = use_unified_checkpoints
         self.save_plots = False
         self.save_episode_visualizations = save_episode_visualizations
+        
+        # Sync entropy parameters with agent if trainer has specific values
+        if self.entropy_beta_discrete_start is not None:
+            self.agent.entropy_beta_discrete_start = self.entropy_beta_discrete_start
+        if self.entropy_beta_discrete_end is not None:
+            self.agent.entropy_beta_discrete_end = self.entropy_beta_discrete_end
+        if self.entropy_beta_continuous_start is not None:
+            self.agent.entropy_beta_continuous_start = self.entropy_beta_continuous_start
+        if self.entropy_beta_continuous_end is not None:
+            self.agent.entropy_beta_continuous_end = self.entropy_beta_continuous_end
+        if self.entropy_beta_decay_length is not None:
+            self.agent.entropy_beta_decay_length = self.entropy_beta_decay_length
+        if self.entropy_beta_decay_start is not None:
+            self.agent.entropy_beta_decay_start = self.entropy_beta_decay_start
         
         # Callback system
         self.callbacks = callbacks or TrainingCallbacks()
@@ -836,18 +862,24 @@ class UnifiedHPPOTrainer:
         if hasattr(self.env, 'pareto_front') and len(self.env.pareto_front) > 0:
             current_pareto_front = self.env.pareto_front
         
-        objective_weights = sample_reward_weights(
-            n_objectives=n_objectives,
-            cycle_weights=getattr(self.env, 'cycle_weights', 'random'),
-            epoch=episode,
-            final_weight_epoch=getattr(self.env, 'final_weight_epoch', 1000),
-            start_weight_alpha=getattr(self.env, 'start_weight_alpha', 1.0),
-            final_weight_alpha=getattr(self.env, 'final_weight_alpha', 1.0),
-            n_weight_cycles=getattr(self.env, 'n_weight_cycles', 2),
-            pareto_front=current_pareto_front,  # Phase 2 enhancement
-            weight_archive=self.weight_archive if hasattr(self, 'weight_archive') else None,  # Phase 2 enhancement
-            all_rewards=self.all_rewards if hasattr(self, 'all_rewards') else None  # New: pass all rewards for coverage analysis
-        )
+        # Check if environment uses exploration features instead of objective weights
+        if hasattr(self.env, 'uses_exploration_features_as_agent_input') and self.env.uses_exploration_features_as_agent_input():
+            # DirectParetoEnvironment: use exploration features instead of objective weights
+            objective_weights = self.env.get_agent_input_features(episode=episode)
+        else:
+            # Standard MultiObjectiveEnvironment: sample objective weights
+            objective_weights = sample_reward_weights(
+                n_objectives=n_objectives,
+                cycle_weights=getattr(self.env, 'cycle_weights', 'random'),
+                epoch=episode,
+                final_weight_epoch=getattr(self.env, 'final_weight_epoch', 1000),
+                start_weight_alpha=getattr(self.env, 'start_weight_alpha', 1.0),
+                final_weight_alpha=getattr(self.env, 'final_weight_alpha', 1.0),
+                n_weight_cycles=getattr(self.env, 'n_weight_cycles', 2),
+                pareto_front=current_pareto_front,  # Phase 2 enhancement
+                weight_archive=self.weight_archive if hasattr(self, 'weight_archive') else None,  # Phase 2 enhancement
+                all_rewards=self.all_rewards if hasattr(self, 'all_rewards') else None  # New: pass all rewards for coverage analysis
+            )
         
         
         

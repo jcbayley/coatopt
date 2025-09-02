@@ -100,18 +100,18 @@ def reward_function_target(reflectivity, thermal_noise, total_thickness, absorpt
     if "reflectivity" in optimise_parameters:
         #log_reflect = np.log(1/np.abs(reflectivity - 1)+1)
         #target_log_reflect = np.log(1/np.abs(optimise_targets["reflectivity"] - 1)+1)
-        log_reflect = np.log(1./np.abs(reflectivity-optimise_targets["reflectivity"]))
+        log_reflect = -np.log(np.abs(reflectivity-optimise_targets["reflectivity"]))
         rewards["reflectivity"] = log_reflect 
 
     if "thermal_noise" in optimise_parameters and thermal_noise is not None:
-        log_therm = np.log(1./np.abs(thermal_noise-optimise_targets["thermal_noise"]))
+        log_therm = -np.log(np.abs(thermal_noise-optimise_targets["thermal_noise"]))
         rewards["thermal_noise"] = log_therm 
 
     if "thickness" in optimise_parameters:
         rewards["thickeness"] = -total_thickness
     
     if "absorption" in optimise_parameters:
-        log_absorption = (np.log(1./np.abs(absorption-optimise_targets["absorption"]))+10)*10
+        log_absorption = (-np.log(np.abs(absorption-optimise_targets["absorption"]))+10)*10
         rewards["absorption"] = log_absorption
 
 
@@ -177,7 +177,7 @@ def reward_function_raw(reflectivity, thermal_noise, total_thickness, absorption
     return total_reward, vals, rewards
 
 
-def reward_function_log_minimise(reflectivity, thermal_noise, total_thickness, absorption, optimise_parameters, optimise_targets, combine="product", neg_reward=-1e3, weights=None, env=None, **kwargs):
+def reward_function_log_targets(reflectivity, thermal_noise, total_thickness, absorption, optimise_parameters, optimise_targets, combine="product", neg_reward=-1e3, weights=None, env=None, **kwargs):
     """_summary_
 
     Args:
@@ -210,7 +210,7 @@ def reward_function_log_minimise(reflectivity, thermal_noise, total_thickness, a
         rewards["reflectivity"] = log_reflect 
 
     if "thermal_noise" in optimise_parameters and thermal_noise is not None:
-        log_therm = np.log(1./np.abs(thermal_noise-optimise_targets["thermal_noise"]))
+        log_therm = -np.log(np.abs(thermal_noise-optimise_targets["thermal_noise"]))
         rewards["thermal_noise"] = log_therm 
 
     if "thickness" in optimise_parameters:
@@ -581,6 +581,23 @@ def reward_function_log_targets_limits(reflectivity, thermal_noise, total_thickn
         "absorption": "log-"
     }
 
+    if "reflectivity" in optimise_parameters:
+        #log_reflect = np.log(1/np.abs(reflectivity - 1)+1)
+        #target_log_reflect = np.log(1/np.abs(optimise_targets["reflectivity"] - 1)+1)
+        log_reflect = -np.log(np.abs(reflectivity-optimise_targets["reflectivity"]))
+        rewards["reflectivity"] = log_reflect 
+
+    if "thermal_noise" in optimise_parameters and thermal_noise is not None:
+        log_therm = -np.log(np.abs(thermal_noise-optimise_targets["thermal_noise"]))
+        rewards["thermal_noise"] = log_therm 
+
+    if "thickness" in optimise_parameters:
+        rewards["thickeness"] = -total_thickness
+    
+    if "absorption" in optimise_parameters:
+        log_absorption = (-np.log(np.abs(absorption-optimise_targets["absorption"])))
+        rewards["absorption"] = log_absorption
+    """
     normed_vals = {}
     for key in vals.keys():
         if key in optimise_parameters:
@@ -634,7 +651,7 @@ def reward_function_log_targets_limits(reflectivity, thermal_noise, total_thickn
             
             # Set the rewards dictionary with the normalized values
             rewards[key] = normed_vals[key]
-
+    """
     # Calculate divergence penalty to encourage both rewards to be high
     divergence_penalty = 0.0
     if use_divergence_penalty and len(optimise_parameters) == 2:
@@ -1208,3 +1225,116 @@ def reward_function_pareto_dominance(reflectivity, thermal_noise, total_thicknes
     rewards["air_penalty"] = air_penalty
     
     return total_reward, vals, rewards
+
+
+def reward_function_direct_pareto(reflectivity, thermal_noise, total_thickness, absorption,
+                                optimise_parameters, optimise_targets, env=None,
+                                combine="sum", neg_reward=-1e3, weights=None,
+                                target_weight=0.5, novelty_weight=0.2, 
+                                target_selection="gaps", **kwargs):
+    """
+    Minimal DirectPareto implementation using existing reward infrastructure.
+    Provides target-guided exploration using RewardCalculator's reward_history.
+    """
+    # Calculate base rewards first 
+    base_total_reward, vals, base_rewards = reward_function_log_targets_limits(
+        reflectivity, thermal_noise, total_thickness, absorption, optimise_parameters, optimise_targets, env, 
+        combine=combine, neg_reward=neg_reward, weights=weights, 
+        use_air_penalty=True, air_penalty_weight=1.0, use_divergence_penalty=True, divergence_penalty_weight=1.0, **kwargs
+    )
+    
+    if env is None or not hasattr(env, 'reward_calculator'):
+        return base_total_reward, vals, base_rewards
+    
+    # Initialize DirectPareto state in RewardCalculator if needed
+    reward_calc = env.reward_calculator
+    if not hasattr(reward_calc, 'pareto_archive'):
+        reward_calc.pareto_archive = []
+        reward_calc.current_target = None
+        reward_calc.episode_count = 0
+    
+    # Get current reward point using base_rewards
+    current_point = np.array([base_rewards.get(param, 0.0) for param in optimise_parameters])
+    
+    # Select target using reward history bounds if no current target
+    if reward_calc.current_target is None:
+        reward_calc.current_target = _select_target_from_history(reward_calc, optimise_parameters)
+    
+    # Calculate target achievement reward
+    target_reward = 0.0
+    if reward_calc.current_target is not None:
+        target_distance = np.linalg.norm(current_point - reward_calc.current_target)
+        target_reward = np.exp(-target_distance * 2.0)
+    
+    # Calculate novelty reward
+    novelty_reward = _calculate_novelty(current_point, reward_calc.pareto_archive)
+    
+    # Update archive if non-dominated
+    _update_pareto_archive(current_point, reward_calc.pareto_archive)
+    
+    # Combine rewards
+    exploration_bonus = target_weight * target_reward + novelty_weight * novelty_reward
+    total_reward = base_total_reward + exploration_bonus
+    
+    # Update for next episode
+    reward_calc.episode_count += 1
+    if reward_calc.episode_count % 100 == 0:  
+        reward_calc.current_target = None
+    
+    # Add exploration info to rewards
+    base_rewards.update({
+        'target_reward': target_reward,
+        'novelty_reward': novelty_reward,
+        'exploration_bonus': exploration_bonus,
+        'total_reward': total_reward,
+        'current_target': reward_calc.current_target.tolist() if reward_calc.current_target is not None else None
+    })
+    
+    return total_reward, vals, base_rewards
+
+
+def _select_target_from_history(reward_calc, optimise_parameters):
+    """Select exploration target using reward history bounds."""
+    if len(reward_calc.reward_history[optimise_parameters[0]]) < 10:
+        # Not enough history, use default bounds
+        bounds = {param: (-5.0, 0.0) for param in optimise_parameters}
+    else:
+        # Use reward history to determine bounds
+        bounds = {}
+        for param in optimise_parameters:
+            history = list(reward_calc.reward_history[param])
+            bounds[param] = (min(history), max(history))
+    
+    # Sample random target within bounds
+    target = np.array([np.random.uniform(bounds[param][0], bounds[param][1]) 
+                      for param in optimise_parameters])
+    return target
+
+
+def _calculate_novelty(current_point, archive, k_nearest=5):
+    """Calculate novelty based on distance to archived solutions."""
+    if len(archive) < k_nearest:
+        return 1.0
+    
+    distances = [np.linalg.norm(current_point - archived_point) for archived_point in archive]
+    distances.sort()
+    return np.mean(distances[:k_nearest])
+
+
+def _update_pareto_archive(current_point, archive, max_size=200):
+    """Update Pareto archive with current solution."""
+    # Simple non-dominated check (assumes maximization)
+    is_dominated = any(all(archived >= current_point) and any(archived > current_point) 
+                      for archived in archive)
+    
+    if not is_dominated:
+        # Remove dominated solutions
+        archive[:] = [archived for archived in archive 
+                     if not (all(current_point >= archived) and any(current_point > archived))]
+        
+        # Add current solution
+        archive.append(current_point.copy())
+        
+        # Limit archive size
+        if len(archive) > max_size:
+            archive.pop(0)  # Remove oldest

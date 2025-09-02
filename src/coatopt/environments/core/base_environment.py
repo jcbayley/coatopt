@@ -84,15 +84,10 @@ class BaseCoatingEnvironment:
         self.reward_function = config.data.reward_function
         self.use_intermediate_reward = config.data.use_intermediate_reward
         self.combine = config.data.combine
-        self.reflectivity_reward_shape = config.data.reflectivity_reward_shape
-        self.thermal_reward_shape = config.data.thermal_reward_shape
-        self.absorption_reward_shape = config.data.absorption_reward_shape
-        self.use_ligo_reward = config.data.use_ligo_reward
         
         # Training parameters from DataConfig
         self.ignore_air_option = config.data.ignore_air_option
         self.ignore_substrate_option = config.data.ignore_substrate_option
-        self.include_random_rare_state = config.data.include_random_rare_state
         
         # Training parameters from TrainingConfig (if available)
         if config.training is not None:

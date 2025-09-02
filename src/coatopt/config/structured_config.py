@@ -120,6 +120,12 @@ class DataConfig(BaseConfig):
     reward_normalization_mode: str = "fixed"  # "fixed" or "adaptive"
     reward_normalization_ranges: Dict[str, List[float]] = field(default_factory=dict)
     reward_normalization_alpha: float = 0.1
+    
+    # Direct Pareto exploration parameters (for model_type = "direct_pareto")
+    exploration_grid_size: int = 15
+    target_reward_weight: float = 0.5
+    novelty_reward_weight: float = 0.2
+    target_selection_strategy: str = "gaps"  # "gaps" or "random"
 
 
 @dataclass
