@@ -19,7 +19,6 @@ from coatopt.algorithms.hppo.training.hypervolume_trainer import HypervolumeTrai
 from coatopt.environments.hppo_environment import HPPOEnvironment
 from coatopt.environments.multiobjective_environment import MultiObjectiveEnvironment
 from coatopt.environments.genetic_environment import GeneticCoatingStack
-from coatopt.environments.direct_pareto_environment import DirectParetoEnvironment
 from coatopt.config.structured_config import CoatingOptimisationConfig
 import os
 
@@ -28,31 +27,20 @@ def _get_additional_input_size(env, config: CoatingOptimisationConfig) -> int:
     """
     Get the size of additional input features for the agent.
     
-    For standard environments: number of objectives (for objective weights)
-    For DirectParetoEnvironment: number of exploration features (5)
+    Returns the number of objectives (for objective weights).
     """
-    if hasattr(env, 'uses_exploration_features_as_agent_input') and env.uses_exploration_features_as_agent_input():
-        # DirectParetoEnvironment uses 5 exploration features
-        return 5
-    else:
-        # Standard environments use objective weights
-        return len(config.data.optimise_parameters)
+    # Standard environments use objective weights
+    return len(config.data.optimise_parameters)
 
 
 def _should_use_moe(env, config: CoatingOptimisationConfig) -> bool:
     """
     Determine if Mixture of Experts should be used.
     
-    MoE is designed for objective weight specialization, so disable it for 
-    DirectParetoEnvironment which uses exploration features instead.
+    Returns the configuration setting for MoE usage.
     """
-    if hasattr(env, 'uses_exploration_features_as_agent_input') and env.uses_exploration_features_as_agent_input():
-        # DirectParetoEnvironment: disable MoE as it's incompatible with exploration features
-        print("DirectParetoEnvironment detected: disabling Mixture of Experts (incompatible with exploration features)")
-        return False
-    else:
-        # Standard environments: use config setting
-        return config.network.use_mixture_of_experts
+    # Use config setting
+    return config.network.use_mixture_of_experts
 
 
 
@@ -84,12 +72,10 @@ def create_environment(config: CoatingOptimisationConfig, materials: Dict[int, D
         return create_hppo_environment(config, materials)
     elif model_type == "hppo_multiobjective":
         return create_multiobjective_environment(config, materials)
-    elif model_type == "hppo_direct_pareto":
-        return create_direct_pareto_environment(config, materials)
     elif model_type == "genetic":
         return create_genetic_environment(config, materials)
     else:
-        raise ValueError(f"Unsupported model type: {model_type}. Supported types: hppo, multiobjective, direct_pareto, genetic")
+        raise ValueError(f"Unsupported model type: {model_type}. Supported types: hppo, multiobjective, genetic")
 
 
 def create_hppo_environment(config: CoatingOptimisationConfig, materials: Dict[int, Dict[str, Any]]) -> HPPOEnvironment:
@@ -179,57 +165,6 @@ def create_pareto_environment(config: CoatingOptimisationConfig, materials: Dict
         Configured MultiObjectiveEnvironment
     """
     return create_multiobjective_environment(config, materials)
-
-
-def create_direct_pareto_environment(config: CoatingOptimisationConfig, materials: Dict[int, Dict[str, Any]]):
-    """
-    Create DirectParetoEnvironment from structured configuration.
-    
-    Args:
-        config: Structured configuration object
-        materials: Materials dictionary
-        
-    Returns:
-        Configured DirectParetoEnvironment
-    """
-    from coatopt.environments.direct_pareto_environment import DirectParetoEnvironment
-    
-    env = DirectParetoEnvironment(
-        config=config,
-        max_layers=config.data.n_layers,
-        min_thickness=config.data.min_thickness,
-        max_thickness=config.data.max_thickness,
-        materials=materials,
-        opt_init=False,
-        use_intermediate_reward=config.data.use_intermediate_reward,
-        ignore_air_option=config.data.ignore_air_option,
-        ignore_substrate_option=config.data.ignore_substrate_option,
-        optimise_parameters=config.data.optimise_parameters,
-        optimise_targets=config.data.optimise_targets,
-        design_criteria=config.data.design_criteria,
-        use_optical_thickness=config.data.use_optical_thickness,
-        combine=config.data.combine,
-        optimise_weight_ranges=config.data.optimise_weight_ranges,
-        reward_function=config.data.reward_function,
-        final_weight_epoch=config.training.final_weight_epoch if config.training else 1,
-        start_weight_alpha=config.training.start_weight_alpha if config.training else 1.0,
-        final_weight_alpha=config.training.final_weight_alpha if config.training else 1.0,
-        cycle_weights=config.training.cycle_weights if config.training else False,
-        n_weight_cycles=config.training.n_weight_cycles if config.training else 2,
-        # Reward normalization parameters
-        use_reward_normalization=config.data.use_reward_normalization,
-        reward_normalization_mode=config.data.reward_normalization_mode,
-        reward_normalization_ranges=config.data.reward_normalization_ranges,
-        reward_normalization_alpha=config.data.reward_normalization_alpha,
-        # Objective bounds
-        objective_bounds=config.data.objective_bounds if hasattr(config.data, 'objective_bounds') else None,
-        # Exploration parameters (with defaults)
-        exploration_grid_size=getattr(config.data, 'exploration_grid_size', 15),
-        target_reward_weight=getattr(config.data, 'target_reward_weight', 0.5),
-        novelty_reward_weight=getattr(config.data, 'novelty_reward_weight', 0.2),
-        target_selection_strategy=getattr(config.data, 'target_selection_strategy', 'gaps'),
-    )
-    return env
 
 
 def create_pc_hppo_agent(config: CoatingOptimisationConfig, env: Union[HPPOEnvironment, MultiObjectiveEnvironment]) -> hppo.PCHPPO:

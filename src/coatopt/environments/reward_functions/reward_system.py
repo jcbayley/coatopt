@@ -334,27 +334,6 @@ class RewardCalculator:
         
         return constrained_reward, updated_rewards
 
-    def get_exploration_features(self) -> Optional[np.ndarray]:
-        """Get exploration target features for direct_pareto reward function."""
-        if (hasattr(self, 'pareto_archive') and hasattr(self, 'current_target') 
-            and self.current_target is not None):
-            # Return target + archive info as features for agent
-            target_features = self.current_target.copy()
-            # Pad to fixed size for consistency
-            if len(target_features) < 3:
-                target_features = np.pad(target_features, (0, 3 - len(target_features)), 'constant')
-            else:
-                target_features = target_features[:3]
-                
-            exploration_features = np.concatenate([
-                target_features,                              # Current target (3D)
-                [len(getattr(self, 'pareto_archive', [])) / 100.0],  # Archive size (normalized)
-                [getattr(self, 'episode_count', 0) / 1000.0]        # Episode count (normalized)
-            ])
-            return exploration_features.astype(np.float32)
-        
-        return None
-
 
 # Decorator for easy reward function registration
 def reward_function_plugin(name: str = None):

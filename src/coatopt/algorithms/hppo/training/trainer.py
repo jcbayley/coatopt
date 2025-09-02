@@ -862,22 +862,17 @@ class UnifiedHPPOTrainer:
         if hasattr(self.env, 'pareto_front') and len(self.env.pareto_front) > 0:
             current_pareto_front = self.env.pareto_front
         
-        # Check if environment uses exploration features instead of objective weights
-        if hasattr(self.env, 'uses_exploration_features_as_agent_input') and self.env.uses_exploration_features_as_agent_input():
-            # DirectParetoEnvironment: use exploration features instead of objective weights
-            objective_weights = self.env.get_agent_input_features(episode=episode)
-        else:
-            # Standard MultiObjectiveEnvironment: sample objective weights
-            objective_weights = sample_reward_weights(
-                n_objectives=n_objectives,
-                cycle_weights=getattr(self.env, 'cycle_weights', 'random'),
-                epoch=episode,
-                final_weight_epoch=getattr(self.env, 'final_weight_epoch', 1000),
-                start_weight_alpha=getattr(self.env, 'start_weight_alpha', 1.0),
-                final_weight_alpha=getattr(self.env, 'final_weight_alpha', 1.0),
-                n_weight_cycles=getattr(self.env, 'n_weight_cycles', 2),
-                pareto_front=current_pareto_front,  # Phase 2 enhancement
-                weight_archive=self.weight_archive if hasattr(self, 'weight_archive') else None,  # Phase 2 enhancement
+        # Standard MultiObjectiveEnvironment: sample objective weights
+        objective_weights = sample_reward_weights(
+            n_objectives=n_objectives,
+            cycle_weights=getattr(self.env, 'cycle_weights', 'random'),
+            epoch=episode,
+            final_weight_epoch=getattr(self.env, 'final_weight_epoch', 1000),
+            start_weight_alpha=getattr(self.env, 'start_weight_alpha', 1.0),
+            final_weight_alpha=getattr(self.env, 'final_weight_alpha', 1.0),
+            n_weight_cycles=getattr(self.env, 'n_weight_cycles', 2),
+            pareto_front=current_pareto_front,  # Phase 2 enhancement
+            weight_archive=self.weight_archive if hasattr(self, 'weight_archive') else None,  # Phase 2 enhancement
                 all_rewards=self.all_rewards if hasattr(self, 'all_rewards') else None  # New: pass all rewards for coverage analysis
             )
         
