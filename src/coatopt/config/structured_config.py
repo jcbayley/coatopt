@@ -126,6 +126,10 @@ class DataConfig(BaseConfig):
     target_reward_weight: float = 0.5
     novelty_reward_weight: float = 0.2
     target_selection_strategy: str = "gaps"  # "gaps" or "random"
+    
+    # Layer editing parameters (for model_type = "layer_editing")
+    initial_stack_size_range: List[int] = field(default_factory=lambda: [2, 5])
+    max_edits_per_episode: int = 10
 
 
 @dataclass

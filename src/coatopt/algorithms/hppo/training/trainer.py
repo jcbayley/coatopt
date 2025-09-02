@@ -842,6 +842,27 @@ class UnifiedHPPOTrainer:
         """
         Run a single environment rollout.
         
+        Delegates to appropriate rollout implementation based on agent type.
+        
+        Args:
+            episode: Current episode number
+            
+        Returns:
+            Dictionary containing rollout data
+        """
+        # Import here to avoid circular imports
+        from coatopt.algorithms.hppo.core.layer_editing_agent import LayerEditingPCHPPO
+        
+        # Choose appropriate rollout implementation
+        if isinstance(self.agent, LayerEditingPCHPPO):
+            return self._run_layer_editing_rollout(episode)
+        else:
+            return self._run_standard_rollout(episode)
+
+    def _run_standard_rollout(self, episode: int) -> Dict[str, Any]:
+        """
+        Run a single rollout for standard (legacy) agents.
+        
         Args:
             episode: Current episode number
             
@@ -855,33 +876,7 @@ class UnifiedHPPOTrainer:
         moe_aux_losses_accumulator = {}
         
         # Sample objective weights for this rollout
-        n_objectives = len(self.env.get_parameter_names())
-        
-        # Get current Pareto front for adaptive weight strategies
-        current_pareto_front = None
-        if hasattr(self.env, 'pareto_front') and len(self.env.pareto_front) > 0:
-            current_pareto_front = self.env.pareto_front
-        
-        # Check if environment uses exploration features instead of objective weights
-        if hasattr(self.env, 'uses_exploration_features_as_agent_input') and self.env.uses_exploration_features_as_agent_input():
-            # DirectParetoEnvironment: use exploration features instead of objective weights
-            objective_weights = self.env.get_agent_input_features(episode=episode)
-        else:
-            # Standard MultiObjectiveEnvironment: sample objective weights
-            objective_weights = sample_reward_weights(
-                n_objectives=n_objectives,
-                cycle_weights=getattr(self.env, 'cycle_weights', 'random'),
-                epoch=episode,
-                final_weight_epoch=getattr(self.env, 'final_weight_epoch', 1000),
-                start_weight_alpha=getattr(self.env, 'start_weight_alpha', 1.0),
-                final_weight_alpha=getattr(self.env, 'final_weight_alpha', 1.0),
-                n_weight_cycles=getattr(self.env, 'n_weight_cycles', 2),
-                pareto_front=current_pareto_front,  # Phase 2 enhancement
-                weight_archive=self.weight_archive if hasattr(self, 'weight_archive') else None,  # Phase 2 enhancement
-                all_rewards=self.all_rewards if hasattr(self, 'all_rewards') else None  # New: pass all rewards for coverage analysis
-            )
-        
-        
+        objective_weights = self._sample_objective_weights(episode)
         
         # Run episode steps
         for step in range(HPPOConstants.MAX_EPISODE_STEPS):
@@ -909,7 +904,7 @@ class UnifiedHPPOTrainer:
                  d_prob, c_means, c_std, value, entropy_discrete, entropy_continuous) = action_output
                 moe_aux_losses = {}
             
-            # Scale continuous action to environment bounds
+            # Scale continuous action to environment bounds  
             action[1] = action[1] * (self.env.max_thickness - self.env.min_thickness) + self.env.min_thickness
             
             # Take environment step  
@@ -920,7 +915,7 @@ class UnifiedHPPOTrainer:
             if self.use_adaptive_moe:
                 self._handle_adaptive_moe_step(episode, rewards, objective_weights_tensor, action_output)
             
-            # Store experience in replay buffer
+            # Store experience in replay buffer 
             self.agent.replay_buffer.update(
                 actiond.detach(), actionc.detach(), obs, log_prob_discrete.detach(),
                 log_prob_continuous.detach(), reward, value, done,
@@ -951,7 +946,281 @@ class UnifiedHPPOTrainer:
             'rewards': rewards,
             'vals': vals,
             'means': means,
-            'stds': stds,
+            'stds': stds, 
+            'materials': materials,
+            'objective_weights': objective_weights,
+            'moe_aux_losses': moe_aux_losses_accumulator
+        }
+
+    def _run_layer_editing_rollout(self, episode: int) -> Dict[str, Any]:
+        """
+        Run a single rollout for layer editing agents.
+        
+        Args:
+            episode: Current episode number
+            
+        Returns:
+            Dictionary containing rollout data
+        """
+        state = self.env.reset()
+        total_reward = 0
+        means, stds, materials = [], [], []
+        rewards_list = []
+        moe_aux_losses_accumulator = {}
+        
+        # Sample objective weights for this rollout
+        objective_weights = self._sample_objective_weights(episode)
+        
+        # Run episode steps
+        for step in range(HPPOConstants.MAX_EPISODE_STEPS):
+            # Prepare inputs
+            obs = self.env.get_observation_from_state(state) if self.use_obs else state
+            step_tensor = np.array([step])
+            objective_weights_tensor = torch.tensor(objective_weights).unsqueeze(0).to(torch.float32)
+            
+            # Select action (layer editing agent returns enhanced output)
+            action_output = self.agent.select_action(
+                obs, step_tensor, objective_weights=objective_weights_tensor
+            )
+            
+            # Layer editing agent returns 12 components: enhanced format
+            (action, actiond_components, actionc, log_prob_discrete, log_prob_continuous, 
+             d_prob, c_means, c_std, value, entropy_discrete, entropy_continuous, moe_aux_losses) = action_output
+            
+            # Accumulate MoE auxiliary losses if present
+            for loss_name, loss_value in moe_aux_losses.items():
+                if loss_name not in moe_aux_losses_accumulator:
+                    moe_aux_losses_accumulator[loss_name] = []
+                moe_aux_losses_accumulator[loss_name].append(loss_value)
+            
+            # Scale thickness component for layer editing (action is dict format)
+            if isinstance(action, dict):
+                action['thickness'] = action['thickness'] * (self.env.max_thickness - self.env.min_thickness) + self.env.min_thickness
+            
+            # Take environment step  
+            next_state, rewards, done, finished, _, full_action, vals = self.env.step(action, objective_weights=objective_weights)
+            reward = rewards["total_reward"]
+            
+            # Handle adaptive MoE if enabled
+            if self.use_adaptive_moe:
+                self._handle_adaptive_moe_step(episode, rewards, objective_weights_tensor, action_output)
+            
+            # Store experience in replay buffer (convert dict actions to buffer format)
+            # For layer editing, we need to store all discrete action components
+            if isinstance(actiond_components, dict):
+                # Extract all components and concatenate them
+                material = actiond_components.get('material', torch.tensor([0]))
+                layer_index = actiond_components.get('layer_index', torch.tensor([0]))
+                insert_replace = actiond_components.get('insert_replace', torch.tensor([0]))
+                
+                # Ensure all are tensors
+                if not isinstance(material, torch.Tensor):
+                    material = torch.tensor([material])
+                if not isinstance(layer_index, torch.Tensor):
+                    layer_index = torch.tensor([layer_index])
+                if not isinstance(insert_replace, torch.Tensor):
+                    insert_replace = torch.tensor([insert_replace])
+                    
+                # Concatenate all components for storage
+                actiond_for_buffer = torch.cat([material, layer_index, insert_replace])
+            else:
+                actiond_for_buffer = actiond_components if isinstance(actiond_components, torch.Tensor) else torch.tensor([0])
+                
+            log_prob_discrete_for_buffer = sum(log_prob_discrete.values()) if isinstance(log_prob_discrete, dict) else log_prob_discrete
+            entropy_discrete_for_buffer = sum(entropy_discrete.values()) if isinstance(entropy_discrete, dict) else entropy_discrete
+            
+            self.agent.replay_buffer.update(
+                actiond_for_buffer.detach(), actionc.detach(), obs, log_prob_discrete_for_buffer.detach(),
+                log_prob_continuous.detach(), reward, value, done,
+                entropy_discrete_for_buffer.detach(), entropy_continuous.detach(), step_tensor,
+                objective_weights=objective_weights_tensor
+            )
+            
+            # Track rollout data
+            means.append(c_means.detach().numpy())
+            stds.append(c_std.detach().numpy())
+            
+            # Extract material probabilities from dict format
+            if isinstance(d_prob, dict) and 'material' in d_prob:
+                materials.append(d_prob['material'].detach().numpy().tolist())
+            else:
+                # Fallback for unexpected formats
+                materials.append([1.0] + [0.0] * (len(self.env.materials) - 1))
+                
+            rewards_list.append(reward)
+            
+            # Update state and reward
+            state = next_state
+            total_reward += reward
+            
+            if done or finished:
+                break
+        
+        # Calculate returns and update replay buffer
+        returns = self.agent.get_returns(rewards_list)
+        self.agent.replay_buffer.update_returns(returns)
+        
+        return {
+            'total_reward': total_reward,
+            'final_state': state,
+            'rewards': rewards,
+            'vals': vals,
+            'means': means,
+            'stds': stds, 
+            'materials': materials,
+            'objective_weights': objective_weights,
+            'moe_aux_losses': moe_aux_losses_accumulator
+        }
+
+    def _sample_objective_weights(self, episode: int) -> np.ndarray:
+        """
+        Sample objective weights for multi-objective optimization.
+        
+        Args:
+            episode: Current episode number
+            
+        Returns:
+            Sampled objective weights
+        """
+        param_names = self.env.get_parameter_names()
+        n_objectives = len(param_names)
+        
+        # Get current Pareto front for adaptive weight strategies
+        current_pareto_front = None
+        if hasattr(self.env, 'pareto_front') and len(self.env.pareto_front) > 0:
+            current_pareto_front = self.env.pareto_front
+        
+        # Sample objective weights for all environments
+        weights = sample_reward_weights(
+            n_objectives=n_objectives,
+            cycle_weights=getattr(self.env, 'cycle_weights', 'random'),
+            epoch=episode,
+            final_weight_epoch=getattr(self.env, 'final_weight_epoch', 1000),
+            start_weight_alpha=getattr(self.env, 'start_weight_alpha', 1.0),
+            final_weight_alpha=getattr(self.env, 'final_weight_alpha', 1.0),
+            n_weight_cycles=getattr(self.env, 'n_weight_cycles', 2),
+            pareto_front=current_pareto_front,
+            weight_archive=self.weight_archive if hasattr(self, 'weight_archive') else None,
+            all_rewards=self.all_rewards if hasattr(self, 'all_rewards') else None
+        )
+        return weights
+
+    def _run_layer_editing_rollout(self, episode: int) -> Dict[str, Any]:
+        """
+        Run a single rollout for layer editing agents.
+        
+        Simplified and clean implementation specifically for layer editing agents.
+        
+        Args:
+            episode: Current episode number
+            
+        Returns:
+            Dictionary containing rollout data
+        """
+        state = self.env.reset()
+        total_reward = 0
+        means, stds, materials = [], [], []
+        rewards_list = []
+        moe_aux_losses_accumulator = {}
+        
+        # Sample objective weights for this rollout
+        objective_weights = self._sample_objective_weights(episode)
+        
+        # Run episode steps
+        for step in range(HPPOConstants.MAX_EPISODE_STEPS):
+            # Prepare inputs
+            obs = self.env.get_observation_from_state(state) if self.use_obs else state
+            step_tensor = np.array([step])
+            objective_weights_tensor = torch.tensor(objective_weights).unsqueeze(0).to(torch.float32)
+            
+            # Select action (layer editing agent returns enhanced format)
+            action_output = self.agent.select_action(
+                obs, step_tensor, objective_weights=objective_weights_tensor
+            )
+            
+            # Layer editing agent returns specific format with dict components
+            (action, actiond_components, actionc, log_prob_discrete, log_prob_continuous, 
+             d_prob, c_means, c_std, value, entropy_discrete, entropy_continuous, moe_aux_losses) = action_output
+            
+            # Accumulate MoE auxiliary losses if present
+            for loss_name, loss_value in moe_aux_losses.items():
+                if loss_name not in moe_aux_losses_accumulator:
+                    moe_aux_losses_accumulator[loss_name] = []
+                moe_aux_losses_accumulator[loss_name].append(loss_value)
+            
+            # Scale thickness component (action is dict format for layer editing)
+            action['thickness'] = action['thickness'] * (self.env.max_thickness - self.env.min_thickness) + self.env.min_thickness
+            
+            # Take environment step  
+            next_state, rewards, done, finished, _, full_action, vals = self.env.step(action, objective_weights=objective_weights)
+            reward = rewards["total_reward"]
+            
+            # Handle adaptive MoE if enabled
+            if self.use_adaptive_moe:
+                self._handle_adaptive_moe_step(episode, rewards, objective_weights_tensor, action_output)
+            
+            # Store experience in replay buffer (convert dict actions to buffer format)
+            # For layer editing, we need to store all discrete action components
+            if isinstance(actiond_components, dict):
+                # Extract all components and concatenate them
+                material = actiond_components.get('material', torch.tensor([0]))
+                layer_index = actiond_components.get('layer_index', torch.tensor([0]))
+                insert_replace = actiond_components.get('insert_replace', torch.tensor([0]))
+                
+                # Ensure all are tensors
+                if not isinstance(material, torch.Tensor):
+                    material = torch.tensor([material])
+                if not isinstance(layer_index, torch.Tensor):
+                    layer_index = torch.tensor([layer_index])
+                if not isinstance(insert_replace, torch.Tensor):
+                    insert_replace = torch.tensor([insert_replace])
+                    
+                # Concatenate all components for storage
+                actiond_for_buffer = torch.cat([material, layer_index, insert_replace])
+            else:
+                actiond_for_buffer = actiond_components if isinstance(actiond_components, torch.Tensor) else torch.tensor([0])
+                
+            log_prob_discrete_for_buffer = sum(log_prob_discrete.values()) if isinstance(log_prob_discrete, dict) else log_prob_discrete
+            entropy_discrete_for_buffer = sum(entropy_discrete.values()) if isinstance(entropy_discrete, dict) else entropy_discrete
+            
+            self.agent.replay_buffer.update(
+                actiond_for_buffer.detach(), actionc.detach(), obs, log_prob_discrete_for_buffer.detach(),
+                log_prob_continuous.detach(), reward, value, done,
+                entropy_discrete_for_buffer.detach(), entropy_continuous.detach(), step_tensor,
+                objective_weights=objective_weights_tensor
+            )
+            
+            # Track rollout data
+            means.append(c_means.detach().numpy())
+            stds.append(c_std.detach().numpy())
+            
+            # Extract material probabilities from dict format (specific to layer editing)
+            if isinstance(d_prob, dict) and 'material' in d_prob:
+                materials.append(d_prob['material'].detach().numpy().tolist())
+            else:
+                # Fallback for unexpected formats
+                materials.append([1.0] + [0.0] * (len(self.env.materials) - 1))
+                
+            rewards_list.append(reward)
+            
+            # Update state and reward
+            state = next_state
+            total_reward += reward
+            
+            if done or finished:
+                break
+        
+        # Calculate returns and update replay buffer
+        returns = self.agent.get_returns(rewards_list)
+        self.agent.replay_buffer.update_returns(returns)
+        
+        return {
+            'total_reward': total_reward,
+            'final_state': state,
+            'rewards': rewards,
+            'vals': vals,
+            'means': means,
+            'stds': stds, 
             'materials': materials,
             'objective_weights': objective_weights,
             'moe_aux_losses': moe_aux_losses_accumulator

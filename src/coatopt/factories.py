@@ -19,7 +19,7 @@ from coatopt.algorithms.hppo.training.hypervolume_trainer import HypervolumeTrai
 from coatopt.environments.hppo_environment import HPPOEnvironment
 from coatopt.environments.multiobjective_environment import MultiObjectiveEnvironment
 from coatopt.environments.genetic_environment import GeneticCoatingStack
-from coatopt.environments.direct_pareto_environment import DirectParetoEnvironment
+from coatopt.environments.layer_editing_environment import LayerEditingEnvironment
 from coatopt.config.structured_config import CoatingOptimisationConfig
 import os
 
@@ -28,35 +28,24 @@ def _get_additional_input_size(env, config: CoatingOptimisationConfig) -> int:
     """
     Get the size of additional input features for the agent.
     
-    For standard environments: number of objectives (for objective weights)
-    For DirectParetoEnvironment: number of exploration features (5)
+    For all environments: number of objectives (for objective weights)
     """
-    if hasattr(env, 'uses_exploration_features_as_agent_input') and env.uses_exploration_features_as_agent_input():
-        # DirectParetoEnvironment uses 5 exploration features
-        return 5
-    else:
-        # Standard environments use objective weights
-        return len(config.data.optimise_parameters)
+    # All environments use objective weights
+    return len(config.data.optimise_parameters)
 
 
 def _should_use_moe(env, config: CoatingOptimisationConfig) -> bool:
     """
     Determine if Mixture of Experts should be used.
     
-    MoE is designed for objective weight specialization, so disable it for 
-    DirectParetoEnvironment which uses exploration features instead.
+    Returns False for incompatible environments, otherwise uses config setting.
     """
-    if hasattr(env, 'uses_exploration_features_as_agent_input') and env.uses_exploration_features_as_agent_input():
-        # DirectParetoEnvironment: disable MoE as it's incompatible with exploration features
-        print("DirectParetoEnvironment detected: disabling Mixture of Experts (incompatible with exploration features)")
-        return False
-    else:
-        # Standard environments: use config setting
-        return config.network.use_mixture_of_experts
+    # Standard environments support MoE
+    return getattr(config.network, 'use_mixture_of_experts', False)
 
 
 
-def create_environment(config: CoatingOptimisationConfig, materials: Dict[int, Dict[str, Any]]) -> Union[HPPOEnvironment, MultiObjectiveEnvironment, GeneticCoatingStack]:
+def create_environment(config: CoatingOptimisationConfig, materials: Dict[int, Dict[str, Any]]) -> Union[HPPOEnvironment, MultiObjectiveEnvironment, GeneticCoatingStack, LayerEditingEnvironment]:
     """
     Create appropriate environment based on configuration.
     
@@ -64,6 +53,7 @@ def create_environment(config: CoatingOptimisationConfig, materials: Dict[int, D
     - "hppo" -> HPPOEnvironment (single-objective RL)
     - "multiobjective" or "pareto" -> MultiObjectiveEnvironment (multi-objective RL with Pareto fronts)  
     - "genetic" -> GeneticCoatingStack (genetic algorithm optimization)
+    - "layer_editing" -> LayerEditingEnvironment (iterative layer editing RL)
     
     Args:
         config: Structured configuration object
@@ -84,12 +74,12 @@ def create_environment(config: CoatingOptimisationConfig, materials: Dict[int, D
         return create_hppo_environment(config, materials)
     elif model_type == "hppo_multiobjective":
         return create_multiobjective_environment(config, materials)
-    elif model_type == "hppo_direct_pareto":
-        return create_direct_pareto_environment(config, materials)
+    elif model_type == "layer_editing":
+        return create_layer_editing_environment(config, materials)
     elif model_type == "genetic":
         return create_genetic_environment(config, materials)
     else:
-        raise ValueError(f"Unsupported model type: {model_type}. Supported types: hppo, multiobjective, direct_pareto, genetic")
+        raise ValueError(f"Unsupported model type: {model_type}. Supported types: hppo, multiobjective, layer_editing, genetic")
 
 
 def create_hppo_environment(config: CoatingOptimisationConfig, materials: Dict[int, Dict[str, Any]]) -> HPPOEnvironment:
@@ -181,20 +171,23 @@ def create_pareto_environment(config: CoatingOptimisationConfig, materials: Dict
     return create_multiobjective_environment(config, materials)
 
 
-def create_direct_pareto_environment(config: CoatingOptimisationConfig, materials: Dict[int, Dict[str, Any]]):
+def create_layer_editing_environment(config: CoatingOptimisationConfig, materials: Dict[int, Dict[str, Any]]) -> LayerEditingEnvironment:
     """
-    Create DirectParetoEnvironment from structured configuration.
+    Create LayerEditingEnvironment from structured configuration.
     
     Args:
         config: Structured configuration object
         materials: Materials dictionary
         
     Returns:
-        Configured DirectParetoEnvironment
+        Configured LayerEditingEnvironment
     """
-    from coatopt.environments.direct_pareto_environment import DirectParetoEnvironment
+    # Extract layer editing specific parameters with defaults
+    initial_stack_size_range = getattr(config.data, 'initial_stack_size_range', (3, 8))
+    max_edits_per_episode = getattr(config.data, 'max_edits_per_episode', 20)
+    edit_success_threshold = getattr(config.data, 'edit_success_threshold', 0.01)
     
-    env = DirectParetoEnvironment(
+    env = LayerEditingEnvironment(
         config=config,
         max_layers=config.data.n_layers,
         min_thickness=config.data.min_thickness,
@@ -211,23 +204,11 @@ def create_direct_pareto_environment(config: CoatingOptimisationConfig, material
         combine=config.data.combine,
         optimise_weight_ranges=config.data.optimise_weight_ranges,
         reward_function=config.data.reward_function,
-        final_weight_epoch=config.training.final_weight_epoch if config.training else 1,
-        start_weight_alpha=config.training.start_weight_alpha if config.training else 1.0,
-        final_weight_alpha=config.training.final_weight_alpha if config.training else 1.0,
-        cycle_weights=config.training.cycle_weights if config.training else False,
-        n_weight_cycles=config.training.n_weight_cycles if config.training else 2,
-        # Reward normalization parameters
-        use_reward_normalization=config.data.use_reward_normalization,
-        reward_normalization_mode=config.data.reward_normalization_mode,
-        reward_normalization_ranges=config.data.reward_normalization_ranges,
-        reward_normalization_alpha=config.data.reward_normalization_alpha,
-        # Objective bounds
         objective_bounds=config.data.objective_bounds if hasattr(config.data, 'objective_bounds') else None,
-        # Exploration parameters (with defaults)
-        exploration_grid_size=getattr(config.data, 'exploration_grid_size', 15),
-        target_reward_weight=getattr(config.data, 'target_reward_weight', 0.5),
-        novelty_reward_weight=getattr(config.data, 'novelty_reward_weight', 0.2),
-        target_selection_strategy=getattr(config.data, 'target_selection_strategy', 'gaps'),
+        # Layer editing specific parameters
+        initial_stack_size_range=initial_stack_size_range,
+        max_edits_per_episode=max_edits_per_episode,
+        edit_success_threshold=edit_success_threshold,
     )
     return env
 
@@ -284,6 +265,75 @@ def create_pc_hppo_agent(config: CoatingOptimisationConfig, env: Union[HPPOEnvir
         ignore_air_option=config.data.ignore_air_option,
         ignore_substrate_option=config.data.ignore_substrate_option,
         num_objectives=_get_additional_input_size(env, config),
+        entropy_beta_start=config.training.entropy_beta_start,
+        entropy_beta_end=config.training.entropy_beta_end,
+        entropy_beta_decay_length=config.training.entropy_beta_decay_length,
+        entropy_beta_discrete_start=config.training.entropy_beta_discrete_start,
+        entropy_beta_discrete_end=config.training.entropy_beta_discrete_end,
+        entropy_beta_continuous_start=config.training.entropy_beta_continuous_start,
+        entropy_beta_continuous_end=config.training.entropy_beta_continuous_end,
+        hyper_networks=config.network.hyper_networks,
+        use_mixture_of_experts=_should_use_moe(env, config),
+        moe_n_experts=config.network.moe_n_experts,
+        moe_expert_specialization=config.network.moe_expert_specialization,
+        moe_gate_hidden_dim=config.network.moe_gate_hidden_dim,
+        moe_gate_temperature=config.network.moe_gate_temperature,
+        moe_load_balancing_weight=config.network.moe_load_balancing_weight,
+    )
+    return agent
+
+
+def create_layer_editing_agent(config: CoatingOptimisationConfig, env: LayerEditingEnvironment):
+    """
+    Create Layer Editing PC-HPPO agent from structured configuration.
+    
+    Args:
+        config: Structured configuration object
+        env: LayerEditingEnvironment object (needed for input/output dimensions)
+        
+    Returns:
+        Configured LayerEditingPCHPPO agent
+    """
+    from coatopt.algorithms.hppo.core.layer_editing_agent import create_layer_editing_agent as _create_agent
+    
+    # Determine input size based on observation vs state
+    base_input_size = env.obs_space_shape if config.data.use_observation else env.state_space_shape
+    input_size = base_input_size
+    additional_input_size = _get_additional_input_size(env, config)
+    
+    agent = _create_agent(
+        state_dim=input_size,
+        num_materials=env.n_materials,
+        max_stack_length=env.max_layers,
+        num_objectives=additional_input_size,
+        hidden_size=config.network.hidden_size,
+        lr_discrete_policy=config.training.lr_discrete_policy,
+        lr_continuous_policy=config.training.lr_continuous_policy,
+        lr_value=config.training.lr_value,
+        lr_step=config.training.lr_step,
+        lr_min=config.training.lr_min,
+        lower_bound=0,
+        upper_bound=1,
+        n_updates=config.training.n_episodes_per_update,
+        beta=config.training.entropy_beta_start,
+        clip_ratio=config.training.clip_ratio,
+        gamma=config.training.gamma,
+        include_layer_number=config.network.include_layer_number,
+        include_material_in_policy=config.network.include_material_in_policy,
+        pre_type=config.network.pre_network_type,
+        n_heads=2,
+        n_pre_layers=config.network.n_pre_layers,
+        optimiser=config.training.optimiser,
+        n_continuous_layers=config.network.n_continuous_layers,
+        n_discrete_layers=config.network.n_discrete_layers,
+        n_value_layers=config.network.n_value_layers,
+        discrete_hidden_size=config.network.discrete_hidden_size,
+        continuous_hidden_size=config.network.continuous_hidden_size,
+        value_hidden_size=config.network.value_hidden_size,
+        substrate_material_index=env.substrate_material_index,
+        air_material_index=env.air_material_index,
+        ignore_air_option=config.data.ignore_air_option,
+        ignore_substrate_option=config.data.ignore_substrate_option,
         entropy_beta_start=config.training.entropy_beta_start,
         entropy_beta_end=config.training.entropy_beta_end,
         entropy_beta_decay_length=config.training.entropy_beta_decay_length,
@@ -373,7 +423,7 @@ def load_model_if_needed(agent: hppo.PCHPPO, config: CoatingOptimisationConfig, 
         print(f"Loaded model from: {config.general.load_model_path if config.general.load_model_path != 'root' else config.general.root_dir}")
 
 
-def setup_optimisation_pipeline(config: CoatingOptimisationConfig, materials: Dict[int, Dict[str, Any]], continue_training: bool = False, init_pareto_front: bool = True) -> Tuple[Union[HPPOEnvironment, MultiObjectiveEnvironment], hppo.PCHPPO, Union[hppo.HPPOTrainer, HypervolumeTrainer]]:
+def setup_optimisation_pipeline(config: CoatingOptimisationConfig, materials: Dict[int, Dict[str, Any]], continue_training: bool = False, init_pareto_front: bool = True) -> Tuple[Union[HPPOEnvironment, MultiObjectiveEnvironment, LayerEditingEnvironment], hppo.PCHPPO, Union[hppo.HPPOTrainer, HypervolumeTrainer]]:
     """
     Complete setup of the optimisation pipeline.
     
@@ -390,7 +440,11 @@ def setup_optimisation_pipeline(config: CoatingOptimisationConfig, materials: Di
     env = create_environment(config, materials)
     
     print("Creating agent...")
-    agent = create_pc_hppo_agent(config, env)
+    # Choose appropriate agent based on environment type
+    if isinstance(env, LayerEditingEnvironment):
+        agent = create_layer_editing_agent(config, env)
+    else:
+        agent = create_pc_hppo_agent(config, env)
     
     print("Loading model if needed...")
     load_model_if_needed(agent, config, continue_training)
