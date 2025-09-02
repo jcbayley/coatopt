@@ -384,7 +384,6 @@ class BaseCoatingEnvironment:
         return current_state, new_layer
     
     def get_observation_from_state(self, state):
-
         observation = []
         for st in state:
             mind = np.argmax(st[1:])
@@ -393,6 +392,10 @@ class BaseCoatingEnvironment:
             observation.append([st[0], n, k])
 
         return np.array(observation)
+
+    def get_observation(self):
+        """Get observation from current state."""
+        return self.get_observation_from_state(self.current_state)
 
     def step(self, action, max_state=0, verbose=False, state=None, layer_index=None, always_return_value=False, objective_weights=None):
         """action[0] - thickness

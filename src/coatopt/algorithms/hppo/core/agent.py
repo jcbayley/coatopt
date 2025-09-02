@@ -140,6 +140,10 @@ class PCHPPO:
             ) 
 
         # Store configuration
+        self.state_dim = state_dim
+        self.num_discrete = num_discrete
+        self.num_cont = num_cont
+        self.hidden_size = hidden_size
         self.upper_bound = upper_bound
         self.lower_bound = lower_bound
         self.include_layer_number = include_layer_number

@@ -56,8 +56,8 @@ class BaseNetwork(nn.Module):
         objective_dim = 0 if use_hyper_networks else n_objectives
         layer_dim = 1 if include_layer_number else 0
         material_dim = 1 if include_material else 0
+
         self.total_input_dim = input_dim + layer_dim + material_dim + objective_dim
-        
         if use_hyper_networks:
             self.target_input_dim = input_dim + layer_dim + material_dim  # Exclude objectives
             self._build_hyper_network(hyper_hidden_dim, hyper_n_layers, n_objectives)
