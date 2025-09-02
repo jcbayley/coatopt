@@ -3,11 +3,14 @@ import numpy as np
 from typing import Tuple, Dict, Any, Optional, List, TYPE_CHECKING
 from ..utils import coating_utils 
 from ..utils import state_utils
+from ..utils.EFI_tmm import CalculateEFI_tmm, optical_to_physical, physical_to_optical        # Observation space depends on whether electric field information is included
+
 from ..reward_functions.reward_system import RewardCalculator
 import time
 import scipy
 from tmm import coh_tmm
 import matplotlib.pyplot as plt
+import logging
 
 from ...config.structured_config import CoatingOptimisationConfig
 
@@ -60,6 +63,10 @@ class BaseCoatingEnvironment:
         self.min_thickness = config.data.min_thickness
         self.max_thickness = config.data.max_thickness
         self.use_optical_thickness = config.data.use_optical_thickness
+        
+        # Electric field configuration
+        self.include_electric_field = getattr(config.data, 'include_electric_field', False)
+        self.electric_field_points = getattr(config.data, 'electric_field_points', 50)
         
         # Materials should already be set in __init__ from kwargs
         # Validate materials were provided
@@ -161,7 +168,9 @@ class BaseCoatingEnvironment:
                                  cycle_weights=False, 
                                  n_weight_cycles=2, 
                                  combine="product",
-                                 objective_bounds=None):
+                                 objective_bounds=None,
+                                 include_electric_field=False,
+                                 electric_field_points=50):
         """Legacy parameter initialization for backward compatibility."""
         
         self.max_layers = max_layers
@@ -189,6 +198,10 @@ class BaseCoatingEnvironment:
         self.n_weight_cycles = n_weight_cycles
         self.combine = combine
         
+        # Electric field configuration (legacy)
+        self.include_electric_field = include_electric_field
+        self.electric_field_points = electric_field_points
+        
         # Objective bounds for reward normalization (if provided)
         if objective_bounds is not None:
             self.objective_bounds = objective_bounds
@@ -201,14 +214,16 @@ class BaseCoatingEnvironment:
         # State and observation space setup
         self.state_space_size = self.max_layers * self.n_materials + self.max_layers
         self.state_space_shape = (self.max_layers, self.n_materials + 1)
-        self.obs_space_size = self.max_layers * (2 + 1) # thickness, n, k for each layer
-        self.obs_space_shape = (self.max_layers, (2 + 1))  # thickness, n, k for each layer
         
         # Environment state
         self.length = 0
         self.current_state = self.sample_state_space()
         self.current_index = 0
         self.previous_material = self.substrate_material_index
+        
+        # Calculate observation space dynamically from actual observation
+        self.obs_space_shape = self._get_observation_shape()
+        self.obs_space_size = self.obs_space_shape[0] * self.obs_space_shape[1]
         
         # Initialize simple reward calculator
         reward_type = "default" if self.reward_function is None else str(self.reward_function)
@@ -218,6 +233,40 @@ class BaseCoatingEnvironment:
             optimise_targets=self.optimise_targets,
             combine=self.combine, env=self
         )
+
+    def _get_observation_shape(self):
+        """
+        Dynamically calculate observation shape by sampling and computing actual observation.
+        This avoids hardcoding feature counts and automatically adapts to configuration.
+        
+        Returns:
+            tuple: (max_layers, n_features) shape of observations
+        """
+        # Use the current state that was already sampled in _setup_common_attributes
+        sample_obs = self.get_observation_from_state(self.current_state)
+        
+        # Convert observation to tensor format to get the actual shape
+        from ...algorithms.action_utils import prepare_state_input
+        try:
+            obs_tensor = prepare_state_input(sample_obs)
+            # obs_tensor shape: [batch, layers, features]
+            actual_features = obs_tensor.shape[-1]
+            return (self.max_layers, actual_features)
+        except Exception as e:
+            # Fallback: compute shape from the observation structure
+            print(f"Warning: Could not convert observation to tensor, calculating shape from structure: {e}")
+            if isinstance(sample_obs, dict) and 'layer_stack' in sample_obs:
+                # Count features from layer_stack structure + additional features
+                base_features = len(['thickness', 'material_index', 'n', 'k'])  # 4
+                additional_features = 0
+                if 'electric_field' in sample_obs:
+                    additional_features += 2  # EFI + gradient
+                if 'cumulative_metrics' in sample_obs:
+                    additional_features += len(sample_obs['cumulative_metrics'])  # R, A, TN
+                return (self.max_layers, base_features + additional_features)
+            else:
+                # For numpy array observations
+                return (self.max_layers, sample_obs.shape[-1])  
 
 
     def reset(self):
@@ -280,20 +329,23 @@ class BaseCoatingEnvironment:
             frequency=100, 
             wBeam=0.062, 
             Temp=293,
-            return_separate = False):
-        """_summary_
+            return_separate = False,
+            return_field_data=False):
+        """
+        Compute state value with optional electric field data return.
 
         Args:
             state (_type_): _description_
             material_sub (int, optional): Substrate material type 
-            
-            lambda_ (int, optional): laser wavelength (m)
-            f (int, optional): frequency of interest (Hz)
+            light_wavelength (int, optional): laser wavelength (m)
+            frequency (int, optional): frequency of interest (Hz)
             wBeam (int, optional): laser beam radius on optic(m)
             Temp (int, optional): detector temperature (deg)
+            return_separate (bool): If True, return individual metrics
+            return_field_data (bool): If True, return electric field information
 
         Returns:
-            _type_: stuff
+            _type_: Performance metrics and optionally field data
         """
 
         
@@ -302,7 +354,8 @@ class BaseCoatingEnvironment:
         # reverse state
         state_trim = state_trim[::-1]
 
-        r, thermal_noise, e_integrated, total_thickness = coating_utils.merit_function(
+        # Call merit_function with field data option
+        result = coating_utils.merit_function(
             np.array(state_trim),
             self.materials,
             light_wavelength=light_wavelength,
@@ -311,13 +364,22 @@ class BaseCoatingEnvironment:
             Temp=Temp,
             substrate_index = self.substrate_material_index,
             air_index = self.air_material_index,
-            use_optical_thickness=self.use_optical_thickness
+            use_optical_thickness=self.use_optical_thickness,
+            return_field_data=return_field_data
             )
         
-        if return_separate:
-            return r, thermal_noise, e_integrated, total_thickness
+        if return_field_data:
+            r, thermal_noise, e_integrated, total_thickness, field_data = result
+            if return_separate:
+                return r, thermal_noise, e_integrated, total_thickness, field_data
+            else:
+                return r, thermal_noise, field_data
         else:
-            return r, thermal_noise
+            r, thermal_noise, e_integrated, total_thickness = result
+            if return_separate:
+                return r, thermal_noise, e_integrated, total_thickness
+            else:
+                return r, thermal_noise
         
     def compute_reward(self, new_state, max_value=0.0, target_reflectivity=1.0, objective_weights=None):
         """reward is the improvement of the state over the previous one
@@ -384,7 +446,145 @@ class BaseCoatingEnvironment:
         return current_state, new_layer
     
     def get_observation_from_state(self, state):
+        """
+        Get observation from state in dictionary format.
+        
+        Args:
+            state: Current coating state array
+            
+        Returns:
+            dict: Observation containing:
+                - 'layer_stack': Dictionary with thickness, material_index, n, k for each layer
+                - 'electric_field': EFI distribution (if include_electric_field=True)
+                - 'field_gradients': Field spatial derivatives (if include_electric_field=True)
+                - 'cumulative_metrics': [reflectivity, absorption, thermal_noise] (if include_electric_field=True)
+        """
+        # Create consistent layer stack information with base 4 features
+        layer_stack = []
+        for i, st in enumerate(state):
+            material_idx = np.argmax(st[1:])
+            n = self.materials[material_idx]["n"]
+            k = self.materials[material_idx]["k"]
+            layer_stack.append({
+                'thickness': st[0],
+                'material_index': material_idx,
+                'n': n,
+                'k': k
+            })
+        
+        # Create base observation with consistent layer stack format
+        observation = {
+            'layer_stack': layer_stack
+        }
+        
+        # Add electric field information if enabled
+        if self.include_electric_field:
+            field_info = self._compute_electric_field_profile(state, self.electric_field_points)
+            observation.update({
+                'electric_field': field_info['field_normalized'],
+                'field_gradients': field_info['field_gradients'],
+                'cumulative_metrics': field_info['cumulative_metrics'],
+                'field_positions': field_info['field_positions'],
+                'field_layer_indices': field_info['layer_indices']
+            })
+        
+        return observation
 
+    def _compute_electric_field_profile(self, state, num_field_points=50):
+        """
+        Compute electric field intensity profile for current coating state.
+        Uses existing merit_function calculation to avoid duplicate computation.
+        
+        Args:
+            state: Current coating state array
+            num_field_points: Number of points to sample the field profile
+            
+        Returns:
+            dict: Electric field information
+        """
+        try:
+            # Get field data from compute_state_value (reuses existing calculation)
+            r, thermal_noise, e_integrated, total_thickness, field_data = self.compute_state_value(
+                state, 
+                return_separate=True, 
+                return_field_data=True
+            )
+            
+            # Extract field information
+            E = field_data['E']  # Electric field intensity array
+            layer_idx = field_data['layer_idx']  # Layer indices
+            ds = field_data['ds']  # Position array
+            
+            if len(E) == 0:
+                # Return empty data for empty states
+                return {
+                    'field_profile': np.zeros(num_field_points),
+                    'field_positions': np.zeros(num_field_points),
+                    'field_gradients': np.zeros(num_field_points),
+                    'layer_indices': np.zeros(num_field_points, dtype=int),
+                    'field_normalized': np.zeros(num_field_points),
+                    'cumulative_metrics': np.array([r, e_integrated, thermal_noise])
+                }
+            
+            # Sample field at specified number of points
+            if len(E) > num_field_points:
+                # Downsample to requested number of points
+                indices = np.linspace(0, len(E) - 1, num_field_points, dtype=int)
+                field_profile = E[indices]
+                field_positions = ds[indices] 
+                field_layer_indices = np.array(layer_idx)[indices]
+            else:
+                field_profile = E
+                field_positions = ds
+                field_layer_indices = np.array(layer_idx)
+                
+            # Calculate field gradients (spatial derivatives)
+            if len(field_profile) > 1:
+                field_gradients = np.gradient(field_profile, field_positions)
+            else:
+                field_gradients = np.array([0])
+            
+            # Normalize field profile to [0, 1] range for network processing
+            field_max = np.max(field_profile) if len(field_profile) > 0 else 1.0
+            field_min = np.min(field_profile) if len(field_profile) > 0 else 0.0
+            field_range = field_max - field_min
+            
+            if field_range > 0:
+                field_normalized = (field_profile - field_min) / field_range
+            else:
+                field_normalized = np.zeros_like(field_profile)
+                
+            return {
+                'field_profile': field_profile,
+                'field_positions': field_positions,
+                'field_gradients': field_gradients,
+                'layer_indices': field_layer_indices,
+                'field_normalized': field_normalized,
+                'cumulative_metrics': np.array([r, e_integrated, thermal_noise])
+            }
+            
+        except Exception as e:
+            logging.warning(f"Electric field calculation failed: {e}")
+            # Return empty data on failure
+            return {
+                'field_profile': np.zeros(num_field_points),
+                'field_positions': np.zeros(num_field_points),
+                'field_gradients': np.zeros(num_field_points),
+                'layer_indices': np.zeros(num_field_points, dtype=int),
+                'field_normalized': np.zeros(num_field_points),
+                'cumulative_metrics': np.array([0.0, 0.0, 0.0])
+            }
+
+    def get_observation_array(self, state):
+        """
+        Get observation in legacy array format for backward compatibility.
+        
+        Args:
+            state: Current coating state array
+            
+        Returns:
+            numpy.ndarray: Array with shape [n_layers, 3] containing [thickness, n, k]
+        """
         observation = []
         for st in state:
             mind = np.argmax(st[1:])

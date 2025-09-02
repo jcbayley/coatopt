@@ -356,7 +356,8 @@ Control exploration vs exploitation over training:
 # General entropy scheduling (applies to both policies if specific ones not set)
 entropy_beta_start = 1.0      # High exploration initially
 entropy_beta_end = 0.001      # Low exploration at end
-entropy_beta_decay_length = 5000  # Decay over 5000 iterations
+entropy_beta_decay_length = 5000  # Decay over 5000 iterations (if not using restarts)
+entropy_beta_use_restarts = True   # Restart entropy decay like LR scheduler
 
 # Separate entropy coefficients for discrete and continuous policies (recommended)
 entropy_beta_discrete_start = 0.1    # Discrete policy exploration

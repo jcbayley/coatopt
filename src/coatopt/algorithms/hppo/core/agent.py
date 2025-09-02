@@ -67,6 +67,7 @@ class PCHPPO:
         entropy_beta_discrete_end: Optional[float] = None,
         entropy_beta_continuous_start: Optional[float] = None,
         entropy_beta_continuous_end: Optional[float] = None,
+        entropy_beta_use_restarts: bool = False,
         hyper_networks: bool = False,
         buffer_size: int = 10000,
         use_mixture_of_experts: bool = False,
@@ -122,6 +123,7 @@ class PCHPPO:
             entropy_beta_discrete_end: Final entropy coefficient for discrete policy (optional)
             entropy_beta_continuous_start: Initial entropy coefficient for continuous policy (optional)
             entropy_beta_continuous_end: Final entropy coefficient for continuous policy (optional)
+            entropy_beta_use_restarts: Whether to use warm restarts for entropy beta decay (like LR scheduler)
             hyper_networks: Whether to use hypernetworks
             use_mixture_of_experts: Whether to use Mixture of Experts networks
             moe_n_experts: Number of expert networks in MoE
@@ -167,6 +169,7 @@ class PCHPPO:
         self.entropy_beta_discrete_end = entropy_beta_discrete_end if entropy_beta_discrete_end is not None else entropy_beta_end
         self.entropy_beta_continuous_start = entropy_beta_continuous_start if entropy_beta_continuous_start is not None else entropy_beta_start
         self.entropy_beta_continuous_end = entropy_beta_continuous_end if entropy_beta_continuous_end is not None else entropy_beta_end
+        self.entropy_beta_use_restarts = entropy_beta_use_restarts
         
         self.pre_type = pre_type
         self.n_updates = n_updates
@@ -390,13 +393,14 @@ class PCHPPO:
             temp_r.appendleft(R)
         return np.array(temp_r)
 
-    def scheduler_step(self, step: int = 0, make_step: bool = True) -> Tuple[List[float], List[float], List[float], float, float]:
+    def scheduler_step(self, step: int = 0, make_step: bool = True, scheduler_active: bool = True) -> Tuple[List[float], List[float], List[float], float, float]:
         """
         Step learning rate schedulers and calculate entropy coefficients.
         
         Args:
             step: Current step number
             make_step: Whether to actually step the schedulers
+            scheduler_active: Whether scheduler should be active (respects scheduler_start/end bounds)
             
         Returns:
             Tuple of (discrete_lr, continuous_lr, value_lr, discrete_entropy_coeff, continuous_entropy_coeff)
@@ -406,20 +410,39 @@ class PCHPPO:
             self.scheduler_continuous.step(step)
             self.scheduler_value.step(step)
 
-        # Calculate entropy coefficients using cosine annealing
+        # Calculate entropy coefficients using cosine annealing with optional warm restarts
         def calculate_entropy_coefficient(start_val, end_val):
-            if step < self.entropy_beta_decay_start:
-                # Before decay starts, use start value
+            # If scheduler not active or before decay starts, use start value
+            if not scheduler_active or step < self.entropy_beta_decay_start:
                 return start_val
-            elif step >= self.entropy_beta_decay_start + self.entropy_beta_decay_length:
-                # After decay ends, use end value
-                return end_val
-            else:
-                # During decay period, use cosine annealing
-                progress = (step - self.entropy_beta_decay_start) / self.entropy_beta_decay_length
+            elif self.entropy_beta_use_restarts and hasattr(self, 'lr_step'):
+                # Use warm restarts similar to learning rate scheduler
+                # Calculate progress within current cycle
+                adjusted_step = step - self.entropy_beta_decay_start
+                cycle_length = self.lr_step  # Use same cycle length as LR scheduler
+                
+                # Find which cycle we're in and position within that cycle
+                cycle_position = adjusted_step % cycle_length
+                progress = cycle_position / cycle_length
+                
+                # Cosine annealing within current cycle
                 return end_val + (start_val - end_val) * (
                     1 + np.cos(np.pi * progress)
                 ) / 2
+            else:
+                # Original single-decay behavior
+                if self.entropy_beta_decay_length is None:
+                    # If no decay length specified, use end value
+                    return end_val
+                elif step >= self.entropy_beta_decay_start + self.entropy_beta_decay_length:
+                    # After decay ends, use end value
+                    return end_val
+                else:
+                    # During decay period, use cosine annealing
+                    progress = (step - self.entropy_beta_decay_start) / self.entropy_beta_decay_length
+                    return end_val + (start_val - end_val) * (
+                        1 + np.cos(np.pi * progress)
+                    ) / 2
         
         discrete_entropy_val = calculate_entropy_coefficient(
             self.entropy_beta_discrete_start, self.entropy_beta_discrete_end
@@ -737,7 +760,19 @@ class PCHPPO:
         # Perform multiple update epochs
         for epoch_idx in range(self.n_updates):
             # Prepare states and layer numbers
-            states = torch.tensor(np.array(list(self.replay_buffer.states))).to(torch.float32)
+            # Convert observations (which may be dicts) to tensors using action_utils
+            raw_states = list(self.replay_buffer.states)
+            
+            # Convert each observation to tensor format
+            if len(raw_states) > 0:
+                state_tensors = []
+                for state_obs in raw_states:
+                    state_tensor = prepare_state_input(state_obs, self.pre_type)
+                    state_tensors.append(state_tensor)
+                states = torch.cat(state_tensors, dim=0).to(torch.float32)
+            else:
+                states = torch.empty(0, 0, 0).to(torch.float32)
+                
             layer_numbers = (
                 torch.tensor(list(self.replay_buffer.layer_number)).to(torch.float32)
                 if self.include_layer_number else False

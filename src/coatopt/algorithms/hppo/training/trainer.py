@@ -71,8 +71,9 @@ class UnifiedHPPOTrainer:
         entropy_beta_discrete_end: Optional[float] = None,
         entropy_beta_continuous_start: Optional[float] = None,
         entropy_beta_continuous_end: Optional[float] = None,
+        entropy_beta_use_restarts: bool = False,
         n_epochs_per_update: int = 10,
-        use_obs: bool = True,
+        use_obs: bool = True,  # DEPRECATED: Always True, observations are always processed
         scheduler_start: int = 0,
         scheduler_end: int = np.inf,
         continue_training: bool = False,
@@ -100,6 +101,7 @@ class UnifiedHPPOTrainer:
             entropy_beta_discrete_end: Final entropy coefficient for discrete policy (optional)  
             entropy_beta_continuous_start: Initial entropy coefficient for continuous policy (optional)
             entropy_beta_continuous_end: Final entropy coefficient for continuous policy (optional)
+            entropy_beta_use_restarts: Whether to use warm restarts for entropy beta decay (like LR scheduler)
             n_epochs_per_update: Episodes per training iteration
             use_obs: Whether to use observations vs raw states
             scheduler_start: Episode to start learning rate scheduling
@@ -124,8 +126,20 @@ class UnifiedHPPOTrainer:
         self.entropy_beta_discrete_end = entropy_beta_discrete_end
         self.entropy_beta_continuous_start = entropy_beta_continuous_start
         self.entropy_beta_continuous_end = entropy_beta_continuous_end
+        self.entropy_beta_use_restarts = entropy_beta_use_restarts
         self.n_epochs_per_update = n_epochs_per_update
-        self.use_obs = use_obs
+        
+        # DEPRECATED: use_obs parameter - observations are always processed now
+        if not use_obs:
+            import warnings
+            warnings.warn(
+                "use_obs=False is deprecated. Observations are always processed from state. "
+                "This parameter will be removed in a future version.",
+                DeprecationWarning,
+                stacklevel=2
+            )
+        self.use_obs = True  # Always True regardless of parameter
+        
         self.weight_network_save = weight_network_save
         self.use_unified_checkpoints = use_unified_checkpoints
         self.save_plots = False
@@ -880,8 +894,8 @@ class UnifiedHPPOTrainer:
         
         # Run episode steps
         for step in range(HPPOConstants.MAX_EPISODE_STEPS):
-            # Prepare inputs
-            obs = self.env.get_observation_from_state(state) if self.use_obs else state
+            # Prepare inputs - always use observation from state
+            obs = self.env.get_observation_from_state(state)
             step_tensor = np.array([step])
             objective_weights_tensor = torch.tensor(objective_weights).unsqueeze(0).to(torch.float32)
             
@@ -968,7 +982,7 @@ class UnifiedHPPOTrainer:
         """Perform network parameter updates."""
         if episode > HPPOConstants.DEFAULT_UPDATE_FREQUENCY:
             loss1, loss2, loss3 = self.agent.update(update_policy=True, update_value=True)
-            lr_outs = self.agent.scheduler_step(episode, make_scheduler_step)
+            lr_outs = self.agent.scheduler_step(episode, make_scheduler_step, make_scheduler_step)
             
             # Handle both old format (4 values) and new format (5 values) for backward compatibility
             if len(lr_outs) == 5:
@@ -1309,7 +1323,8 @@ class UnifiedHPPOTrainer:
             
             # Run episode
             for step in range(HPPOConstants.MAX_EPISODE_STEPS):
-                obs = self.env.get_observation_from_state(state) if self.use_obs else state
+                # Always use observation from state
+                obs = self.env.get_observation_from_state(state)
                 step_tensor = np.array([step])
                 objective_weights_tensor = torch.tensor(objective_weights).unsqueeze(0).to(torch.float32)
                 

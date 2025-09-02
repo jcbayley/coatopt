@@ -308,7 +308,8 @@ def merit_function(
         substrate_index = 1,
         air_index = 0,
         optimise_on=["R","T","E","D"],
-        use_optical_thickness=True
+        use_optical_thickness=True,
+        return_field_data=False
     ):
     #set up with default inputs to match aLIGO for testing = this should be modified to allow for varying inputs. 
     
@@ -339,7 +340,7 @@ def merit_function(
     num_points = 2000
 
     #logging.info(f"Calculating EFI .......")
-    E_total, layer_idx,  PhysicalThickness,E, poyn, total_absorption, reflectivity = CalculateEFI_tmm(
+    E_total, layer_idx, ds, E, poyn, total_absorption, reflectivity = CalculateEFI_tmm(
         dOpt = layer_optical_thicknesses,
         materialLayer = layer_material_inds, 
         materialParams = new_all_materials,
@@ -380,8 +381,8 @@ def merit_function(
         ThermalNoise_Total = noise_summary['BrownianNoise']
 
 
-    # Total Thickness
-    D = PhysicalThickness[-1]
+
+    D = ds[-1]  # Total physical thickness of the coating in nm
     
     #logging.info(f"Integrating over the Electric Field Intensity .......")
     #normallised_EFI = integrand(E_total,light_wavelength,layer_material_inds,all_materials,num_points=len(E_total))
@@ -402,7 +403,19 @@ def merit_function(
     nAir = all_materials[0]["n"]
 
     
-    return np.abs(rCoat)**2, ThermalNoise_Total, total_absorption, D
+    if return_field_data:
+        # Return field data along with standard metrics
+        field_data = {
+            'E_total': E_total,
+            'layer_idx': layer_idx, 
+            'ds': ds,  # Position array
+            'E': E,
+            'poyn': poyn,
+            'total_thickness': D
+        }
+        return np.abs(rCoat)**2, ThermalNoise_Total, total_absorption, D, field_data
+    else:
+        return np.abs(rCoat)**2, ThermalNoise_Total, total_absorption, D
     """
     # Reflectivity
     #R, dcdp, rbar, r = getCoatRefl2(nAir, nSub, n_layer, optical_thickness)

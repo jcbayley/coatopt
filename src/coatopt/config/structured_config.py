@@ -112,6 +112,10 @@ class DataConfig(BaseConfig):
     combine: str
     reward_function: str
     
+    # Electric field configuration
+    include_electric_field: bool = False
+    electric_field_points: int = 50
+    
     # Objective bounds for reward normalization and optimization constraints
     objective_bounds: Dict[str, Dict[str, float]] = field(default_factory=dict)
     
@@ -175,6 +179,7 @@ class TrainingConfig(BaseConfig):
     entropy_beta_end: float
     entropy_beta_decay_length: Optional[int]
     entropy_beta_decay_start: int
+    entropy_beta_use_restarts: bool
     
     # Learning rate scheduling
     scheduler_start: int

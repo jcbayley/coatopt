@@ -12,8 +12,8 @@ from pymoo.util.nds.non_dominated_sorting import NonDominatedSorting
 from .utils.pareto_utils import incremental_pareto_update, EfficientParetoTracker
 from .core.base_environment import BaseCoatingEnvironment
 from .reward_functions.reward_system import RewardCalculator
+from .utils import coating_utils, state_utils
 from typing import Dict, List, Optional, Union, Tuple, Any
-import numpy as np
 import random
 import logging
 

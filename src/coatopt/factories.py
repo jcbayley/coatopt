@@ -178,8 +178,9 @@ def create_pc_hppo_agent(config: CoatingOptimisationConfig, env: Union[HPPOEnvir
     Returns:
         Configured PC-HPPO agent
     """
-    # Determine input size based on observation vs state
-    base_input_size = env.obs_space_shape if config.data.use_observation else env.state_space_shape
+    # Use observation space shape (observations are now always used)
+    # Note: use_observation parameter is deprecated but kept for config compatibility
+    base_input_size = env.obs_space_shape
     
     # All environments use the same base input size - additional features like
     # objective weights or exploration features are handled by the network's _prepare_input method
@@ -222,10 +223,12 @@ def create_pc_hppo_agent(config: CoatingOptimisationConfig, env: Union[HPPOEnvir
         entropy_beta_start=config.training.entropy_beta_start,
         entropy_beta_end=config.training.entropy_beta_end,
         entropy_beta_decay_length=config.training.entropy_beta_decay_length,
+        entropy_beta_decay_start=config.training.entropy_beta_decay_start,
         entropy_beta_discrete_start=config.training.entropy_beta_discrete_start,
         entropy_beta_discrete_end=config.training.entropy_beta_discrete_end,
         entropy_beta_continuous_start=config.training.entropy_beta_continuous_start,
         entropy_beta_continuous_end=config.training.entropy_beta_continuous_end,
+        entropy_beta_use_restarts=config.training.entropy_beta_use_restarts,
         hyper_networks=config.network.hyper_networks,
         use_mixture_of_experts=_should_use_moe(env, config),
         moe_n_experts=config.network.moe_n_experts,
@@ -268,6 +271,7 @@ def create_trainer(config: CoatingOptimisationConfig, agent: hppo.PCHPPO, env: U
         'entropy_beta_discrete_end': config.training.entropy_beta_discrete_end,
         'entropy_beta_continuous_start': config.training.entropy_beta_continuous_start,
         'entropy_beta_continuous_end': config.training.entropy_beta_continuous_end,
+        'entropy_beta_use_restarts': config.training.entropy_beta_use_restarts,
         'n_epochs_per_update': config.training.n_epochs_per_update,
         'scheduler_start': config.training.scheduler_start,
         'scheduler_end': config.training.scheduler_end,

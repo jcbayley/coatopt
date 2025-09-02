@@ -118,6 +118,7 @@ Training algorithm parameters.
 | `entropy_beta_end` | `0.001` | Final entropy coefficient |
 | `entropy_beta_decay_length` | `None` | Decay length for entropy |
 | `entropy_beta_decay_start` | `0` | When to start entropy decay |
+| `entropy_beta_use_restarts` | `False` | Whether to restart entropy decay like LR scheduler |
 
 #### Learning Rate Scheduling
 
