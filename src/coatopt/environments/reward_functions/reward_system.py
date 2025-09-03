@@ -754,7 +754,6 @@ def apply_air_penalty_addon(total_reward: float, rewards: Dict[str, float], vals
     """
     updated_rewards = rewards.copy()
     air_penalty = 0.0
-    
     if env is not None:
         # Get current coating state and design criteria from env
         current_state = getattr(env, 'current_state', None)

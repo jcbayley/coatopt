@@ -54,7 +54,13 @@ class MultiObjectiveEnvironment(HPPOEnvironment):
             use_reward_normalization=use_reward_normalization,
             reward_normalization_mode=reward_normalization_mode,
             reward_normalization_ranges=reward_normalization_ranges,
-            reward_normalization_alpha=reward_normalization_alpha
+            reward_normalization_alpha=reward_normalization_alpha,
+            apply_normalization=self.apply_normalization,
+            apply_boundary_penalties=self.apply_boundary_penalties,
+            apply_divergence_penalty=self.apply_divergence_penalty,
+            apply_air_penalty=self.apply_air_penalty,
+            air_penalty_weight=self.air_penalty_weight,
+            divergence_penalty_weight=self.divergence_penalty_weight,
         )
         
         # Enhanced Pareto tracking with efficient algorithms
