@@ -6,6 +6,7 @@ from ..utils import state_utils
 from ..utils.EFI_tmm import CalculateEFI_tmm, optical_to_physical, physical_to_optical        # Observation space depends on whether electric field information is included
 
 from ..reward_functions.reward_system import RewardCalculator
+from .state import CoatingState
 import time
 import scipy
 from tmm import coh_tmm
@@ -92,6 +93,20 @@ class BaseCoatingEnvironment:
         self.use_intermediate_reward = config.data.use_intermediate_reward
         self.combine = config.data.combine
         
+        # Reward normalization parameters from DataConfig
+        self.use_reward_normalization = getattr(config.data, 'use_reward_normalization', False)
+        self.reward_normalization_mode = getattr(config.data, 'reward_normalization_mode', 'fixed')
+        self.reward_normalization_ranges = getattr(config.data, 'reward_normalization_ranges', {})
+        self.reward_normalization_alpha = getattr(config.data, 'reward_normalization_alpha', 0.1)
+        
+        # Reward addon system configuration from DataConfig
+        self.apply_normalization = getattr(config.data, 'apply_normalization', False)
+        self.apply_boundary_penalties = getattr(config.data, 'apply_boundary_penalties', False)
+        self.apply_divergence_penalty = getattr(config.data, 'apply_divergence_penalty', False)
+        self.apply_air_penalty = getattr(config.data, 'apply_air_penalty', False)
+        self.air_penalty_weight = getattr(config.data, 'air_penalty_weight', 1.0)
+        self.divergence_penalty_weight = getattr(config.data, 'divergence_penalty_weight', 1.0)
+        
         # Training parameters from DataConfig
         self.ignore_air_option = config.data.ignore_air_option
         self.ignore_substrate_option = config.data.ignore_substrate_option
@@ -170,7 +185,19 @@ class BaseCoatingEnvironment:
                                  combine="product",
                                  objective_bounds=None,
                                  include_electric_field=False,
-                                 electric_field_points=50):
+                                 electric_field_points=50,
+                                 # Reward normalization parameters
+                                 use_reward_normalization=False,
+                                 reward_normalization_mode="fixed",
+                                 reward_normalization_ranges=None,
+                                 reward_normalization_alpha=0.1,
+                                 # Reward addon system configuration
+                                 apply_normalization=False,
+                                 apply_boundary_penalties=False,
+                                 apply_divergence_penalty=False,
+                                 apply_air_penalty=False,
+                                 air_penalty_weight=1.0,
+                                 divergence_penalty_weight=1.0):
         """Legacy parameter initialization for backward compatibility."""
         
         self.max_layers = max_layers
@@ -205,6 +232,20 @@ class BaseCoatingEnvironment:
         # Objective bounds for reward normalization (if provided)
         if objective_bounds is not None:
             self.objective_bounds = objective_bounds
+        
+        # Reward normalization parameters
+        self.use_reward_normalization = use_reward_normalization
+        self.reward_normalization_mode = reward_normalization_mode
+        self.reward_normalization_ranges = reward_normalization_ranges or {}
+        self.reward_normalization_alpha = reward_normalization_alpha
+        
+        # Reward addon system configuration
+        self.apply_normalization = apply_normalization
+        self.apply_boundary_penalties = apply_boundary_penalties
+        self.apply_divergence_penalty = apply_divergence_penalty
+        self.apply_air_penalty = apply_air_penalty
+        self.air_penalty_weight = air_penalty_weight
+        self.divergence_penalty_weight = divergence_penalty_weight
 
     def _setup_common_attributes(self):
         """Setup attributes common to both initialization methods."""
@@ -215,65 +256,93 @@ class BaseCoatingEnvironment:
         self.state_space_size = self.max_layers * self.n_materials + self.max_layers
         self.state_space_shape = (self.max_layers, self.n_materials + 1)
         
-        # Environment state
+        # Environment state - always initialize with CoatingState
         self.length = 0
         self.current_state = self.sample_state_space()
         self.current_index = 0
         self.previous_material = self.substrate_material_index
         
-        # Calculate observation space dynamically from actual observation
+        # Calculate observation space dynamically
         self.obs_space_shape = self._get_observation_shape()
         self.obs_space_size = self.obs_space_shape[0] * self.obs_space_shape[1]
         
-        # Initialize simple reward calculator
+        # Initialize reward calculator with addon configuration
         reward_type = "default" if self.reward_function is None else str(self.reward_function)
-        self.reward_calculator = RewardCalculator(
-            reward_type=reward_type,
-            optimise_parameters=self.get_parameter_names(),  # Use clean parameter names
-            optimise_targets=self.optimise_targets,
-            combine=self.combine, env=self
-        )
+        
+        # Gather reward calculator configuration parameters
+        reward_calc_config = {
+            'reward_type': reward_type,
+            'optimise_parameters': self.get_parameter_names(),  # Use clean parameter names
+            'optimise_targets': self.optimise_targets,
+            'combine': self.combine,
+            'use_reward_normalization': getattr(self, 'use_reward_normalization', False),
+            'reward_normalization_mode': getattr(self, 'reward_normalization_mode', 'fixed'),
+            'reward_normalization_ranges': getattr(self, 'reward_normalization_ranges', {}),
+            'reward_normalization_alpha': getattr(self, 'reward_normalization_alpha', 0.1),
+            # Addon configuration
+            'apply_normalization': getattr(self, 'apply_normalization', False),
+            'apply_boundary_penalties': getattr(self, 'apply_boundary_penalties', False),
+            'apply_divergence_penalty': getattr(self, 'apply_divergence_penalty', False),
+            'apply_air_penalty': getattr(self, 'apply_air_penalty', False),
+            'air_penalty_weight': getattr(self, 'air_penalty_weight', 1.0),
+            'divergence_penalty_weight': getattr(self, 'divergence_penalty_weight', 1.0),
+        }
+        
+        self.reward_calculator = RewardCalculator(**reward_calc_config)
 
     def _get_observation_shape(self):
         """
-        Dynamically calculate observation shape by sampling and computing actual observation.
+        Dynamically calculate observation shape by creating a sample CoatingState.
         This avoids hardcoding feature counts and automatically adapts to configuration.
         
         Returns:
             tuple: (max_layers, n_features) shape of observations
         """
-        # Use the current state that was already sampled in _setup_common_attributes
-        sample_obs = self.get_observation_from_state(self.current_state)
-        
-        # Convert observation to tensor format to get the actual shape
-        from ...algorithms.action_utils import prepare_state_input
         try:
-            obs_tensor = prepare_state_input(sample_obs)
-            # obs_tensor shape: [batch, layers, features]
-            actual_features = obs_tensor.shape[-1]
-            return (self.max_layers, actual_features)
+            # Create a sample CoatingState with materials configured
+            sample_state = CoatingState(
+                max_layers=self.max_layers,
+                n_materials=self.n_materials,
+                air_material_index=self.air_material_index,
+                substrate_material_index=self.substrate_material_index,
+                include_electric_field=self.include_electric_field,
+                materials=self.materials
+            )
+            
+            # Get sample observation tensor
+            sample_obs_tensor = sample_state.get_observation_tensor(
+                include_field_data=self.include_electric_field,
+                merit_function_callback=self._merit_function_wrapper if self.include_electric_field else None,
+                light_wavelength=getattr(self, 'light_wavelength', 1064e-9),
+                substrate_index=self.substrate_material_index,
+                air_index=self.air_material_index,
+                use_optical_thickness=getattr(self, 'use_optical_thickness', True)
+            )
+            
+            # Return actual tensor shape
+            return tuple(sample_obs_tensor.shape)
+            
         except Exception as e:
-            # Fallback: compute shape from the observation structure
-            print(f"Warning: Could not convert observation to tensor, calculating shape from structure: {e}")
-            if isinstance(sample_obs, dict) and 'layer_stack' in sample_obs:
-                # Count features from layer_stack structure + additional features
-                base_features = len(['thickness', 'material_index', 'n', 'k'])  # 4
-                additional_features = 0
-                if 'electric_field' in sample_obs:
-                    additional_features += 2  # EFI + gradient
-                if 'cumulative_metrics' in sample_obs:
-                    additional_features += len(sample_obs['cumulative_metrics'])  # R, A, TN
-                return (self.max_layers, base_features + additional_features)
-            else:
-                # For numpy array observations
-                return (self.max_layers, sample_obs.shape[-1])  
+            print(f"Warning: Could not calculate observation shape dynamically: {e}")
+            # Fallback to basic calculation
+            base_features = 4  # thickness, material_index, n, k
+            if self.include_electric_field:
+                base_features += 5  # + efield, grad, R, A, TN
+            return (self.max_layers, base_features)  
 
 
     def reset(self):
-        """Reset the state space and length."""
+        """Reset the environment state - always returns CoatingState object."""
         self.length = 0
-        self.current_state = self.sample_state_space()
         self.current_index = 0
+        
+        # Sample new state (always returns CoatingState)
+        self.current_state = self.sample_state_space()
+        
+        # Ensure materials are set for enhanced observations
+        if hasattr(self, 'materials'):
+            self.current_state.materials = self.materials
+        
         return self.current_state
     
     def print_state(self,):
@@ -288,24 +357,46 @@ class BaseCoatingEnvironment:
         return x
 
     def sample_state_space(self, random_material=False):
-        """return air with a thickness of 1
+        """
+        Sample initial state space - always returns CoatingState object.
 
+        Args:
+            random_material: If True, assign random materials to layers
+            
         Returns:
-            _type_: _description_
+            CoatingState: Initial state as CoatingState object
         """
         if self.opt_init:
-            layers = self.get_optimal_state()
+            layers_array = self.get_optimal_state()
+            # Convert to CoatingState
+            state = CoatingState.from_tensor(
+                torch.from_numpy(layers_array).float(),
+                air_material_index=self.air_material_index,
+                substrate_material_index=self.substrate_material_index
+            )
         else:
-            layers = np.zeros((self.max_layers, self.n_materials + 1))
-            layers[:,self.air_material_index+1] = 1
-            layers[:,0] = np.random.uniform(self.min_thickness, self.max_thickness, size=len(layers[:,0]))
+            # Create CoatingState directly
+            state = CoatingState(
+                max_layers=self.max_layers,
+                n_materials=self.n_materials,
+                air_material_index=self.air_material_index,
+                substrate_material_index=self.substrate_material_index,
+                include_electric_field=self.include_electric_field,
+                materials=self.materials
+            )
+            
+            # Set random thicknesses for all layers (initially as air)
+            for layer_idx in range(self.max_layers):
+                thickness = np.random.uniform(self.min_thickness, self.max_thickness)
+                state.set_layer(layer_idx, thickness, self.air_material_index)
 
         if random_material:
-            for layer_ind in range(len(layers)):
+            for layer_ind in range(self.max_layers):
                 material = np.random.randint(1, self.n_materials)
-                layers[layer_ind][material+1] = 1
-                layers[layer_ind][self.air_material_index+1] = 0
-        return layers
+                thickness = state.get_thickness_at_layer(layer_ind)
+                state.set_layer(layer_ind, thickness, material)
+        
+        return state
 
     def sample_action_space(self, ):
         """sample from the available state space
@@ -335,7 +426,7 @@ class BaseCoatingEnvironment:
         Compute state value with optional electric field data return.
 
         Args:
-            state (_type_): _description_
+            state: CoatingState object or array (backward compatibility)
             material_sub (int, optional): Substrate material type 
             light_wavelength (int, optional): laser wavelength (m)
             frequency (int, optional): frequency of interest (Hz)
@@ -347,10 +438,23 @@ class BaseCoatingEnvironment:
         Returns:
             _type_: Performance metrics and optionally field data
         """
-
+        
+        # Handle CoatingState input
+        if isinstance(state, CoatingState):
+            # Use state.get_tensor() for calculations
+            state_tensor = state.get_tensor()
+        else:
+            # Backward compatibility with numpy arrays/tensors
+            if isinstance(state, torch.Tensor):
+                state_tensor = state
+            else:
+                state_tensor = torch.from_numpy(state).float()
+        
+        # Convert to numpy for existing trim_state function
+        state_array = state_tensor.numpy()
         
         # trim out the duplicate air layers and inverse order
-        state_trim = state_utils.trim_state(state)
+        state_trim = state_utils.trim_state(state_array)
         # reverse state
         state_trim = state_trim[::-1]
 
@@ -423,174 +527,131 @@ class BaseCoatingEnvironment:
         self.current_expert_constraints = None
     
     def update_state(self, current_state, thickness, material):
-        """new state is the current action choice
-
+        """
+        Update state using CoatingState interface.
+        
         Args:
-            action (_type_): _description_
+            current_state: CoatingState object or array (for backward compatibility)
+            thickness: New thickness value
+            material: Material index
 
         Returns:
-            _type_: _description_
+            tuple: (updated_state, new_layer_tensor)
         """
-        material = torch.nn.functional.one_hot(torch.from_numpy(np.array([material]).astype(int)), num_classes=self.n_material_options)[0]
-        thickness = torch.from_numpy(np.array([thickness]))
-        new_layer = torch.cat([thickness, material])
-        current_state[self.current_index][0] = thickness
-        #if self.ignore_air_option:
-        #    current_state[self.current_index][2:] = material
-        #else:
-        current_state[self.current_index][1:] = material
-
-        #if material[0] == 1 and self.current_index != self.max_layers - 1:
-        #    current_state[self.current_index:] = new_layer.repeat((self.max_layers-self.current_index, 1))
+        # Convert to CoatingState if needed using universal loader
+        if not isinstance(current_state, CoatingState):
+            current_state = CoatingState.load_from_array(
+                current_state,
+                max_layers=self.max_layers,
+                n_materials=self.n_materials,
+                air_material_index=self.air_material_index,
+                substrate_material_index=self.substrate_material_index
+            )
+            current_state.materials = self.materials
+        
+        # Use CoatingState.set_layer() for clean state manipulation
+        current_state.set_layer(self.current_index, thickness, material)
+        
+        # For backward compatibility, create new_layer tensor
+        material_onehot = current_state.material_index_to_onehot(material)
+        thickness_tensor = torch.tensor([thickness])
+        new_layer = torch.cat([thickness_tensor, material_onehot])
 
         return current_state, new_layer
     
-    def get_observation_from_state(self, state):
+    def get_observation_from_state(self, state=None):
         """
-        Get observation from state in dictionary format.
+        Get observation from state - delegates to CoatingState for consistency.
         
         Args:
-            state: Current coating state array
+            state: CoatingState object or array (backward compatibility)
+                   If None, uses self.current_state
             
         Returns:
-            dict: Observation containing:
-                - 'layer_stack': Dictionary with thickness, material_index, n, k for each layer
-                - 'electric_field': EFI distribution (if include_electric_field=True)
-                - 'field_gradients': Field spatial derivatives (if include_electric_field=True)
-                - 'cumulative_metrics': [reflectivity, absorption, thermal_noise] (if include_electric_field=True)
+            dict: Observation dictionary
         """
-        # Create consistent layer stack information with base 4 features
-        layer_stack = []
-        for i, st in enumerate(state):
-            material_idx = np.argmax(st[1:])
-            n = self.materials[material_idx]["n"]
-            k = self.materials[material_idx]["k"]
-            layer_stack.append({
-                'thickness': st[0],
-                'material_index': material_idx,
-                'n': n,
-                'k': k
-            })
+        # Use current state if no state provided
+        if state is None:
+            if not hasattr(self, 'current_state') or self.current_state is None:
+                raise ValueError("No current state available. Call reset() first.")
+            state = self.current_state
         
-        # Create base observation with consistent layer stack format
-        observation = {
-            'layer_stack': layer_stack
-        }
-        
-        # Add electric field information if enabled
-        if self.include_electric_field:
-            field_info = self._compute_electric_field_profile(state, self.electric_field_points)
-            observation.update({
-                'electric_field': field_info['field_normalized'],
-                'field_gradients': field_info['field_gradients'],
-                'cumulative_metrics': field_info['cumulative_metrics'],
-                'field_positions': field_info['field_positions'],
-                'field_layer_indices': field_info['layer_indices']
-            })
-        
-        return observation
-
-    def _compute_electric_field_profile(self, state, num_field_points=50):
-        """
-        Compute electric field intensity profile for current coating state.
-        Uses existing merit_function calculation to avoid duplicate computation.
-        
-        Args:
-            state: Current coating state array
-            num_field_points: Number of points to sample the field profile
-            
-        Returns:
-            dict: Electric field information
-        """
-        try:
-            # Get field data from compute_state_value (reuses existing calculation)
-            r, thermal_noise, e_integrated, total_thickness, field_data = self.compute_state_value(
-                state, 
-                return_separate=True, 
-                return_field_data=True
+        # Handle backward compatibility - convert arrays to CoatingState
+        if not isinstance(state, CoatingState):
+            state = CoatingState.load_from_array(
+                state,
+                max_layers=self.max_layers,
+                n_materials=self.n_materials,
+                air_material_index=self.air_material_index,
+                substrate_material_index=self.substrate_material_index
             )
-            
-            # Extract field information
-            E = field_data['E']  # Electric field intensity array
-            layer_idx = field_data['layer_idx']  # Layer indices
-            ds = field_data['ds']  # Position array
-            
-            if len(E) == 0:
-                # Return empty data for empty states
-                return {
-                    'field_profile': np.zeros(num_field_points),
-                    'field_positions': np.zeros(num_field_points),
-                    'field_gradients': np.zeros(num_field_points),
-                    'layer_indices': np.zeros(num_field_points, dtype=int),
-                    'field_normalized': np.zeros(num_field_points),
-                    'cumulative_metrics': np.array([r, e_integrated, thermal_noise])
-                }
-            
-            # Sample field at specified number of points
-            if len(E) > num_field_points:
-                # Downsample to requested number of points
-                indices = np.linspace(0, len(E) - 1, num_field_points, dtype=int)
-                field_profile = E[indices]
-                field_positions = ds[indices] 
-                field_layer_indices = np.array(layer_idx)[indices]
-            else:
-                field_profile = E
-                field_positions = ds
-                field_layer_indices = np.array(layer_idx)
-                
-            # Calculate field gradients (spatial derivatives)
-            if len(field_profile) > 1:
-                field_gradients = np.gradient(field_profile, field_positions)
-            else:
-                field_gradients = np.array([0])
-            
-            # Normalize field profile to [0, 1] range for network processing
-            field_max = np.max(field_profile) if len(field_profile) > 0 else 1.0
-            field_min = np.min(field_profile) if len(field_profile) > 0 else 0.0
-            field_range = field_max - field_min
-            
-            if field_range > 0:
-                field_normalized = (field_profile - field_min) / field_range
-            else:
-                field_normalized = np.zeros_like(field_profile)
-                
-            return {
-                'field_profile': field_profile,
-                'field_positions': field_positions,
-                'field_gradients': field_gradients,
-                'layer_indices': field_layer_indices,
-                'field_normalized': field_normalized,
-                'cumulative_metrics': np.array([r, e_integrated, thermal_noise])
-            }
-            
-        except Exception as e:
-            logging.warning(f"Electric field calculation failed: {e}")
-            # Return empty data on failure
-            return {
-                'field_profile': np.zeros(num_field_points),
-                'field_positions': np.zeros(num_field_points),
-                'field_gradients': np.zeros(num_field_points),
-                'layer_indices': np.zeros(num_field_points, dtype=int),
-                'field_normalized': np.zeros(num_field_points),
-                'cumulative_metrics': np.array([0.0, 0.0, 0.0])
-            }
+            # Provide materials to CoatingState for enhanced observations
+            state.materials = self.materials
+        
+        # Use CoatingState's observation generation with physics callback
+        return state.get_enhanced_observation(
+            include_field_data=self.include_electric_field,
+            merit_function_callback=self._merit_function_wrapper if self.include_electric_field else None,
+            light_wavelength=self.light_wavelength,
+            substrate_index=self.substrate_material_index,
+            air_index=self.air_material_index,
+            use_optical_thickness=self.use_optical_thickness
+        )
 
-    def get_observation_array(self, state):
+    def _merit_function_wrapper(self, state_trim, materials, **kwargs):
+        """Wrapper for merit function to interface with CoatingState."""
+        from ..utils import coating_utils
+        return coating_utils.merit_function(
+            np.array(state_trim),
+            materials,
+            **kwargs
+        )
+    
+    def get_observation(self) -> torch.Tensor:
+        """
+        Get observation from current state in tensor format.
+        Uses the existing CoatingState object for efficiency.
+        
+        Returns:
+            torch.Tensor: Observation tensor ready for neural networks
+        """
+        if not hasattr(self, 'current_state') or self.current_state is None:
+            raise ValueError("No current state available. Call reset() first.")
+        
+        # Since current_state is initialized as CoatingState in _setup_common_attributes,
+        # we can use it directly without recreating
+        return self.current_state.get_observation_tensor(
+            include_field_data=self.include_electric_field,
+            merit_function_callback=self._merit_function_wrapper if self.include_electric_field else None,
+            light_wavelength=self.light_wavelength,
+            substrate_index=self.substrate_material_index,
+            air_index=self.air_material_index,
+            use_optical_thickness=self.use_optical_thickness
+        )
+    
+    def get_observation_array(self, state=None):
         """
         Get observation in legacy array format for backward compatibility.
+        Converts state to simple [thickness, n, k] format per layer.
         
         Args:
-            state: Current coating state array
+            state: Current coating state (CoatingState object or array)
+                   If None, uses self.current_state
             
         Returns:
             numpy.ndarray: Array with shape [n_layers, 3] containing [thickness, n, k]
         """
+        # Use the centralized observation method and extract basic data
+        obs_dict = self.get_observation_from_state(state)
+        layer_stack = obs_dict['layer_stack']
+        
         observation = []
-        for st in state:
-            mind = np.argmax(st[1:])
-            n = self.materials[mind]["n"]
-            k = self.materials[mind]["k"]
-            observation.append([st[0], n, k])
+        for layer in layer_stack:
+            observation.append([
+                layer['thickness'], 
+                layer['n'], 
+                layer['k']
+            ])
 
         return np.array(observation)
 
@@ -612,9 +673,27 @@ class BaseCoatingEnvironment:
         else:
             self.current_index = layer_index
 
+        # Ensure state is CoatingState
+        if not isinstance(state, CoatingState):
+            state = CoatingState.load_from_array(
+                state,
+                max_layers=self.max_layers,
+                n_materials=self.n_materials,
+                air_material_index=self.air_material_index,
+                substrate_material_index=self.substrate_material_index
+            )
+            self.current_state = state
+
         material = action[0]
         thickness = action[1] #* self.light_wavelength /(4*self.materials[material]["n"])
-        new_state, full_action = self.update_state(np.copy(state), thickness, material)
+        
+        # Create a copy for update_state
+        if isinstance(state, CoatingState):
+            state_copy = state.copy()
+        else:
+            state_copy = np.copy(state)
+        
+        new_state, full_action = self.update_state(state_copy, thickness, material)
 
 
         neg_reward = -1000
@@ -671,14 +750,54 @@ class BaseCoatingEnvironment:
     def change_reward_function(self, reward_type):
         """Change the reward function during runtime."""
         self.reward_function = reward_type
-        self.reward_calculator = RewardCalculator(
-            reward_type=reward_type,
-            optimise_parameters=self.get_parameter_names(),  # Use clean parameter names
-            optimise_targets=self.optimise_targets,
-            combine=self.combine
-        )
+        
+        # Preserve addon configuration when changing reward function
+        reward_calc_config = {
+            'reward_type': reward_type,
+            'optimise_parameters': self.get_parameter_names(),  # Use clean parameter names
+            'optimise_targets': self.optimise_targets,
+            'combine': self.combine,
+            'use_reward_normalization': getattr(self, 'use_reward_normalization', False),
+            'reward_normalization_mode': getattr(self, 'reward_normalization_mode', 'fixed'),
+            'reward_normalization_ranges': getattr(self, 'reward_normalization_ranges', {}),
+            'reward_normalization_alpha': getattr(self, 'reward_normalization_alpha', 0.1),
+            # Addon configuration
+            'apply_normalization': getattr(self, 'apply_normalization', False),
+            'apply_boundary_penalties': getattr(self, 'apply_boundary_penalties', False),
+            'apply_divergence_penalty': getattr(self, 'apply_divergence_penalty', False),
+            'apply_air_penalty': getattr(self, 'apply_air_penalty', False),
+            'air_penalty_weight': getattr(self, 'air_penalty_weight', 1.0),
+            'divergence_penalty_weight': getattr(self, 'divergence_penalty_weight', 1.0),
+        }
+        
+        self.reward_calculator = RewardCalculator(**reward_calc_config)
     
     def get_current_reward_function(self):
         """Get the currently configured reward function type."""
         return self.reward_calculator.reward_type
+
+    # State conversion methods for backward compatibility
+    def tensor_to_coating_state(self, tensor: torch.Tensor) -> CoatingState:
+        """Convert tensor to CoatingState object."""
+        return CoatingState.load_from_array(
+            tensor,
+            air_material_index=self.air_material_index,
+            substrate_material_index=self.substrate_material_index
+        )
+    
+    def array_to_coating_state(self, array: np.ndarray) -> CoatingState:
+        """Convert numpy array to CoatingState object."""
+        return CoatingState.load_from_array(
+            array,
+            air_material_index=self.air_material_index,
+            substrate_material_index=self.substrate_material_index
+        )
+    
+    def coating_state_to_tensor(self, state: CoatingState) -> torch.Tensor:
+        """Convert CoatingState to tensor."""
+        return state.get_tensor()
+    
+    def coating_state_to_array(self, state: CoatingState) -> np.ndarray:
+        """Convert CoatingState to numpy array."""
+        return state.get_tensor().numpy()
 

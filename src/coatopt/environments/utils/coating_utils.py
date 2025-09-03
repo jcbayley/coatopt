@@ -1,6 +1,7 @@
 import numpy as np
 from .EFI_tmm import CalculateEFI_tmm,  physical_to_optical
 from .YAM_CoatingBrownian import getCoatingThermalNoise
+from ..core.state import CoatingState
 import copy
 import logging
 #functions used to Calculate Coating Thermal Noise 
@@ -315,8 +316,29 @@ def merit_function(
     
     """
     Calculate the merit function for a given coating configuration.
+    
+    Args:
+        state: CoatingState object or numpy array (backward compatibility)
+        all_materials: Material properties dictionary
+        ... (other parameters as before)
     """
     
+    # Handle CoatingState input
+    if isinstance(state, CoatingState):
+        # Use CoatingState methods to extract layer information more efficiently
+        material_indices = state.get_material_indices_sequence(active_only=True)
+        thickness_sequence = state.get_thickness_sequence()
+        
+        # Convert back to array format for existing merit function logic
+        state_array = []
+        for i in range(len(material_indices)):
+            layer = [0] * (state.n_materials + 1)
+            layer[0] = thickness_sequence[i]
+            layer[material_indices[i] + 1] = 1
+            state_array.append(layer)
+        state = np.array(state_array)
+    
+    # Continue with existing merit function logic
     #n1 = materialParams[np.unique(materialLayer)[0]]['n']
     #n2 = materialParams[np.unique(materialLayer)[1]]['n']
         

@@ -6,6 +6,7 @@ import copy
 import matplotlib.pyplot as plt
 from typing import Optional, TYPE_CHECKING
 from coatopt.environments.core.base_environment import BaseCoatingEnvironment
+from coatopt.environments.core.state import CoatingState
 
 from coatopt.config.structured_config import CoatingOptimisationConfig
 

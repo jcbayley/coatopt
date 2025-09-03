@@ -4,6 +4,8 @@ Contains helper functions for state manipulation, visualization, and coating gen
 """
 import numpy as np
 import matplotlib.pyplot as plt
+import torch
+from ..core.state import CoatingState
 
 
 def print_state(state):
@@ -127,12 +129,33 @@ def trim_state(state, air_material_index=0):
     Remove air layers from the end of state.
     
     Args:
-        state: State array to trim
+        state: CoatingState object, array, or tensor to trim
         air_material_index: Index of air material
         
     Returns:
-        Trimmed state array
+        Trimmed state array (maintains backward compatibility)
     """
+    # Handle CoatingState input
+    if isinstance(state, CoatingState):
+        # Get active layers only
+        active_layers = state.get_active_layers()
+        
+        # Convert back to array format for backward compatibility
+        trimmed_state = []
+        for layer in active_layers:
+            if layer.material_index == air_material_index and len(trimmed_state) > 0:
+                break
+            layer_array = np.zeros(state.n_materials + 1)
+            layer_array[0] = layer.thickness
+            layer_array[layer.material_index + 1] = 1
+            trimmed_state.append(layer_array)
+        
+        return np.array(trimmed_state) if trimmed_state else np.array([[0] + [0]*state.n_materials])
+    
+    # Handle array/tensor input (backward compatibility)
+    if isinstance(state, torch.Tensor):
+        state = state.numpy()
+    
     trimmed_state = []
     
     for i in range(len(state)):
@@ -147,6 +170,31 @@ def trim_state(state, air_material_index=0):
         trimmed_state.append(state[i])
     
     return np.array(trimmed_state) if trimmed_state else state
+
+
+# Conversion functions for CoatingState integration
+def tensor_to_coating_state(tensor: torch.Tensor, air_material_index: int = 0, 
+                          substrate_material_index: int = 1):
+    """Convert tensor to CoatingState object."""
+    return CoatingState.load_from_array(tensor, air_material_index=air_material_index, 
+                                       substrate_material_index=substrate_material_index)
+
+
+def coating_state_to_tensor(state):
+    """Convert CoatingState to tensor."""
+    return state.get_tensor()
+
+
+def array_to_coating_state(array: np.ndarray, air_material_index: int = 0,
+                         substrate_material_index: int = 1):
+    """Convert numpy array to CoatingState object."""
+    return CoatingState.load_from_array(array, air_material_index=air_material_index, 
+                                       substrate_material_index=substrate_material_index)
+
+
+def coating_state_to_array(state) -> np.ndarray:
+    """Convert CoatingState to numpy array."""
+    return state.get_tensor().numpy()
 
 
 def plot_stack(data, title="Coating Stack"):

@@ -10,9 +10,10 @@ from coatopt.algorithms.hppo.core.networks.pre_networks import PreNetworkLinear,
 from coatopt.algorithms.hppo.core.replay_buffer import ReplayBuffer
 from coatopt.algorithms.config import HPPOConstants
 from coatopt.algorithms.action_utils import (
-    prepare_state_input, prepare_layer_number, create_material_mask,
+    prepare_layer_number, create_material_mask_from_coating_state,
     pack_state_sequence, validate_probabilities, format_action_output
 )
+from coatopt.environments.core.state import CoatingState
 
 
 class PCHPPO:
@@ -213,12 +214,6 @@ class PCHPPO:
         self.beta = beta
         self.clip_ratio = clip_ratio
         self.gamma = gamma
-        
-        # Enhanced cache for expensive computations
-        self._material_mask_cache = {}
-        self._cache_hits = 0
-        self._cache_misses = 0
-        self._last_cache_key = None  # Track last cache key for better hit/miss tracking
 
     def _create_pre_network(self, state_dim, hidden_size, pre_type, n_heads, n_pre_layers, num_objectives):
         """Create pre-network based on specified type."""
@@ -470,7 +465,8 @@ class PCHPPO:
         actionc: Optional[torch.Tensor] = None,
         actiond: Optional[torch.Tensor] = None,
         packed: bool = False,
-        objective_weights: Optional[torch.Tensor] = None
+        objective_weights: Optional[torch.Tensor] = None,
+        original_states: Optional[List] = None  # Original CoatingState objects for constraints
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, 
                torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, dict]:
         """
@@ -487,8 +483,24 @@ class PCHPPO:
         Returns:
             Tuple containing action components, probabilities, values, and MoE auxiliary losses
         """
-        # Prepare inputs
-        state_tensor = prepare_state_input(state, self.pre_type)
+        # Prepare inputs - keep original state for constraints, get observation for networks
+        original_state = state  # Keep reference to original CoatingState
+        
+        # Get observation tensor for networks - handles all formatting including pre_type
+        if hasattr(state, 'get_observation_tensor'):
+            # CoatingState - use its comprehensive observation method with pre_type formatting
+            obs_tensor = state.get_observation_tensor(pre_type=self.pre_type)
+            # Add batch dimension if missing
+            if obs_tensor.dim() == 1:  # [features] -> [1, features] 
+                obs_tensor = obs_tensor.unsqueeze(0)
+            elif obs_tensor.dim() == 2 and self.pre_type != "linear":  # [layers, features] -> [1, layers, features]
+                obs_tensor = obs_tensor.unsqueeze(0)
+        else:
+            # Fallback for raw tensors (shouldn't happen with current flow but just in case)
+            obs_tensor = state
+            if self.pre_type == "linear" and obs_tensor.dim() > 1:
+                obs_tensor = obs_tensor.flatten(1)
+                
         layer_number, layer_numbers_validated = prepare_layer_number(layer_number)
         
         # Ensure objective_weights is properly formatted as float tensor
@@ -504,10 +516,10 @@ class PCHPPO:
         
         # Pack state sequence only for LSTM processing
         if self.pre_type == "lstm":
-            state_input = pack_state_sequence(state_tensor, layer_numbers_validated)
+            state_input = pack_state_sequence(obs_tensor, layer_numbers_validated)
             use_packed = True
         else:
-            state_input = state_tensor
+            state_input = obs_tensor
             use_packed = False
         
         # Get pre-network outputs (optimized based on gradient needs)
@@ -525,10 +537,17 @@ class PCHPPO:
             
         validate_probabilities(discrete_probs, "discrete_probs")
         
-        # Apply material constraints
-        masked_discrete_probs = self._apply_material_constraints(
-            discrete_probs, state_tensor, layer_number
-        )
+        # Apply material constraints 
+        if original_states is not None:
+            # Batch case: we have a list of original CoatingState objects
+            masked_discrete_probs = self._apply_material_constraints_batch(
+                discrete_probs, original_states, layer_number
+            )
+        else:
+            # Single state case: use original_state (which is a CoatingState)
+            masked_discrete_probs = self._apply_material_constraints(
+                discrete_probs, original_state, layer_number
+            )
         
         # Sample discrete action
         discrete_dist = torch.distributions.Categorical(masked_discrete_probs)
@@ -640,96 +659,42 @@ class PCHPPO:
                 pre_output_v = self.pre_network(state_input, layer_number)
             return pre_output_d, pre_output_c, pre_output_v
 
-    def _apply_material_constraints(self, discrete_probs, state_tensor, layer_number):
-        """Apply material selection constraints with enhanced caching and vectorization."""
+    def _apply_material_constraints(self, discrete_probs, coating_state, layer_number):
+        """Apply material selection constraints using CoatingState."""
         if layer_number is None:
             return discrete_probs
-            
-        # Enhanced caching system with batch support
-        batch_size = discrete_probs.shape[0] if discrete_probs.dim() > 1 else 1
         
-        # Try vectorized batch cache lookup for better performance
-        if batch_size == 1:
-            cache_key = self._get_material_mask_cache_key(state_tensor, layer_number)
-            
-            if cache_key in self._material_mask_cache:
-                cached_mask = self._material_mask_cache[cache_key]
-                # Verify cached mask has compatible shape
-                if cached_mask.shape[-1] == discrete_probs.shape[-1]:
-                    self._cache_hits += 1
-                    # Handle shape broadcasting for batched operations
-                    if cached_mask.shape != discrete_probs.shape:
-                        cached_mask = cached_mask.expand_as(discrete_probs)
-                    return discrete_probs * cached_mask
-                else:
-                    # Remove invalid cached entry
-                    del self._material_mask_cache[cache_key]
-        
-        # Compute mask with improved efficiency
-        if batch_size == 1 and hasattr(self, '_last_cache_key') and self._last_cache_key not in self._material_mask_cache:
-            self._cache_misses += 1
-        
-        masked_probs = create_material_mask(
-            discrete_probs, state_tensor, layer_number,
-            self.substrate_material_index, self.air_material_index,
+        # Use CoatingState-specific material mask function
+        masked_probs = create_material_mask_from_coating_state(
+            discrete_probs, coating_state, layer_number,
             self.ignore_air_option, self.ignore_substrate_option
         )
         
-        # Enhanced caching strategy with memory management
-        if batch_size == 1 and cache_key is not None:
-            # Limit cache size and implement LRU-style cleanup
-            if len(self._material_mask_cache) >= 1500:
-                # Remove oldest 500 entries to prevent memory bloat
-                oldest_keys = list(self._material_mask_cache.keys())[:500]
-                for old_key in oldest_keys:
-                    del self._material_mask_cache[old_key]
-            
-            # Store mask with numerical stability
-            mask = masked_probs / (discrete_probs + 1e-10)  # Improved numerical stability
-            self._material_mask_cache[cache_key] = mask.detach().clone()  # Explicit clone for safety
-            self._last_cache_key = cache_key
-        
         return masked_probs
 
-    def _get_material_mask_cache_key(self, state_tensor, layer_number):
-        """Create cache key for material mask based on previous materials used."""
-        if isinstance(layer_number, torch.Tensor):
-            layer_num = layer_number.item() if layer_number.numel() == 1 else tuple(layer_number.cpu().numpy())
-        else:
-            layer_num = layer_number
+    def _apply_material_constraints_batch(self, discrete_probs, coating_states, layer_numbers):
+        """Apply material selection constraints for batch of CoatingState objects."""
+        if layer_numbers is None or len(coating_states) == 0:
+            return discrete_probs
+        
+        batch_size = discrete_probs.shape[0]
+        masked_probs_list = []
+        
+        for i in range(batch_size):
+            # Get the corresponding state and layer number for this batch item
+            state_i = coating_states[i] if i < len(coating_states) else coating_states[0]
+            layer_num_i = layer_numbers[i:i+1] if isinstance(layer_numbers, torch.Tensor) else layer_numbers
+            discrete_prob_i = discrete_probs[i:i+1]
             
-        # Create key based on layer number and previous material (simplified for common cases)
-        if hasattr(layer_num, '__iter__'):
-            # Batch case - don't cache for now to keep it simple
-            return None
-        else:
-            # Single layer case
-            if layer_num > 0 and layer_num < state_tensor.size(1):
-                prev_material = torch.argmax(state_tensor[0, layer_num - 1, 1:]).item()
-                return (layer_num, prev_material)
-            else:
-                return (layer_num, self.substrate_material_index)
-
-    def get_cache_stats(self):
-        """Get enhanced cache performance statistics."""
-        total_requests = self._cache_hits + self._cache_misses
-        hit_rate = self._cache_hits / total_requests if total_requests > 0 else 0
+            # Apply constraints for this individual item
+            masked_prob_i = create_material_mask_from_coating_state(
+                discrete_prob_i, state_i, layer_num_i,
+                self.ignore_air_option, self.ignore_substrate_option
+            )
+            masked_probs_list.append(masked_prob_i)
         
-        # Calculate memory usage estimate (rough approximation)
-        cache_memory_mb = 0
-        if self._material_mask_cache:
-            sample_tensor = next(iter(self._material_mask_cache.values()))
-            bytes_per_tensor = sample_tensor.numel() * sample_tensor.element_size()
-            cache_memory_mb = (bytes_per_tensor * len(self._material_mask_cache)) / (1024 * 1024)
-        
-        return {
-            'cache_hits': self._cache_hits,
-            'cache_misses': self._cache_misses,
-            'hit_rate': hit_rate,
-            'cache_size': len(self._material_mask_cache),
-            'estimated_memory_mb': round(cache_memory_mb, 2),
-            'efficiency': 'Good' if hit_rate > 0.7 else 'Fair' if hit_rate > 0.4 else 'Poor'
-        }
+        # Concatenate all masked probabilities
+        return torch.cat(masked_probs_list, dim=0)
 
     def update(self, update_policy: bool = True, update_value: bool = True) -> Tuple[float, float, float]:
         """
@@ -763,13 +728,9 @@ class PCHPPO:
             # Convert observations (which may be dicts) to tensors using action_utils
             raw_states = list(self.replay_buffer.states)
             
-            # Convert each observation to tensor format
-            if len(raw_states) > 0:
-                state_tensors = []
-                for state_obs in raw_states:
-                    state_tensor = prepare_state_input(state_obs, self.pre_type)
-                    state_tensors.append(state_tensor)
-                states = torch.cat(state_tensors, dim=0).to(torch.float32)
+            # Use pre-computed observations from replay buffer - much more efficient
+            if len(self.replay_buffer.observations) > 0:
+                states = torch.cat(list(self.replay_buffer.observations), dim=0).to(torch.float32)
             else:
                 states = torch.empty(0, 0, 0).to(torch.float32)
                 
@@ -781,7 +742,8 @@ class PCHPPO:
             # Get current policy outputs
             (_, _, _, log_prob_discrete, log_prob_continuous, _, _, _, state_value, 
              entropy_discrete, entropy_continuous, moe_aux_losses) = self.select_action(
-                states, layer_numbers, actionsc, actionsd, packed=True, objective_weights=objective_weights
+                states, layer_numbers, actionsc, actionsd, packed=True, 
+                objective_weights=objective_weights, original_states=raw_states
             )
 
             # Calculate advantages

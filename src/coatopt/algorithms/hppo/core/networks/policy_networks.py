@@ -114,6 +114,22 @@ class BaseNetwork(nn.Module):
         inputs = [state]
         
         if self.include_layer_number and layer_number is not None:
+            # Ensure layer_number has the right shape for concatenation with state
+            if layer_number.dim() == 1 and state.dim() == 2:
+                # If layer_number is 1D and state is 2D, expand layer_number
+                layer_number = layer_number.unsqueeze(-1)  # Shape: (B, 1)
+            elif layer_number.dim() == 0 and state.dim() == 2:
+                # If layer_number is scalar and state is 2D, expand to match batch
+                layer_number = layer_number.unsqueeze(0).unsqueeze(-1)  # Shape: (1, 1)
+                layer_number = layer_number.expand(state.size(0), -1)  # Shape: (B, 1)
+            elif layer_number.dim() == 1 and state.dim() == 1:
+                # Both 1D, expand both to 2D
+                layer_number = layer_number.unsqueeze(-1)  # Shape: (B, 1)
+                
+            # Ensure batch dimensions match
+            if layer_number.size(0) != state.size(0):
+                layer_number = layer_number.expand(state.size(0), -1)
+                
             inputs.append(layer_number)
         elif self.include_layer_number:
             raise ValueError("layer_number must be provided when include_layer_number=True")

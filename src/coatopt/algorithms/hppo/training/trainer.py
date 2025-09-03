@@ -894,14 +894,13 @@ class UnifiedHPPOTrainer:
         
         # Run episode steps
         for step in range(HPPOConstants.MAX_EPISODE_STEPS):
-            # Prepare inputs - always use observation from state
-            obs = self.env.get_observation_from_state(state)
+            # Prepare inputs - pass the CoatingState directly to agent
             step_tensor = np.array([step])
             objective_weights_tensor = torch.tensor(objective_weights).unsqueeze(0).to(torch.float32)
             
-            # Select action
+            # Select action - pass CoatingState directly
             action_output = self.agent.select_action(
-                obs, step_tensor, objective_weights=objective_weights_tensor
+                state, step_tensor, objective_weights=objective_weights_tensor
             )
             
             # Handle both MoE (12 outputs) and standard (11 outputs) return signatures
@@ -919,7 +918,9 @@ class UnifiedHPPOTrainer:
                 moe_aux_losses = {}
             
             # Scale continuous action to environment bounds
-            action[1] = action[1] * (self.env.max_thickness - self.env.min_thickness) + self.env.min_thickness
+            # action is now a simple list: [discrete_val, continuous_val1, continuous_val2, ...]
+            if len(action) > 1:
+                action[1] = action[1] * (self.env.max_thickness - self.env.min_thickness) + self.env.min_thickness
             
             # Take environment step  
             next_state, rewards, done, finished, _, full_action, vals = self.env.step(action, objective_weights=objective_weights)
@@ -930,8 +931,16 @@ class UnifiedHPPOTrainer:
                 self._handle_adaptive_moe_step(episode, rewards, objective_weights_tensor, action_output)
             
             # Store experience in replay buffer
+            # Pre-compute observation tensor once to avoid recomputation during updates
+            obs_tensor = state.get_observation_tensor(pre_type=self.agent.pre_type)
+            # Add batch dimension if needed
+            if obs_tensor.dim() == 1:
+                obs_tensor = obs_tensor.unsqueeze(0)
+            elif obs_tensor.dim() == 2 and self.agent.pre_type != "linear":
+                obs_tensor = obs_tensor.unsqueeze(0)
+                
             self.agent.replay_buffer.update(
-                actiond.detach(), actionc.detach(), obs, log_prob_discrete.detach(),
+                actiond.detach(), actionc.detach(), state, obs_tensor, log_prob_discrete.detach(),
                 log_prob_continuous.detach(), reward, value, done,
                 entropy_discrete.detach(), entropy_continuous.detach(), step_tensor,
                 objective_weights=objective_weights_tensor
@@ -1121,15 +1130,18 @@ class UnifiedHPPOTrainer:
         """
         try:
             # Prepare simple pareto data from class attributes
+            # Convert CoatingState objects to arrays for HDF5 compatibility
             pareto_data = {
                 'pareto_front_rewards': self.pareto_front_rewards,
                 'pareto_front_values': self.pareto_front_values,
-                'pareto_states': self.pareto_states,
+                'pareto_states': [state.get_array() if hasattr(state, 'get_array') else state 
+                                for state in self.pareto_states] if self.pareto_states else [],
                 'pareto_state_rewards': self.pareto_front_rewards,  # Same as pareto_front_rewards for consistency
                 'reference_point': self.reference_point,
                 'all_rewards': np.array(self.all_rewards) if self.all_rewards else np.array([]),
                 'all_values': np.array(self.all_values) if self.all_values else np.array([]),
-                'all_states': np.array(self.all_states) if self.all_states else np.array([]),
+                'all_states': [state.get_array() if hasattr(state, 'get_array') else state 
+                             for state in self.all_states] if self.all_states else [],
             }
             
             trainer_data = {
@@ -1155,7 +1167,8 @@ class UnifiedHPPOTrainer:
                 },
                 
                 'pareto_data': pareto_data,
-                'best_states': getattr(self, 'best_states', [])
+                'best_states': [state.get_array() if hasattr(state, 'get_array') else state 
+                               for state in getattr(self, 'best_states', [])]
             }
             
             # Save checkpoint
@@ -1216,7 +1229,9 @@ class UnifiedHPPOTrainer:
             
         states_dir = os.path.join(self.root_dir, HPPOConstants.STATES_DIR)
         
-        fig, ax = plot_stack(state, self.env.materials)
+        # Convert CoatingState to numpy array for plotting
+        state_array = state.get_array() if hasattr(state, 'get_array') else state
+        fig, ax = plot_stack(state_array, self.env.materials)
         opt_value = self.env.compute_state_value(state, return_separate=True)
         ax.set_title(f"Episode {episode}: Reward: {reward:.4f}, Value: {opt_value}")
         

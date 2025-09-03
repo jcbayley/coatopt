@@ -4,8 +4,10 @@ Extends the base CoatingStack with multi-objective optimization capabilities.
 """
 from typing import Optional, TYPE_CHECKING
 from .hppo_environment import HPPOEnvironment
+from .core.state import CoatingState
 import numpy as np
 import copy
+import torch
 
 from ..config.structured_config import CoatingOptimisationConfig
 from pymoo.util.nds.non_dominated_sorting import NonDominatedSorting
@@ -338,35 +340,33 @@ class MultiObjectiveEnvironment(HPPOEnvironment):
         return total_reward, vals, rewards
     
     def step(self, action, max_state=0, verbose=False, state=None, layer_index=None, always_return_value=False, objective_weights=None):
-        """action[0] - material, action[1] - thickness"""
+        """Step function simplified to work directly with CoatingState objects."""
         
-        # Initialize state and layer index
+        # Use current state if none provided
         if state is None:
             state = self.current_state
         else:
             self.current_state = state
 
+        # Use current index if none provided
         if layer_index is None:
             layer_index = self.current_index
         else:
             self.current_index = layer_index
 
-        # Extract action parameters
-        material = action[0]
-        thickness = action[1]
+        # Extract action parameters (now action is a simple list)
+        material = int(action[0])
+        thickness = float(action[1])
         
-        # Ensure state is numpy array or float, not tensor
-        state = self.check_numpy_cpu(state)
-        material = int(self.check_numpy_cpu(material))
-        thickness = self.check_numpy_cpu(thickness)
-
-        new_state = self.update_state(np.copy(state), thickness, material)
-        full_action = None
+        # Use the base class update_state method
+        self.current_state, new_layer = self.update_state(self.current_state, thickness, material)
+        
         # Initialize default values
         neg_reward = -1000
         reward = neg_reward
         terminated = False
         finished = False
+        full_action = None
         
         rewards = {
             "reflectivity": 0, "thermal_noise": 0, "thickness": 0, 
@@ -376,23 +376,19 @@ class MultiObjectiveEnvironment(HPPOEnvironment):
             "reflectivity": 0, "thermal_noise": 0, "thickness": 0, "absorption": 0
         }
 
-        # Update current state
-        self.current_state = new_state
-
         # Check termination conditions
         if self.min_thickness > thickness or thickness > self.max_thickness or not np.isfinite(thickness):
             print("out of thickness bounds")
         elif self.current_index == self.max_layers-1 or material == self.air_material_index:
             # Episode finished
             finished = True
-            reward, vals, rewards = self.compute_reward(new_state, max_state, objective_weights=objective_weights)
+            reward, vals, rewards = self.compute_reward(self.current_state, max_state, objective_weights=objective_weights)
         elif self.use_intermediate_reward:
             # Intermediate reward calculation
-            reward, vals, rewards = self.compute_reward(new_state, max_state, objective_weights=objective_weights)
+            reward, vals, rewards = self.compute_reward(self.current_state, max_state, objective_weights=objective_weights)
 
-        # Check for invalid states
-        if (np.any(np.isinf(new_state)) or np.any(np.isnan(new_state)) or 
-            np.isnan(reward) or np.isinf(reward)):
+        # Check for invalid states using CoatingState validation
+        if not self.current_state.is_valid() or np.isnan(reward) or np.isinf(reward):
             reward = neg_reward
             terminated = True
 
@@ -407,4 +403,4 @@ class MultiObjectiveEnvironment(HPPOEnvironment):
         self.length += 1
         self.current_index += 1
 
-        return new_state, rewards, terminated, finished, reward, full_action, vals
+        return self.current_state, rewards, terminated, finished, reward, full_action, vals

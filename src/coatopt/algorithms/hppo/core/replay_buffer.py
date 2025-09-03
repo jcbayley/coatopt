@@ -29,6 +29,7 @@ class ReplayBuffer:
         self.discrete_actions: deque = deque(maxlen=max_size)
         self.continuous_actions: deque = deque(maxlen=max_size)
         self.states: deque = deque(maxlen=max_size)
+        self.observations: deque = deque(maxlen=max_size)  # Pre-computed observation tensors
         self.logprobs_discrete: deque = deque(maxlen=max_size)
         self.logprobs_continuous: deque = deque(maxlen=max_size)
         self.rewards: deque = deque(maxlen=max_size)
@@ -49,6 +50,7 @@ class ReplayBuffer:
         self.discrete_actions.clear()
         self.continuous_actions.clear()
         self.states.clear()
+        self.observations.clear()
         self.logprobs_discrete.clear()
         self.logprobs_continuous.clear()
         self.rewards.clear()
@@ -66,6 +68,7 @@ class ReplayBuffer:
         discrete_action: torch.Tensor, 
         continuous_action: torch.Tensor, 
         state: torch.Tensor, 
+        observation: torch.Tensor,  # Pre-computed observation tensor
         logprob_discrete: torch.Tensor,
         logprob_continuous: torch.Tensor, 
         reward: float, 
@@ -83,7 +86,8 @@ class ReplayBuffer:
         Args:
             discrete_action: Discrete action taken
             continuous_action: Continuous action taken
-            state: Environment state
+            state: Environment state (CoatingState object)
+            observation: Pre-computed observation tensor ready for networks
             logprob_discrete: Log probability of discrete action
             logprob_continuous: Log probability of continuous action
             reward: Reward received
@@ -98,6 +102,7 @@ class ReplayBuffer:
         self.discrete_actions.append(discrete_action)
         self.continuous_actions.append(continuous_action)
         self.states.append(state)
+        self.observations.append(observation)
         self.logprobs_discrete.append(logprob_discrete)
         self.logprobs_continuous.append(logprob_continuous)
         self.rewards.append(reward)

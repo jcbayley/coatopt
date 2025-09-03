@@ -124,6 +124,14 @@ class DataConfig(BaseConfig):
     reward_normalization_mode: str = "fixed"  # "fixed" or "adaptive"
     reward_normalization_ranges: Dict[str, List[float]] = field(default_factory=dict)
     reward_normalization_alpha: float = 0.1
+    
+    # Reward addon system configuration
+    apply_normalization: bool = False
+    apply_boundary_penalties: bool = False
+    apply_divergence_penalty: bool = False
+    apply_air_penalty: bool = False
+    air_penalty_weight: float = 1.0
+    divergence_penalty_weight: float = 1.0
 
 
 @dataclass
