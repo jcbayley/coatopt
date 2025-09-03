@@ -292,6 +292,7 @@ class RewardCalculator:
             **call_kwargs
         )
         
+        """
         # Apply normalization first (always if enabled)
         normalized_rewards = {}
         if self.use_reward_normalization and weights is not None:
@@ -318,7 +319,7 @@ class RewardCalculator:
             if weights is not None:
                 total_reward = sum(weights.get(param, 0.0) * normalized_rewards.get(param, 0.0) 
                                  for param in self.optimise_parameters)
-        
+        """
         return total_reward, vals, rewards
     
     def calculate(self, reflectivity, thermal_noise, thickness, absorption, env=None, weights=None, 

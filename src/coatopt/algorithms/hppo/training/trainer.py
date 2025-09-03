@@ -965,7 +965,7 @@ class UnifiedHPPOTrainer:
         
         return {
             'total_reward': total_reward,
-            'final_state': state,
+            'final_state': state.get_array(),
             'rewards': rewards,
             'vals': vals,
             'means': means,
