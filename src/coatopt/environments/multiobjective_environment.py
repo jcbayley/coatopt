@@ -59,8 +59,10 @@ class MultiObjectiveEnvironment(HPPOEnvironment):
             apply_boundary_penalties=self.apply_boundary_penalties,
             apply_divergence_penalty=self.apply_divergence_penalty,
             apply_air_penalty=self.apply_air_penalty,
+            apply_pareto_improvement=self.apply_pareto_improvement,
             air_penalty_weight=self.air_penalty_weight,
             divergence_penalty_weight=self.divergence_penalty_weight,
+            pareto_improvement_weight=self.pareto_improvement_weight,
         )
         
         # Enhanced Pareto tracking with efficient algorithms

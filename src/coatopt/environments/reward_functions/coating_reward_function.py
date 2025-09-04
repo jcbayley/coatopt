@@ -39,20 +39,20 @@ def reward_function_log_targets(reflectivity, thermal_noise, total_thickness, ab
 
     rewards = {key: 0 for key in vals}
 
-    # Compute the log target rewards (core logic)
+    # Compute the log target rewards (core logic) with small offset to avoid log(0)
     if "reflectivity" in optimise_parameters:
-        log_reflect = -np.log(np.abs(reflectivity - optimise_targets["reflectivity"]))
+        log_reflect = -np.log(np.abs(reflectivity - optimise_targets["reflectivity"]) + 1e-30)
         rewards["reflectivity"] = log_reflect 
 
     if "thermal_noise" in optimise_parameters and thermal_noise is not None:
-        log_therm = -np.log(np.abs(thermal_noise - optimise_targets["thermal_noise"]))
+        log_therm = -np.log(np.abs(thermal_noise - optimise_targets["thermal_noise"]) + 1e-30)
         rewards["thermal_noise"] = log_therm 
 
     if "thickness" in optimise_parameters:
         rewards["thickness"] = -total_thickness  # Fixed typo from "thickeness"
     
     if "absorption" in optimise_parameters:
-        log_absorption = -np.log(np.abs(absorption - optimise_targets["absorption"]))
+        log_absorption = -np.log(np.abs(absorption - optimise_targets["absorption"]) + 1e-30)
         rewards["absorption"] = log_absorption
     
     # Combine the rewards 
@@ -76,7 +76,7 @@ def reward_function_log_targets(reflectivity, thermal_noise, total_thickness, ab
 def reward_function_default(reflectivity, thermal_noise, total_thickness, absorption, 
                            optimise_parameters, optimise_targets, env=None, **kwargs):
     """Default reward function - uses simple log targets."""
-    return reward_function_simple_log_targets(
+    return reward_function_log_targets(
         reflectivity, thermal_noise, total_thickness, absorption,
         optimise_parameters, optimise_targets, env, **kwargs
     )

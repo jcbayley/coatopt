@@ -110,8 +110,10 @@ def create_hppo_environment(config: CoatingOptimisationConfig, materials: Dict[i
         apply_boundary_penalties=config.data.apply_boundary_penalties,
         apply_divergence_penalty=config.data.apply_divergence_penalty,
         apply_air_penalty=config.data.apply_air_penalty,
+        apply_pareto_improvement=config.data.apply_pareto_improvement,
         air_penalty_weight=config.data.air_penalty_weight,
         divergence_penalty_weight=config.data.divergence_penalty_weight,
+        pareto_improvement_weight=config.data.pareto_improvement_weight,
     )
     return env
 
@@ -159,8 +161,10 @@ def create_multiobjective_environment(config: CoatingOptimisationConfig, materia
         apply_boundary_penalties=config.data.apply_boundary_penalties,
         apply_divergence_penalty=config.data.apply_divergence_penalty,
         apply_air_penalty=config.data.apply_air_penalty,
+        apply_pareto_improvement=config.data.apply_pareto_improvement,
         air_penalty_weight=config.data.air_penalty_weight,
         divergence_penalty_weight=config.data.divergence_penalty_weight,
+        pareto_improvement_weight=config.data.pareto_improvement_weight,
     )
 
     return env

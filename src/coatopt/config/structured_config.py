@@ -130,8 +130,10 @@ class DataConfig(BaseConfig):
     apply_boundary_penalties: bool = False
     apply_divergence_penalty: bool = False
     apply_air_penalty: bool = False
+    apply_pareto_improvement: bool = False
     air_penalty_weight: float = 1.0
     divergence_penalty_weight: float = 1.0
+    pareto_improvement_weight: float = 1.0
 
 
 @dataclass

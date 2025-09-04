@@ -104,8 +104,10 @@ class BaseCoatingEnvironment:
         self.apply_boundary_penalties = getattr(config.data, 'apply_boundary_penalties', False)
         self.apply_divergence_penalty = getattr(config.data, 'apply_divergence_penalty', False)
         self.apply_air_penalty = getattr(config.data, 'apply_air_penalty', False)
+        self.apply_pareto_improvement = getattr(config.data, 'apply_pareto_improvement', False)
         self.air_penalty_weight = getattr(config.data, 'air_penalty_weight', 1.0)
         self.divergence_penalty_weight = getattr(config.data, 'divergence_penalty_weight', 1.0)
+        self.pareto_improvement_weight = getattr(config.data, 'pareto_improvement_weight', 1.0)
         
         # Training parameters from DataConfig
         self.ignore_air_option = config.data.ignore_air_option
@@ -196,8 +198,10 @@ class BaseCoatingEnvironment:
                                  apply_boundary_penalties=False,
                                  apply_divergence_penalty=False,
                                  apply_air_penalty=False,
+                                 apply_pareto_improvement=False,
                                  air_penalty_weight=1.0,
-                                 divergence_penalty_weight=1.0):
+                                 divergence_penalty_weight=1.0,
+                                 pareto_improvement_weight=1.0):
         """Legacy parameter initialization for backward compatibility."""
         
         self.max_layers = max_layers
@@ -244,8 +248,10 @@ class BaseCoatingEnvironment:
         self.apply_boundary_penalties = apply_boundary_penalties
         self.apply_divergence_penalty = apply_divergence_penalty
         self.apply_air_penalty = apply_air_penalty
+        self.apply_pareto_improvement = apply_pareto_improvement
         self.air_penalty_weight = air_penalty_weight
         self.divergence_penalty_weight = divergence_penalty_weight
+        self.pareto_improvement_weight = pareto_improvement_weight
 
     def _setup_common_attributes(self):
         """Setup attributes common to both initialization methods."""
@@ -284,8 +290,10 @@ class BaseCoatingEnvironment:
             'apply_boundary_penalties': getattr(self, 'apply_boundary_penalties', False),
             'apply_divergence_penalty': getattr(self, 'apply_divergence_penalty', False),
             'apply_air_penalty': getattr(self, 'apply_air_penalty', False),
+            'apply_pareto_improvement': getattr(self, 'apply_pareto_improvement', False),
             'air_penalty_weight': getattr(self, 'air_penalty_weight', 1.0),
             'divergence_penalty_weight': getattr(self, 'divergence_penalty_weight', 1.0),
+            'pareto_improvement_weight': getattr(self, 'pareto_improvement_weight', 1.0),
         }
         
         self.reward_calculator = RewardCalculator(**reward_calc_config)
@@ -766,8 +774,10 @@ class BaseCoatingEnvironment:
             'apply_boundary_penalties': getattr(self, 'apply_boundary_penalties', False),
             'apply_divergence_penalty': getattr(self, 'apply_divergence_penalty', False),
             'apply_air_penalty': getattr(self, 'apply_air_penalty', False),
+            'apply_pareto_improvement': getattr(self, 'apply_pareto_improvement', False),
             'air_penalty_weight': getattr(self, 'air_penalty_weight', 1.0),
             'divergence_penalty_weight': getattr(self, 'divergence_penalty_weight', 1.0),
+            'pareto_improvement_weight': getattr(self, 'pareto_improvement_weight', 1.0),
         }
         
         self.reward_calculator = RewardCalculator(**reward_calc_config)

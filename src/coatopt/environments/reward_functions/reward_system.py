@@ -58,7 +58,9 @@ class RewardCalculator:
                  # Addon configuration parameters
                  apply_normalization=False, apply_boundary_penalties=False,
                  apply_divergence_penalty=False, apply_air_penalty=False,
+                 apply_pareto_improvement=False,
                  air_penalty_weight=1.0, divergence_penalty_weight=1.0,
+                 pareto_improvement_weight=1.0,
                  target_mapping=None, **kwargs):
         """
         Initialize with basic parameters and addon configuration.
@@ -77,8 +79,10 @@ class RewardCalculator:
             apply_boundary_penalties: Whether to apply boundary penalties by default
             apply_divergence_penalty: Whether to apply divergence penalty by default
             apply_air_penalty: Whether to apply air penalty by default
+            apply_pareto_improvement: Whether to apply Pareto improvement reward by default
             air_penalty_weight: Weight for air penalty
             divergence_penalty_weight: Weight for divergence penalty
+            pareto_improvement_weight: Weight for Pareto improvement reward
             target_mapping: Mapping of parameter names to scaling types
             **kwargs: Additional parameters passed to reward function
         """
@@ -109,8 +113,10 @@ class RewardCalculator:
         self.apply_boundary_penalties = apply_boundary_penalties
         self.apply_divergence_penalty = apply_divergence_penalty
         self.apply_air_penalty = apply_air_penalty
+        self.apply_pareto_improvement = apply_pareto_improvement
         self.air_penalty_weight = air_penalty_weight
         self.divergence_penalty_weight = divergence_penalty_weight
+        self.pareto_improvement_weight = pareto_improvement_weight
         self.target_mapping = target_mapping or {
             "reflectivity": "log-",
             "thermal_noise": "log-",
@@ -358,8 +364,10 @@ class RewardCalculator:
             use_boundary_penalties=self.apply_boundary_penalties,
             use_divergence_penalty=self.apply_divergence_penalty, 
             use_air_penalty=self.apply_air_penalty,
+            use_pareto_improvement=self.apply_pareto_improvement,
             air_penalty_weight=self.air_penalty_weight, 
             divergence_penalty_weight=self.divergence_penalty_weight,
+            pareto_improvement_weight=self.pareto_improvement_weight,
             target_mapping=self.target_mapping, **extra_kwargs
         )
         
@@ -369,7 +377,9 @@ class RewardCalculator:
                             rewards: Dict[str, float], env=None, weights: Dict[str, float] = None,
                             use_normalization: bool = False, use_boundary_penalties: bool = False,
                             use_divergence_penalty: bool = False, use_air_penalty: bool = False,
+                            use_pareto_improvement: bool = False,
                             air_penalty_weight: float = 1.0, divergence_penalty_weight: float = 1.0,
+                            pareto_improvement_weight: float = 1.0,
                             target_mapping: Dict[str, str] = None, **kwargs) -> Tuple[float, Dict[str, float], Dict[str, float]]:
         """
         Apply addon functions to reward calculation results.
@@ -384,8 +394,10 @@ class RewardCalculator:
             use_boundary_penalties: Whether to apply boundary penalties
             use_divergence_penalty: Whether to apply divergence penalty
             use_air_penalty: Whether to apply air penalty
+            use_pareto_improvement: Whether to apply Pareto improvement reward
             air_penalty_weight: Weight for air penalty
             divergence_penalty_weight: Weight for divergence penalty
+            pareto_improvement_weight: Weight for Pareto improvement reward
             target_mapping: Mapping of parameter names to scaling types
             **kwargs: Additional parameters for addon functions
             
@@ -423,6 +435,15 @@ class RewardCalculator:
                 self.optimise_parameters, air_penalty_weight, **kwargs
             )
         
+        # Apply Pareto improvement addon
+        if use_pareto_improvement:
+            updated_total_reward, updated_rewards = apply_pareto_improvement_addon(
+                updated_total_reward, updated_rewards, vals, env,
+                self.optimise_parameters, pareto_improvement_weight, **kwargs
+            )
+        
+        updated_rewards["total_reward"] = updated_total_reward
+
         return updated_total_reward, updated_vals, updated_rewards
     
     def _apply_expert_constraints(self, total_reward: float, rewards: Dict[str, float], 
@@ -656,7 +677,7 @@ def apply_divergence_penalty(rewards: Dict[str, float], optimise_parameters: Lis
 
 def calculate_air_penalty_reward_new(state, air_material_index: int = 0, design_criteria: Dict = None,
                                     current_vals: Dict = None, optimise_parameters: List[str] = None,
-                                    penalty_strength: float = 20.0, reward_strength: float = 0.5,
+                                    penalty_strength: float = 1.0, reward_strength: float = 1.0,
                                     min_real_layers: int = 5) -> float:
     """
     Calculate penalty for air-only coatings using new CoatingState methods.
@@ -707,7 +728,7 @@ def calculate_air_penalty_reward_new(state, air_material_index: int = 0, design_
         air_fraction = 1.0 - (non_air_layers / total_layers) if total_layers > 0 else 1.0
     
     # Check if design criteria are met
-    criteria_met = True if design_criteria is None else False
+    criteria_met = False if design_criteria is None else True
     if design_criteria is not None and current_vals is not None:
         for key, threshold in design_criteria.items():
             if key in current_vals and key in optimise_parameters:
@@ -716,11 +737,12 @@ def calculate_air_penalty_reward_new(state, air_material_index: int = 0, design_
                     if val < threshold:
                         criteria_met = False
                         break
-                elif key in ["thermal_noise", "absorption"]:
+                else:
                     if val > threshold:
                         criteria_met = False
                         break
-    
+
+    print(f"Penalty strength: {penalty_strength}, Reward strength: {reward_strength}, Cirteria met: {criteria_met}, Non-air layers: {non_air_layers}, Air fraction: {air_fraction:.3f}")
     if criteria_met:
         # Design criteria met - small reward for more air layers
         return reward_strength * air_fraction
@@ -772,6 +794,66 @@ def apply_air_penalty_addon(total_reward: float, rewards: Dict[str, float], vals
         updated_rewards["air_penalty"] = air_penalty
     else:
         updated_total_reward = total_reward
+    
+    return updated_total_reward, updated_rewards
+
+
+def apply_pareto_improvement_addon(total_reward: float, rewards: Dict[str, float], vals: Dict[str, float],
+                                 env, optimise_parameters: List[str] = None, 
+                                 pareto_improvement_weight: float = 1.0, **kwargs) -> Tuple[float, Dict[str, float]]:
+    """
+    Apply Pareto front improvement reward addon to reward calculation.
+    
+    This addon provides additional reward when a new point causes changes to the Pareto front,
+    indicating that the solution is improving the multi-objective optimization frontier.
+    
+    Args:
+        total_reward: Current total reward
+        rewards: Individual rewards dict
+        vals: Current objective values
+        env: Environment object (must have pareto_tracker)
+        optimise_parameters: List of parameters being optimized
+        pareto_improvement_weight: Weight for Pareto improvement reward
+        **kwargs: Additional parameters
+        
+    Returns:
+        Tuple of (updated_total_reward, updated_rewards_dict)
+    """
+    updated_rewards = rewards.copy()
+    pareto_improvement_reward = 0.0
+    
+    # Only apply for environments with Pareto trackers and multi-objective optimization
+    if (env is not None and hasattr(env, 'pareto_tracker') and env.pareto_tracker is not None 
+        and optimise_parameters is not None and len(optimise_parameters) >= 2):
+        
+        try:
+            # Extract objective values for the optimized parameters
+            new_point = np.array([vals.get(param, 0.0) for param in optimise_parameters])
+            
+            # Create a copy of the tracker to test without actually updating
+            import copy
+            test_tracker = copy.deepcopy(env.pareto_tracker)
+            
+            # Check if adding this point would change the Pareto front
+            _, was_updated = test_tracker.add_point(new_point, force_update=True)
+            
+            if was_updated:
+                pareto_improvement_reward = 1.0
+                updated_rewards["pareto_front_changed"] = True
+            else:
+                updated_rewards["pareto_front_changed"] = False
+                
+        except Exception as e:
+            # Handle any errors gracefully
+            print(f"Warning: Error in Pareto improvement addon: {e}")
+            updated_rewards["pareto_front_changed"] = False
+    else:
+        # Not applicable for this environment
+        updated_rewards["pareto_front_changed"] = False
+    
+    # Apply the reward
+    updated_total_reward = total_reward + pareto_improvement_weight * pareto_improvement_reward
+    updated_rewards["pareto_improvement_reward"] = pareto_improvement_reward
     
     return updated_total_reward, updated_rewards
 
