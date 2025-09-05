@@ -667,6 +667,12 @@ def apply_divergence_penalty(rewards: Dict[str, float], optimise_parameters: Lis
             # Additional penalty if both rewards are very low (quality control)
             if min_reward < 0.1:
                 divergence_penalty -= (0.1 - min_reward) * min_weight * divergence_penalty_weight
+            
+            # Distribute divergence penalty across individual objective rewards
+            if len(optimise_parameters) > 0:
+                penalty_per_objective = divergence_penalty 
+                for param in optimise_parameters:
+                    updated_rewards[param] = updated_rewards.get(param, 0.0) + penalty_per_objective
         else:
             # No penalty when one weight is effectively zero
             divergence_penalty = 0.0
@@ -742,7 +748,7 @@ def calculate_air_penalty_reward_new(state, air_material_index: int = 0, design_
                         criteria_met = False
                         break
 
-    print(f"Penalty strength: {penalty_strength}, Reward strength: {reward_strength}, Cirteria met: {criteria_met}, Non-air layers: {non_air_layers}, Air fraction: {air_fraction:.3f}")
+    #print(f"Penalty strength: {penalty_strength}, Reward strength: {reward_strength}, Cirteria met: {criteria_met}, Non-air layers: {non_air_layers}, Air fraction: {air_fraction:.3f}")
     if criteria_met:
         # Design criteria met - small reward for more air layers
         return reward_strength * air_fraction
@@ -790,7 +796,17 @@ def apply_air_penalty_addon(total_reward: float, rewards: Dict[str, float], vals
             **kwargs
         )
         
-        updated_total_reward = total_reward + air_penalty_weight * air_penalty
+        # Apply air penalty to total reward
+        air_penalty_scaled = air_penalty_weight * air_penalty
+        updated_total_reward = total_reward + air_penalty_scaled
+        
+        # Distribute air penalty across individual objective rewards
+        if optimise_parameters and len(optimise_parameters) > 0:
+            penalty_per_objective = air_penalty_scaled 
+            for param in optimise_parameters:
+                updated_rewards[param] = updated_rewards.get(param, 0.0) + penalty_per_objective
+        
+        # Store original air penalty for debugging
         updated_rewards["air_penalty"] = air_penalty
     else:
         updated_total_reward = total_reward
@@ -851,8 +867,17 @@ def apply_pareto_improvement_addon(total_reward: float, rewards: Dict[str, float
         # Not applicable for this environment
         updated_rewards["pareto_front_changed"] = False
     
-    # Apply the reward
-    updated_total_reward = total_reward + pareto_improvement_weight * pareto_improvement_reward
+    # Apply the reward to total and distribute across individual objectives
+    pareto_reward_scaled = pareto_improvement_weight * pareto_improvement_reward
+    updated_total_reward = total_reward + pareto_reward_scaled
+    
+    # Distribute Pareto improvement reward across individual objective rewards
+    if optimise_parameters and len(optimise_parameters) > 0:
+        reward_per_objective = pareto_reward_scaled 
+        for param in optimise_parameters:
+            updated_rewards[param] = updated_rewards.get(param, 0.0) + reward_per_objective
+    
+    # Store original Pareto improvement reward for debugging
     updated_rewards["pareto_improvement_reward"] = pareto_improvement_reward
     
     return updated_total_reward, updated_rewards

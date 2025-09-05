@@ -371,22 +371,33 @@ class PCHPPO:
             self.optimiser_value, T_0=lr_step_value, T_mult=T_mult_value, eta_min=lr_min
         )
 
-    def get_returns(self, rewards: List[float]) -> np.ndarray:
+    def get_returns(self, rewards: List[float], multiobjective_rewards: List[List[float]] = None) -> np.ndarray:
         """
         Calculate discounted returns from rewards.
         
         Args:
-            rewards: List of rewards
+            rewards: List of scalar rewards (for backward compatibility)
+            multiobjective_rewards: List of multi-objective reward vectors
             
         Returns:
-            Array of discounted returns
+            Array of discounted returns (scalar or multi-objective)
         """
-        temp_r = deque()
-        R = 0
-        for r in rewards[::-1]:
-            R = r + self.gamma * R
-            temp_r.appendleft(R)
-        return np.array(temp_r)
+        if multiobjective_rewards is not None:
+            # Multi-objective returns computation
+            temp_r = deque()
+            R = np.zeros(len(multiobjective_rewards[0]))  # Initialize with correct dimensions
+            for r in multiobjective_rewards[::-1]:
+                R = np.array(r) + self.gamma * R
+                temp_r.appendleft(R.copy())
+            return np.array(temp_r)
+        else:
+            # Original scalar returns computation
+            temp_r = deque()
+            R = 0
+            for r in rewards[::-1]:
+                R = r + self.gamma * R
+                temp_r.appendleft(R)
+            return np.array(temp_r)
 
     def scheduler_step(self, step: int = 0, make_step: bool = True, scheduler_active: bool = True) -> Tuple[List[float], List[float], List[float], float, float]:
         """
@@ -582,9 +593,9 @@ class PCHPPO:
         entropy_discrete = discrete_dist.entropy()
         entropy_continuous = torch.sum(continuous_dist._entropy, dim=-1)
         
-        # Get state value
+        # Get state value (now always returns raw multi-objective values)
         if self.use_mixture_of_experts:
-            # With shared value network, we still only get a single value (no aux info from value network)
+            # With shared value network, we get raw N-dimensional values (no weighting in network)
             state_value = self.value(pre_output_v, layer_number, objective_weights=objective_weights)
             value_aux = None  # No auxiliary info from shared value network
         else:
@@ -711,9 +722,18 @@ class PCHPPO:
             return 0.0, 0.0, 0.0
 
         # Prepare training data
-        returns = torch.from_numpy(np.array(self.replay_buffer.returns))
-        returns = (returns - returns.mean()) / (returns.std() + HPPOConstants.EPSILON)
-
+        returns_array = np.array(self.replay_buffer.returns)
+        returns = torch.from_numpy(returns_array)
+        
+        # Handle normalization for both scalar and multi-objective returns
+        if returns.dim() > 1:  # Multi-objective returns
+            # Normalize each objective separately
+            mean_returns = returns.mean(dim=0, keepdim=True)
+            std_returns = returns.std(dim=0, keepdim=True) + HPPOConstants.EPSILON
+            returns = (returns - mean_returns) / std_returns
+        else:  # Scalar returns
+            returns = (returns - returns.mean()) / (returns.std() + HPPOConstants.EPSILON)
+        
         state_vals = torch.cat(list(self.replay_buffer.state_values)).to(torch.float32)
         old_lprobs_discrete = torch.cat(list(self.replay_buffer.logprobs_discrete)).to(torch.float32).detach()
         old_lprobs_continuous = torch.cat(list(self.replay_buffer.logprobs_continuous)).to(torch.float32).detach()
@@ -747,8 +767,37 @@ class PCHPPO:
             )
 
             # Calculate advantages
-            advantage = returns.detach() - state_value.detach()
+            if returns.ndim > 1:  # Multi-objective returns
+                # Compute multi-objective advantages
+                multiobjective_advantages = returns.detach() - state_value.detach()
+                
+                # Weight the advantages using objective weights
+                if objective_weights is not None:
+                    # Ensure objective_weights has the right shape for broadcasting
+                    if objective_weights.size(-1) != multiobjective_advantages.size(-1):
+                        raise ValueError(f"Objective weights dimension ({objective_weights.size(-1)}) "
+                                       f"must match advantage dimension ({multiobjective_advantages.size(-1)})")
+                    # Compute weighted scalar advantage
+                    advantage = torch.sum(multiobjective_advantages * objective_weights, dim=-1, keepdim=True)
+                    
+                    # Also compute weighted returns for value loss
+                    weighted_returns = torch.sum(returns * objective_weights, dim=-1, keepdim=True)
+                    weighted_state_value = torch.sum(state_value * objective_weights, dim=-1, keepdim=True)
+                else:
+                    # Fallback: use mean of advantages if no weights provided
+                    print("Warning: No objective weights provided for multi-objective advantages. Using mean advantage.")
+                    advantage = torch.mean(multiobjective_advantages, dim=-1, keepdim=True)
+                    weighted_returns = torch.mean(returns, dim=-1, keepdim=True)
+                    weighted_state_value = torch.mean(state_value, dim=-1, keepdim=True)
+            else:
+                # Original scalar advantage computation
+                advantage = returns.detach() - state_value.detach()
+                weighted_returns = returns
+                weighted_state_value = state_value
 
+            #print(returns.shape, state_value.shape, advantage.shape)
+            #print(returns[0], state_value[0], advantage[0])
+            #print(advantage[0], returns[0], state_value)
             # Calculate policy losses (including MoE auxiliary losses)
             discrete_policy_loss = self._calculate_discrete_policy_loss(
                 log_prob_discrete, old_lprobs_discrete, advantage, entropy_discrete, self.beta_discrete
@@ -766,7 +815,12 @@ class PCHPPO:
             if self.use_mixture_of_experts and 'continuous_total_aux_loss' in moe_aux_losses:
                 continuous_policy_loss += moe_aux_losses['continuous_total_aux_loss']
             
-            value_loss = self.mse_loss(returns.to(torch.float32).squeeze(), state_value.squeeze())
+            if returns.ndim > 1:  # Multi-objective returns
+                # For multi-objective case, compute value loss using weighted returns and values
+                value_loss = self.mse_loss(weighted_returns.to(torch.float32).squeeze(), weighted_state_value.squeeze())
+            else:
+                # Original scalar value loss
+                value_loss = self.mse_loss(weighted_returns.to(torch.float32).squeeze(), weighted_state_value.squeeze())
             
             # Add MoE auxiliary losses to value loss
             if self.use_mixture_of_experts and 'value_total_aux_loss' in moe_aux_losses:

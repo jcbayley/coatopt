@@ -289,7 +289,7 @@ def annealed_dirichlet_weights(n_objectives, epoch, total_epochs, base_alpha=0.0
 
 
 def smooth_cycle_weights(n_objectives, t, T_cycle, T_hold, total_steps, 
-                        start_weight_alpha=1.0, final_weight_alpha=1.0, random_anneal=True):
+                        start_weight_alpha=1.0, final_weight_alpha=1.0, random_anneal=True, transfer_fraction=0.25):
     """
     Generate smooth cyclic weights for N objectives.
     
@@ -297,7 +297,8 @@ def smooth_cycle_weights(n_objectives, t, T_cycle, T_hold, total_steps,
         n_objectives: Number of objectives
         t: Current time step
         T_cycle: Total steps for one full cycle
-        T_hold: Number of steps to hold each one-hot vector
+        T_hold: Number of steps to hold each one-hot vector (overridden by transfer_fraction)
+        transfer_fraction: Fraction of cycle spent transitioning between objectives (default 0.25)
         total_steps: Total steps in training
         start_weight_alpha: Starting alpha for annealing
         final_weight_alpha: Final alpha for annealing
@@ -308,7 +309,8 @@ def smooth_cycle_weights(n_objectives, t, T_cycle, T_hold, total_steps,
     """
     weights = np.zeros(n_objectives)
     phase_steps = T_cycle // n_objectives
-    T_transition = phase_steps - T_hold
+    T_transition = int(transfer_fraction * phase_steps)
+    T_hold = phase_steps - T_transition
 
     if t < total_steps:
         cycle_pos = t % T_cycle
@@ -342,7 +344,8 @@ def smooth_cycle_weights(n_objectives, t, T_cycle, T_hold, total_steps,
 def sample_reward_weights(n_objectives, cycle_weights, epoch=None, num_samples=1, 
                          final_weight_epoch=1, start_weight_alpha=1.0, 
                          final_weight_alpha=1.0, n_weight_cycles=2, 
-                         pareto_front=None, weight_archive=None, all_rewards=None):
+                         pareto_front=None, weight_archive=None, all_rewards=None,
+                         transfer_fraction=0.75):
     """
     Sample weights for the reward function based on cycling strategy.
     
@@ -365,6 +368,7 @@ def sample_reward_weights(n_objectives, cycle_weights, epoch=None, num_samples=1
         pareto_front: Current Pareto front for adaptive strategies (optional)
         weight_archive: Archive of recently used weights for diversity (optional)
         all_rewards: All reward vectors seen so far, used for objective space coverage analysis (optional)
+        extreme_fraction: Fraction of cycle spent at extremes (for smooth cycling)
         
     Returns:
         Weight vector for reward function
@@ -429,21 +433,23 @@ def sample_reward_weights(n_objectives, cycle_weights, epoch=None, num_samples=1
             else:
                 weights = annealed_dirichlet_weights(
                     n_objectives, epoch, 2 * final_weight_epoch, 
-                    base_alpha=start_weight_alpha, 
-                    final_alpha=final_weight_alpha, 
-                    num_samples=1
-                )[0]
+                         final_weight_epoch=1, start_weight_alpha=1.0, 
+                         final_weight_alpha=1.0, n_weight_cycles=2, 
+                         pareto_front=None, weight_archive=None, all_rewards=None,
+                         transfer_fraction=0.25)
         else:
             # Default uniform weights when no epoch provided
             weights = np.ones(n_objectives) / n_objectives
             
     elif cycle_weights == "smooth":
-        T_hold = int(0.75 * final_weight_epoch / (n_objectives * n_weight_cycles))
         T_cycle = final_weight_epoch // n_weight_cycles
+        phase_steps = T_cycle // n_objectives
+        T_hold = int(1-transfer_fraction * phase_steps)
         weights = smooth_cycle_weights(
             n_objectives, epoch, T_cycle=T_cycle, T_hold=T_hold, 
             total_steps=final_weight_epoch, start_weight_alpha=start_weight_alpha,
-            final_weight_alpha=final_weight_alpha
+            final_weight_alpha=final_weight_alpha,
+            transfer_fraction=transfer_fraction
         )
         
     elif cycle_weights == "annealed_random":
@@ -452,8 +458,7 @@ def sample_reward_weights(n_objectives, cycle_weights, epoch=None, num_samples=1
                 n_objectives, epoch, final_weight_epoch, 
                 base_alpha=start_weight_alpha, 
                 final_alpha=final_weight_alpha, 
-                num_samples=1
-            )[0]
+                num_samples=1)
         else:
             weights = np.random.dirichlet(alpha=np.ones(n_objectives))
             
@@ -466,17 +471,17 @@ def sample_reward_weights(n_objectives, cycle_weights, epoch=None, num_samples=1
         grid_axes = [np.linspace(0, 1, steps) for _ in range(n_objectives)]
         mesh = np.meshgrid(*grid_axes)
         flat = [m.flatten() for m in mesh]
-        weight_grid = np.stack(flat, axis=-1)
-        
-        # Only keep weights that sum to 1 (within tolerance)
-        weight_grid = weight_grid[np.isclose(weight_grid.sum(axis=1), 1.0)]
-        
-        # Iterate through the grid
-        if len(weight_grid) > 0:
-            index = (epoch // n_weight_cycles) % len(weight_grid)
-            weights = weight_grid[index]
-        else:
-            weights = np.ones(n_objectives) / n_objectives
+        T_cycle = final_weight_epoch // n_weight_cycles
+        phase_steps = T_cycle // n_objectives
+        T_transition = int(transfer_fraction * phase_steps)
+        T_hold = phase_steps - T_transition
+        weights = smooth_cycle_weights(
+            n_objectives, epoch, T_cycle=T_cycle, T_hold=T_hold, 
+            total_steps=final_weight_epoch, start_weight_alpha=start_weight_alpha,
+            final_weight_alpha=final_weight_alpha,
+            transfer_fraction=transfer_fraction
+        )
+
     
     elif cycle_weights == "adaptive_pareto":
         # Improved adaptive weight sampling based on objective space coverage

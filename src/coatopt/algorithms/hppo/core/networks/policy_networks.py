@@ -340,8 +340,11 @@ class ValueNetwork(BaseNetwork):
         hyper_n_layers: int = 2,
     ):
         # Define output structure
+
         output_dim = n_objectives if n_objectives > 1 else 1
         output_dims = {'value': output_dim}
+        
+        n_objectives=0 # Temporary fix for new model
         
         super().__init__(
             input_dim, output_dims, hidden_dim, n_layers, include_layer_number, False,  # No material
@@ -354,17 +357,10 @@ class ValueNetwork(BaseNetwork):
     
     def forward(self, state: torch.Tensor, layer_number: Optional[torch.Tensor] = None, 
                objective_weights: Optional[torch.Tensor] = None) -> torch.Tensor:
-        """Override to match expected signature and handle multi-objective weighting."""
+        """Override to match expected signature and return raw multi-objective values."""
         # Get the raw multi-objective values from parent
-        values = super().forward(state, layer_number, None, objective_weights)
+        values = super().forward(state, layer_number, None, None)
         
-        # If we have multiple objectives and objective weights, return weighted combination
-        if values.size(-1) > 1 and objective_weights is not None:
-            # Ensure objective_weights has the right shape for broadcasting
-            if objective_weights.size(-1) != values.size(-1):
-                raise ValueError(f"Objective weights dimension ({objective_weights.size(-1)}) "
-                               f"must match value output dimension ({values.size(-1)})")
-            # Return scalar weighted combination
-            return torch.sum(values * objective_weights, dim=-1, keepdim=True)
-        
+        # Always return the raw N-dimensional values
+        # Weighting will be handled in the agent during advantage computation
         return values

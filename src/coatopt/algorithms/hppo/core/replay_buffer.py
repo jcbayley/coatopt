@@ -119,7 +119,16 @@ class ReplayBuffer:
         Update the returns for stored experiences.
         
         Args:
-            returns: List of discounted returns
+            returns: List of discounted returns (scalar or multi-objective)
+        """
+        self.returns.extend(returns)
+    
+    def update_multiobjective_returns(self, returns: List[List[float]]) -> None:
+        """
+        Update the multi-objective returns for stored experiences.
+        
+        Args:
+            returns: List of multi-objective discounted returns
         """
         self.returns.extend(returns)
 

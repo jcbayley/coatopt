@@ -120,7 +120,7 @@ class TrainingCheckpointManager:
                 self._save_environment_state(f, trainer_data.get('environment_state', {}))
                 
                 # Save best states (complex Python objects)
-                self._save_best_states(f, trainer_data.get('best_states', []))
+                #self._save_best_states(f, trainer_data.get('best_states', []))
                 
         except Exception as e:
             # Restore backup if save failed
@@ -152,7 +152,7 @@ class TrainingCheckpointManager:
                 data['training_data'] = self._load_training_data(f)
                 data['pareto_data'] = self._load_pareto_data(f)
                 data['environment_state'] = self._load_environment_state(f)
-                data['best_states'] = self._load_best_states(f)
+                #data['best_states'] = self._load_best_states(f)
         
         except Exception as e:
             print(f"Error loading checkpoint: {e}")

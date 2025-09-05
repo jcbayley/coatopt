@@ -206,6 +206,7 @@ class TrainingConfig(BaseConfig):
     cycle_weights: bool
     n_weight_cycles: int
     weight_network_save: bool
+    transfer_fraction: float = 0.25
 
     # Phase 3.2: Hypervolume-based training options
     use_hypervolume_trainer: Optional[bool] = False
@@ -274,6 +275,7 @@ class CoatingOptimisationConfig:
         
         training_defaults = {
             'cycle_weights': False,
+            'transfer_fraction': 0.25,
             'use_hypervolume_trainer': False,
             'use_hypervolume_loss': False,
             'hv_loss_weight': 0.5,

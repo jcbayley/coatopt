@@ -169,8 +169,7 @@ class TrainingPlotManager:
             pareto_states = pareto_data['pareto_states']
             self.coating_states[episode] = pareto_states
         else:
-            print(f"[DEBUG] No pareto_states in pareto_data for episode {episode}")
-            print(f"[DEBUG] Available keys: {list(pareto_data.keys())}")
+            print(f"Warning: No pareto_states in pareto_data for episode {episode}")
     
     def add_eval_pareto_data(self, eval_data: Dict[str, Any]):
         """Add evaluation Pareto data for plotting."""        
@@ -404,12 +403,12 @@ class TrainingPlotManager:
             print(f"Error updating values plot: {e}")
     
     def update_pareto_plot(self, episode: int = None):
-        """Update the Pareto front plot."""
+        """Update the Pareto front plot using unified Pareto tracking data."""
         if not self.pareto_data:
+            print("Warning: No pareto_data available")
             return None
-        
+            
         try:
-            # Clear the figure
             self.pareto_fig.clear()
             
             # Get the latest data or specific episode data
@@ -417,30 +416,89 @@ class TrainingPlotManager:
                 latest_data = self.historical_pareto_data[episode]
             else:
                 latest_data = self.pareto_data[-1]
-
-            # Check if data contains actual pareto front
-            if 'pareto_front' not in latest_data:
-                ax = self.pareto_fig.add_subplot(1, 1, 1)
-                size = latest_data.get('pareto_front_size', 0)
-                ax.text(0.5, 0.5, f'Pareto front size: {size}\nDetailed data not yet available', 
-                       transform=ax.transAxes, ha='center', va='center')
-                return None
-                
-            pareto_front = latest_data['pareto_front'] 
-            best_points = latest_data.get('best_points', None)
+            
+            
+            # Use unified keys - handle both numpy arrays and lists
+            pareto_front_values_raw = latest_data.get('pareto_front_values', [])
+            all_values_raw = latest_data.get('all_values', [])
+            pareto_states = latest_data.get('pareto_states', [])
             current_episode = latest_data.get('episode', 'unknown')
             eval_points = self.eval_data.get('eval_points', None)
             
-            if pareto_front is None or len(pareto_front) == 0:
+ 
+            # Convert to numpy arrays if needed
+            if isinstance(pareto_front_values_raw, list) and len(pareto_front_values_raw) > 0:
+                pareto_front_values = np.array(pareto_front_values_raw)
+            elif isinstance(pareto_front_values_raw, np.ndarray) and pareto_front_values_raw.size > 0:
+                pareto_front_values = pareto_front_values_raw
+            else:
+                pareto_front_values = np.array([])
+                
+            if isinstance(all_values_raw, list) and len(all_values_raw) > 0:
+                all_values = np.array(all_values_raw)
+            elif isinstance(all_values_raw, np.ndarray) and all_values_raw.size > 0:
+                all_values = all_values_raw
+            else:
+                all_values = np.array([])
+
+            # Check if we have any data to plot
+            if pareto_front_values.size == 0 and all_values.size == 0:
                 ax = self.pareto_fig.add_subplot(1, 1, 1)
-                ax.text(0.5, 0.5, 'No Pareto front data available yet', 
-                       transform=ax.transAxes, ha='center', va='center')
+                ax.text(0.5, 0.5, f'No Pareto data available for episode {current_episode}', 
+                       transform=ax.transAxes, ha='center', va='center', fontsize=12)
+                ax.set_title("Pareto Front Visualization")
+                self.pareto_fig.tight_layout()
                 return None
             
+            # Transform for plotting (reflectivity -> 1-reflectivity)
+            def transform_points(values):
+                if values.size == 0:
+                    return np.array([])
+                    
+                # Ensure 2D array
+                if values.ndim == 1:
+                    values = values.reshape(1, -1)
+                    
+                points = []
+                for vals in values:
+                    point = []
+                    for j, param in enumerate(self.optimisation_parameters):
+                        if j < len(vals):
+                            if param == 'reflectivity':
+                                point.append(1 - vals[j])
+                            else:
+                                point.append(vals[j])
+                    if len(point) > 0:
+                        points.append(point)
+                return np.array(points) if points else np.array([])
+            
+            pareto_front = transform_points(pareto_front_values)
+            best_points = transform_points(all_values)
+            
+  
+            # Set optimization parameters if not set
+            if not self.optimisation_parameters:
+                if pareto_front.size > 0:
+                    n_objectives = pareto_front.shape[1]
+                elif best_points.size > 0:
+                    n_objectives = best_points.shape[1]
+                else:
+                    n_objectives = 2  # Default
+                    
+                self.optimisation_parameters = [f'objective_{i}' for i in range(n_objectives)]
+                self.objective_labels = self._get_objective_labels()
+                self.objective_scales = self._get_objective_scales()
+            
             # Ensure objective labels match data
-            if (not self.objective_labels or 
-                len(self.objective_labels) != pareto_front.shape[1]):
-                self._update_objective_labels_from_data(pareto_front.shape[1])
+            if pareto_front.size > 0:
+                data_objectives = pareto_front.shape[1]
+            elif best_points.size > 0:
+                data_objectives = best_points.shape[1]
+            else:
+                data_objectives = len(self.optimisation_parameters)
+                
+            if (not self.objective_labels or len(self.objective_labels) != data_objectives):
+                self._update_objective_labels_from_data(data_objectives)
             
             n_objectives = len(self.objective_labels)
             
@@ -462,6 +520,8 @@ class TrainingPlotManager:
             
         except Exception as e:
             print(f"Error updating Pareto plot: {e}")
+            import traceback
+            print(f"Traceback: {traceback.format_exc()}")
             return None
     
     def _update_objective_labels_from_data(self, n_objectives: int):
