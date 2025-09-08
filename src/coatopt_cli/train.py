@@ -170,7 +170,7 @@ class CommandLineTrainer:
             entropy_beta_continuous_start=getattr(self.config.training, 'entropy_beta_continuous_start', None),
             entropy_beta_continuous_end=getattr(self.config.training, 'entropy_beta_continuous_end', None),
             entropy_beta_use_restarts=getattr(self.config.training, 'entropy_beta_use_restarts', False),
-            n_epochs_per_update=self.config.training.n_epochs_per_update,
+            n_episodes_per_epoch=self.config.training.n_episodes_per_epoch,
             use_obs=self.config.data.use_observation,
             scheduler_start=self.config.training.scheduler_start,
             scheduler_end=self.config.training.scheduler_end,
@@ -285,23 +285,69 @@ class CommandLineTrainer:
             if self.enable_mlflow and episode % 10 == 0:  # Log every 10 episodes to avoid spam
                 metrics = {}
                 
-                # Extract metrics from info dict
+                # Basic episode metrics
                 if 'reward' in info:
                     metrics['episode_reward'] = info['reward']
-                if 'episode_length' in info:
-                    metrics['episode_length'] = info['episode_length']
-                if 'objectives' in info:
-                    for obj_name, obj_value in info['objectives'].items():
-                        metrics[f'objective_{obj_name}'] = obj_value
-                if 'loss' in info:
-                    metrics['training_loss'] = info['loss']
-                if 'entropy' in info:
-                    metrics['entropy'] = info['entropy']
+                if 'max_reward' in info:
+                    metrics['max_reward_seen'] = info['max_reward']
+                if 'training_time' in info:
+                    metrics['training_time_hours'] = info['training_time'] / 3600
                 
-                # Log Pareto front metrics
-                if hasattr(self.env, 'pareto_front'):
-                    metrics['pareto_front_size'] = len(self.env.pareto_front)
+                # Extract detailed metrics from the metrics dict
+                if 'metrics' in info and isinstance(info['metrics'], dict):
+                    episode_metrics = info['metrics']
+                    
+                    # Get objective names dynamically from the trainer environment
+                    obj_names = self.trainer.env.get_parameter_names()
+                    # Individual objective values (physical values)
+                    for obj_name in obj_names:
+                        if obj_name in episode_metrics:
+                            metrics[f'value_{obj_name}'] = episode_metrics[obj_name]
+                    
+                    # Individual objective rewards
+                    for obj_name in obj_names:
+                        reward_key = f'{obj_name}_reward'
+                        if reward_key in episode_metrics:
+                            metrics[f'reward_{obj_name}'] = episode_metrics[reward_key]
+                    
+                    # Objective weights used for this episode
+                    for key, value in episode_metrics.items():
+                        if key.endswith('_reward_weights'):
+                            metrics[key] = value
+                    
+                    # Training-specific metrics (loss, entropy, etc.)
+                    for metric_key in ['loss', 'entropy', 'policy_loss', 'value_loss', 'lr']:
+                        if metric_key in episode_metrics:
+                            metrics[metric_key] = episode_metrics[metric_key]
                 
+                # Pareto front metrics
+                if 'pareto_front_size' in info:
+                    metrics['pareto_front_size'] = info['pareto_front_size']
+                
+                # Enhanced Pareto front statistics
+                if hasattr(self.trainer, 'pareto_front_rewards') and len(self.trainer.pareto_front_rewards) > 0:
+                    pareto_rewards = np.array(self.trainer.pareto_front_rewards)
+                    pareto_values = np.array(self.trainer.pareto_front_values) if hasattr(self.trainer, 'pareto_front_values') and len(self.trainer.pareto_front_values) > 0 else None
+                    
+                    # Get objective names dynamically (use the same logic as above)
+                    obj_names = self.trainer.env.get_parameter_names()
+                    # Pareto front reward statistics
+                    if pareto_rewards.ndim == 2 and len(obj_names) > 0:
+                        for i, obj_name in enumerate(obj_names[:pareto_rewards.shape[1]]):
+                            obj_rewards = pareto_rewards[:, i]
+                            metrics[f'pareto_reward_{obj_name}_best'] = float(np.max(obj_rewards))
+                            metrics[f'pareto_reward_{obj_name}_worst'] = float(np.min(obj_rewards))
+                            metrics[f'pareto_reward_{obj_name}_mean'] = float(np.mean(obj_rewards))
+                    
+                    # Pareto front value statistics (physical values)
+                    if pareto_values is not None and pareto_values.ndim == 2 and len(obj_names) > 0:
+                        for i, obj_name in enumerate(obj_names[:pareto_values.shape[1]]):
+                            obj_values = pareto_values[:, i]
+                            metrics[f'pareto_value_{obj_name}_best'] = float(np.max(obj_values))
+                            metrics[f'pareto_value_{obj_name}_worst'] = float(np.min(obj_values))
+                            metrics[f'pareto_value_{obj_name}_mean'] = float(np.mean(obj_values))
+                
+                # Log all metrics to MLflow
                 if metrics:
                     self.mlflow_tracker.log_training_metrics(episode, metrics)
         
@@ -468,7 +514,7 @@ Examples:
                         help='Minimal output (less verbose)')
     
     # MLflow options
-    parser.add_argument('--no-mlflow', action='store_true',
+    parser.add_argument('--mlflow', action='store_true',
                         help='Disable MLflow experiment tracking')
     parser.add_argument('--mlflow-experiment', type=str,
                         help='MLflow experiment name (default: auto-generated from config)')
@@ -495,7 +541,7 @@ Examples:
             save_plots=args.save_plots,
             evaluate_only=args.evaluate,
             n_eval_samples=args.n_samples,
-            enable_mlflow=not args.no_mlflow,
+            enable_mlflow=args.mlflow,
             experiment_name=args.mlflow_experiment,
             mlflow_uri=args.mlflow_uri,
             mlflow_dir=args.mlflow_dir

@@ -61,7 +61,7 @@ class RewardCalculator:
                  apply_pareto_improvement=False,
                  air_penalty_weight=1.0, divergence_penalty_weight=1.0,
                  pareto_improvement_weight=1.0,
-                 target_mapping=None, **kwargs):
+                 target_mapping=None, combine: str = "sum", **kwargs):
         """
         Initialize with basic parameters and addon configuration.
         
@@ -102,6 +102,8 @@ class RewardCalculator:
         self.reward_normalization_mode = reward_normalization_mode
         self.reward_normalization_ranges = reward_normalization_ranges or {}
         self.reward_normalization_alpha = reward_normalization_alpha
+    
+        self.combine = combine  # "sum", "product", or "logproduct"
 
         self.multi_value_rewards = kwargs.get('multi_value_rewards', False)
         
@@ -372,8 +374,41 @@ class RewardCalculator:
             pareto_improvement_weight=self.pareto_improvement_weight,
             target_mapping=self.target_mapping, **extra_kwargs
         )
+
+        final_reward = self.combine_rewards(final_rewards, objective_weights=weights)
+        final_rewards["total_reward"] = final_reward
         
         return final_reward, final_vals, final_rewards
+
+    def combine_rewards(self, rewards: Dict[str, float], objective_weights: Dict[str, float] = None) -> float:
+        """
+        Combine individual rewards into a single total reward.
+        
+        Args:
+            rewards: Dict of individual rewards
+            
+        Returns:
+            Combined total reward
+        """
+        # Simple sum of all rewards as an example
+        if objective_weights is None:
+            objective_weights = {param: 1.0 for param in self.optimise_parameters}
+        # Combine the rewards 
+        if self.combine == "sum":
+            total_reward = np.sum([rewards[key] * objective_weights[key] for key in self.optimise_parameters])
+        elif self.combine == "product":
+            total_reward = np.prod([rewards[key] * objective_weights[key] for key in self.optimise_parameters])
+        elif self.combine == "logproduct":
+            total_reward = np.log(np.prod([rewards[key] * objective_weights[key] for key in self.optimise_parameters]))
+        else:
+            raise ValueError(f"combine must be either 'sum', 'product', or 'logproduct', not {combine}")
+        
+        #apply addons
+        for key in rewards.keys():
+            if "addon" in key:
+                total_reward += rewards[key]
+
+        return total_reward
     
     def apply_addon_functions(self, total_reward: float, vals: Dict[str, float], 
                             rewards: Dict[str, float], env=None, weights: Dict[str, float] = None,
@@ -425,22 +460,21 @@ class RewardCalculator:
         
         # Apply divergence penalty
         if use_divergence_penalty:
-            divergence_penalty, updated_rewards = apply_divergence_penalty(
+            updated_rewards = apply_divergence_penalty(
                 updated_rewards, self.optimise_parameters, weights, divergence_penalty_weight,
                 self.multi_value_rewards
             )
-            updated_total_reward += divergence_penalty
         
         # Apply air penalty addon  
         if use_air_penalty:
-            updated_total_reward, updated_rewards = apply_air_penalty_addon(
+            updated_rewards = apply_air_penalty_addon(
                 updated_total_reward, updated_rewards, vals, env, 
                 self.optimise_parameters, air_penalty_weight, self.multi_value_rewards, **kwargs
             )
         
         # Apply Pareto improvement addon
         if use_pareto_improvement:
-            updated_total_reward, updated_rewards = apply_pareto_improvement_addon(
+            updated_rewards = apply_pareto_improvement_addon(
                 updated_total_reward, updated_rewards, vals, env,
                 self.optimise_parameters, pareto_improvement_weight, self.multi_value_rewards, **kwargs
             )
@@ -679,8 +713,9 @@ def apply_divergence_penalty(rewards: Dict[str, float], optimise_parameters: Lis
             # No penalty when one weight is effectively zero
             divergence_penalty = 0.0
     
-    updated_rewards["divergence_penalty"] = divergence_penalty
-    return divergence_penalty, updated_rewards
+    updated_rewards["total_reward"] = updated_total_reward
+    updated_rewards["divergence_addon"] = divergence_penalty
+    return updated_rewards
 
 
 def calculate_air_penalty_reward_new(state, air_material_index: int = 0, design_criteria: Dict = None,
@@ -801,6 +836,7 @@ def apply_air_penalty_addon(total_reward: float, rewards: Dict[str, float], vals
         # Apply air penalty to total reward
         air_penalty_scaled = air_penalty_weight * air_penalty
         updated_total_reward = total_reward + air_penalty_scaled
+        updated_rewards["total_reward"] = updated_total_reward
         
         # Distribute air penalty across individual objective rewards
         if optimise_parameters and len(optimise_parameters) > 0 and multi_value_rewards:
@@ -809,11 +845,11 @@ def apply_air_penalty_addon(total_reward: float, rewards: Dict[str, float], vals
                 updated_rewards[param] = updated_rewards.get(param, 0.0) + penalty_per_objective
         
         # Store original air penalty for debugging
-        updated_rewards["air_penalty"] = air_penalty
+        updated_rewards["air_addon"] = air_penalty
     else:
         updated_total_reward = total_reward
     
-    return updated_total_reward, updated_rewards
+    return updated_rewards
 
 
 def apply_pareto_improvement_addon(total_reward: float, rewards: Dict[str, float], vals: Dict[str, float],
@@ -872,6 +908,7 @@ def apply_pareto_improvement_addon(total_reward: float, rewards: Dict[str, float
     # Apply the reward to total and distribute across individual objectives
     pareto_reward_scaled = pareto_improvement_weight * pareto_improvement_reward
     updated_total_reward = total_reward + pareto_reward_scaled
+    updated_rewards["total_reward"] = updated_total_reward
     
     # Distribute Pareto improvement reward across individual objective rewards
     if optimise_parameters and len(optimise_parameters) > 0 and multi_value_rewards:
@@ -880,9 +917,9 @@ def apply_pareto_improvement_addon(total_reward: float, rewards: Dict[str, float
             updated_rewards[param] = updated_rewards.get(param, 0.0) + reward_per_objective
     
     # Store original Pareto improvement reward for debugging
-    updated_rewards["pareto_improvement_reward"] = pareto_improvement_reward
+    updated_rewards["pareto_improvement_addon"] = pareto_improvement_reward
     
-    return updated_total_reward, updated_rewards
+    return updated_rewards
 
 
 # Decorator for easy reward function registration

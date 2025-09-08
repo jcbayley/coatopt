@@ -218,7 +218,7 @@ def create_pc_hppo_agent(config: CoatingOptimisationConfig, env: Union[HPPOEnvir
         lr_min=config.training.lr_min,
         lower_bound=0,
         upper_bound=1,
-        n_updates=config.training.n_episodes_per_update,
+        n_updates=config.training.n_updates_per_epoch,
         beta=config.training.entropy_beta_start,
         clip_ratio=config.training.clip_ratio,
         gamma=config.training.gamma,
