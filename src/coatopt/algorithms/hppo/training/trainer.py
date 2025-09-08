@@ -991,10 +991,11 @@ class UnifiedHPPOTrainer:
                 break
         
         # Calculate returns and update replay buffer
-        returns = self.agent.get_returns(rewards_list, multiobjective_rewards=multiobjective_rewards_list)
-        if len(multiobjective_rewards_list) > 0:
+        if len(multiobjective_rewards_list) > 0 and self.agent.multi_value_rewards:
+            returns = self.agent.get_returns(rewards_list, multiobjective_rewards=multiobjective_rewards_list)
             self.agent.replay_buffer.update_multiobjective_returns(returns)
         else:
+            returns = self.agent.get_returns(rewards_list, multiobjective_rewards=None)
             self.agent.replay_buffer.update_returns(returns)
         
         return {

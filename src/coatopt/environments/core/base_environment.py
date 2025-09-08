@@ -201,7 +201,8 @@ class BaseCoatingEnvironment:
                                  apply_pareto_improvement=False,
                                  air_penalty_weight=1.0,
                                  divergence_penalty_weight=1.0,
-                                 pareto_improvement_weight=1.0):
+                                 pareto_improvement_weight=1.0,
+                                 multi_value_rewards=False,):
         """Legacy parameter initialization for backward compatibility."""
         
         self.max_layers = max_layers
@@ -228,6 +229,7 @@ class BaseCoatingEnvironment:
         self.cycle_weights = cycle_weights
         self.n_weight_cycles = n_weight_cycles
         self.combine = combine
+        self.multi_value_rewards = multi_value_rewards
         
         # Electric field configuration (legacy)
         self.include_electric_field = include_electric_field
@@ -294,6 +296,7 @@ class BaseCoatingEnvironment:
             'air_penalty_weight': getattr(self, 'air_penalty_weight', 1.0),
             'divergence_penalty_weight': getattr(self, 'divergence_penalty_weight', 1.0),
             'pareto_improvement_weight': getattr(self, 'pareto_improvement_weight', 1.0),
+            'multi_value_rewards': hasattr(self, 'multi_value_rewards')
         }
         
         self.reward_calculator = RewardCalculator(**reward_calc_config)

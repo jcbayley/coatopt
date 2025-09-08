@@ -114,6 +114,7 @@ def create_hppo_environment(config: CoatingOptimisationConfig, materials: Dict[i
         air_penalty_weight=config.data.air_penalty_weight,
         divergence_penalty_weight=config.data.divergence_penalty_weight,
         pareto_improvement_weight=config.data.pareto_improvement_weight,
+        multi_value_rewards=config.network.multi_value_rewards
     )
     return env
 
@@ -165,6 +166,7 @@ def create_multiobjective_environment(config: CoatingOptimisationConfig, materia
         air_penalty_weight=config.data.air_penalty_weight,
         divergence_penalty_weight=config.data.divergence_penalty_weight,
         pareto_improvement_weight=config.data.pareto_improvement_weight,
+        multi_value_rewards=config.network.multi_value_rewards
     )
 
     return env
@@ -253,6 +255,7 @@ def create_pc_hppo_agent(config: CoatingOptimisationConfig, env: Union[HPPOEnvir
         moe_gate_hidden_dim=config.network.moe_gate_hidden_dim,
         moe_gate_temperature=config.network.moe_gate_temperature,
         moe_load_balancing_weight=config.network.moe_load_balancing_weight,
+        multi_value_rewards=config.network.multi_value_rewards,
     )
     return agent
 

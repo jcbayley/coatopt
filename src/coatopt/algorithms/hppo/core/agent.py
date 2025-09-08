@@ -76,7 +76,8 @@ class PCHPPO:
         moe_expert_specialization: str = "weight_regions",
         moe_gate_hidden_dim: int = 64,
         moe_gate_temperature: float = 0.5,
-        moe_load_balancing_weight: float = 0.01
+        moe_load_balancing_weight: float = 0.01,
+        multi_value_rewards: bool = False
     ):
         """
         Initialize PC-HPPO agent.
@@ -156,6 +157,7 @@ class PCHPPO:
         self.entropy_beta_decay_start = entropy_beta_decay_start
         self.entropy_beta_decay_length = entropy_beta_decay_length
         self.hyper_networks = hyper_networks
+        self.multi_value_rewards = multi_value_rewards
         
         # MoE configuration
         self.use_mixture_of_experts = use_mixture_of_experts
@@ -319,7 +321,8 @@ class PCHPPO:
             setattr(self, f"value{suffix}", ValueNetwork(
                 self.pre_output_dim, value_hidden_size, n_layers=n_value_layers,
                 include_layer_number=include_layer_number, activation=activation_function,
-                n_objectives=self.num_objectives, use_hyper_networks=self.hyper_networks
+                n_objectives=self.num_objectives, use_hyper_networks=self.hyper_networks, 
+                multi_value_rewards=self.multi_value_rewards
             ))
 
         # Copy parameters to old networks
@@ -726,7 +729,7 @@ class PCHPPO:
         returns = torch.from_numpy(returns_array)
         
         # Handle normalization for both scalar and multi-objective returns
-        if returns.dim() > 1:  # Multi-objective returns
+        if returns.dim() > 1 and self.multi_value_rewards:  # Multi-objective returns
             # Normalize each objective separately
             mean_returns = returns.mean(dim=0, keepdim=True)
             std_returns = returns.std(dim=0, keepdim=True) + HPPOConstants.EPSILON
@@ -767,7 +770,7 @@ class PCHPPO:
             )
 
             # Calculate advantages
-            if returns.ndim > 1:  # Multi-objective returns
+            if returns.ndim > 1 and self.multi_value_rewards:  # Multi-objective returns
                 # Compute multi-objective advantages
                 multiobjective_advantages = returns.detach() - state_value.detach()
                 
@@ -791,7 +794,7 @@ class PCHPPO:
                     weighted_state_value = torch.mean(state_value, dim=-1, keepdim=True)
             else:
                 # Original scalar advantage computation
-                advantage = returns.detach() - state_value.detach()
+                advantage = returns.detach() - state_value.detach().squeeze(1)
                 weighted_returns = returns
                 weighted_state_value = state_value
 
@@ -815,7 +818,7 @@ class PCHPPO:
             if self.use_mixture_of_experts and 'continuous_total_aux_loss' in moe_aux_losses:
                 continuous_policy_loss += moe_aux_losses['continuous_total_aux_loss']
             
-            if returns.ndim > 1:  # Multi-objective returns
+            if returns.ndim > 1 and self.multi_value_rewards:  # Multi-objective returns
                 # For multi-objective case, compute value loss using weighted returns and values
                 value_loss = self.mse_loss(weighted_returns.to(torch.float32).squeeze(), weighted_state_value.squeeze())
             else:

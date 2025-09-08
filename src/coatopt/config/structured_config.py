@@ -167,6 +167,8 @@ class NetworkConfig(BaseConfig):
     moe_constraint_penalty_weight: float = 100.0  # Penalty weight for constraint violations
     moe_phase1_episodes: int = 1000  # Episodes to train pure experts before switching to constraints
 
+    multi_value_rewards: bool = False  # Whether the environment provides multi-objective rewards
+
 
 @dataclass
 class TrainingConfig(BaseConfig):

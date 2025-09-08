@@ -102,6 +102,8 @@ class RewardCalculator:
         self.reward_normalization_mode = reward_normalization_mode
         self.reward_normalization_ranges = reward_normalization_ranges or {}
         self.reward_normalization_alpha = reward_normalization_alpha
+
+        self.multi_value_rewards = kwargs.get('multi_value_rewards', False)
         
         # History tracking for adaptive normalization
         self.reward_history_size = reward_history_size
@@ -418,13 +420,14 @@ class RewardCalculator:
         # Apply boundary penalties
         if use_boundary_penalties and env is not None:
             updated_rewards = apply_boundary_penalties(
-                updated_rewards, vals, self.optimise_parameters, env, target_mapping
+                updated_rewards, vals, self.optimise_parameters, env, target_mapping,
             )
         
         # Apply divergence penalty
         if use_divergence_penalty:
             divergence_penalty, updated_rewards = apply_divergence_penalty(
-                updated_rewards, self.optimise_parameters, weights, divergence_penalty_weight
+                updated_rewards, self.optimise_parameters, weights, divergence_penalty_weight,
+                self.multi_value_rewards
             )
             updated_total_reward += divergence_penalty
         
@@ -432,17 +435,16 @@ class RewardCalculator:
         if use_air_penalty:
             updated_total_reward, updated_rewards = apply_air_penalty_addon(
                 updated_total_reward, updated_rewards, vals, env, 
-                self.optimise_parameters, air_penalty_weight, **kwargs
+                self.optimise_parameters, air_penalty_weight, self.multi_value_rewards, **kwargs
             )
         
         # Apply Pareto improvement addon
         if use_pareto_improvement:
             updated_total_reward, updated_rewards = apply_pareto_improvement_addon(
                 updated_total_reward, updated_rewards, vals, env,
-                self.optimise_parameters, pareto_improvement_weight, **kwargs
+                self.optimise_parameters, pareto_improvement_weight, self.multi_value_rewards, **kwargs
             )
         
-        updated_rewards["total_reward"] = updated_total_reward
 
         return updated_total_reward, updated_vals, updated_rewards
     
@@ -626,7 +628,7 @@ def apply_normalization_addon(rewards: Dict[str, float], vals: Dict[str, float],
 
 def apply_divergence_penalty(rewards: Dict[str, float], optimise_parameters: List[str],
                            weights: Dict[str, float] = None, 
-                           divergence_penalty_weight: float = 1.0) -> Tuple[float, Dict[str, float]]:
+                           divergence_penalty_weight: float = 1.0, multi_value_rewards: bool = False) -> Tuple[float, Dict[str, float]]:
     """
     Apply divergence penalty to encourage both rewards to be high simultaneously.
     Only applied for 2-objective optimization problems.
@@ -669,7 +671,7 @@ def apply_divergence_penalty(rewards: Dict[str, float], optimise_parameters: Lis
                 divergence_penalty -= (0.1 - min_reward) * min_weight * divergence_penalty_weight
             
             # Distribute divergence penalty across individual objective rewards
-            if len(optimise_parameters) > 0:
+            if len(optimise_parameters) > 0 and multi_value_rewards:
                 penalty_per_objective = divergence_penalty 
                 for param in optimise_parameters:
                     updated_rewards[param] = updated_rewards.get(param, 0.0) + penalty_per_objective
@@ -764,7 +766,7 @@ def calculate_air_penalty_reward_new(state, air_material_index: int = 0, design_
 
 def apply_air_penalty_addon(total_reward: float, rewards: Dict[str, float], vals: Dict[str, float],
                           env, optimise_parameters: List[str] = None, 
-                          air_penalty_weight: float = 1.0, **kwargs) -> Tuple[float, Dict[str, float]]:
+                          air_penalty_weight: float = 1.0, multi_value_rewards: bool = False, **kwargs) -> Tuple[float, Dict[str, float]]:
     """
     Apply air penalty addon to reward calculation.
     
@@ -801,7 +803,7 @@ def apply_air_penalty_addon(total_reward: float, rewards: Dict[str, float], vals
         updated_total_reward = total_reward + air_penalty_scaled
         
         # Distribute air penalty across individual objective rewards
-        if optimise_parameters and len(optimise_parameters) > 0:
+        if optimise_parameters and len(optimise_parameters) > 0 and multi_value_rewards:
             penalty_per_objective = air_penalty_scaled 
             for param in optimise_parameters:
                 updated_rewards[param] = updated_rewards.get(param, 0.0) + penalty_per_objective
@@ -816,7 +818,7 @@ def apply_air_penalty_addon(total_reward: float, rewards: Dict[str, float], vals
 
 def apply_pareto_improvement_addon(total_reward: float, rewards: Dict[str, float], vals: Dict[str, float],
                                  env, optimise_parameters: List[str] = None, 
-                                 pareto_improvement_weight: float = 1.0, **kwargs) -> Tuple[float, Dict[str, float]]:
+                                 pareto_improvement_weight: float = 1.0, multi_value_rewards: bool = False, **kwargs) -> Tuple[float, Dict[str, float]]:
     """
     Apply Pareto front improvement reward addon to reward calculation.
     
@@ -872,7 +874,7 @@ def apply_pareto_improvement_addon(total_reward: float, rewards: Dict[str, float
     updated_total_reward = total_reward + pareto_reward_scaled
     
     # Distribute Pareto improvement reward across individual objective rewards
-    if optimise_parameters and len(optimise_parameters) > 0:
+    if optimise_parameters and len(optimise_parameters) > 0 and multi_value_rewards:
         reward_per_objective = pareto_reward_scaled 
         for param in optimise_parameters:
             updated_rewards[param] = updated_rewards.get(param, 0.0) + reward_per_objective
