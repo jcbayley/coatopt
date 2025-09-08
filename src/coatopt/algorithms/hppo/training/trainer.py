@@ -279,7 +279,7 @@ class UnifiedHPPOTrainer:
             self.reference_point = np.array([])
             self.all_rewards = []
             self.all_values = []
-            # Remove all_states initialization - not needed for checkpoints
+            self.all_states = []
 
     def _load_training_state(self) -> None:
         """Load training state from checkpoint (unified or legacy format)."""
@@ -322,7 +322,7 @@ class UnifiedHPPOTrainer:
             self.reference_point = pareto_data.get('reference_point', np.array([]))
             self.all_rewards = pareto_data.get('all_rewards', np.array([])).tolist() if len(pareto_data.get('all_rewards', [])) > 0 else []
             self.all_values = pareto_data.get('all_values', np.array([])).tolist() if len(pareto_data.get('all_values', [])) > 0 else []
-            # all_states removed from checkpoint loading - not needed
+            self.all_states = pareto_data.get('all_states', np.array([])).tolist() if len(pareto_data.get('all_states', [])) > 0 else []
             
             # Also sync to environment for compatibility
             if len(self.pareto_front_rewards) > 0:
@@ -360,69 +360,11 @@ class UnifiedHPPOTrainer:
         # Add to all explored points (HPPO only - genetic doesn't track all points)
         self.all_rewards.append(reward_point)
         self.all_values.append(value_point)
-        # all_states removed to reduce memory usage
+        self.all_states.append(state.copy())
         
-        # Check if the Pareto front was updated in the environment (from env.step)
-        if hasattr(self.env, 'pareto_front') and len(self.env.pareto_front) > 0:
-            # Sync trainer's Pareto tracking with environment's current front
-            if "pareto_front_changed" in rewards_dict and rewards_dict["pareto_front_changed"]:
-                self._sync_pareto_front_with_environment()
-            elif "updated_pareto_front" in rewards_dict:
-                # Alternative sync trigger if pareto_front_changed not available
-                self._sync_pareto_front_with_environment()
-        
-        # Update current Pareto front using incremental updates
-        # Note: _recompute_pareto_front removed - using incremental Pareto updates in environment
-
-    def _sync_pareto_front_with_environment(self) -> None:
-        """
-        Sync trainer's Pareto tracking attributes with environment's current Pareto front.
-        This should be called when the environment's Pareto front is updated.
-        """
-        if not hasattr(self.env, 'pareto_front') or len(self.env.pareto_front) == 0:
-            return
-            
-        try:
-            # Instead of using environment's pareto_front directly, 
-            # recompute Pareto front from all_values using correct directions
-            if len(self.all_values) > 0:
-                all_values_array = np.array(self.all_values)
-                
-                # Use environment's compute_pareto_front with maximize=None for mixed directions
-                # This will use the optimization_directions to handle mixed max/min correctly
-                if hasattr(self.env, 'compute_pareto_front'):
-                    recomputed_pareto_values = self.env.compute_pareto_front(all_values_array, maximize=None)
-                    
-                    # Now find the corresponding rewards for these Pareto values
-                    pareto_rewards = []
-                    pareto_states_list = []
-                    
-                    # Find indices of Pareto points in all_values
-                    for pf_value_point in recomputed_pareto_values:
-                        distances = np.linalg.norm(all_values_array - pf_value_point, axis=1)
-                        closest_idx = np.argmin(distances)
-                        
-                        if distances[closest_idx] < 1e-6:  # Close enough match
-                            # Get corresponding rewards from all_rewards
-                            if closest_idx < len(self.all_rewards):
-                                pareto_rewards.append(self.all_rewards[closest_idx])
-                            else:
-                                pareto_rewards.append([0.0] * len(pf_value_point))  # Fallback
-                        else:
-                            pareto_rewards.append([0.0] * len(pf_value_point))  # Fallback
-                    
-                    # Update trainer's Pareto tracking attributes
-                    self.pareto_front_values = recomputed_pareto_values.copy()
-                    self.pareto_front_rewards = np.array(pareto_rewards) if pareto_rewards else np.array([])
-                    self.pareto_states = np.array(pareto_states_list) if pareto_states_list else np.array([])
-                    
-        except Exception as e:
-            print(f"Warning: Failed to sync Pareto front: {e}")
-            import traceback
-            traceback.print_exc()
-            # Continue with empty arrays
-            self.pareto_front_values = np.array([])
-            self.pareto_states = np.array([])
+        # Update current Pareto front (this could be done periodically for efficiency)
+        if len(self.all_rewards) > 1:
+            self._recompute_pareto_front()
 
     def _compute_pareto_front(self, data_array: np.ndarray, data_type: str = 'rewards') -> Tuple[np.ndarray, np.ndarray]:
         """
@@ -461,7 +403,52 @@ class UnifiedHPPOTrainer:
                 
         return np.array(pareto_indices), pareto_points
 
-    # _recompute_pareto_front function removed - using incremental Pareto updates instead
+    def _recompute_pareto_front(self) -> None:
+        """
+        Recompute Pareto front from all explored points and update class attributes.
+        """
+        if len(self.all_rewards) == 0:
+            return
+            
+        # Convert to arrays for Pareto computation
+        all_rewards_array = np.array(self.all_rewards)
+        all_values_array = np.array(self.all_values)
+        all_states_array = np.array(self.all_states)
+        
+        # Use environment's Pareto computation method
+        try:
+            # Compute reward Pareto front (all maximized) - this is the primary Pareto front
+            reward_pareto_indices, reward_pareto_points = self._compute_pareto_front(all_rewards_array, data_type='rewards')
+            
+            if len(reward_pareto_points) > 0:
+                # Ensure all arrays have same length by using the same indices
+                self.pareto_front_rewards = reward_pareto_points
+                self.pareto_states = all_states_array[reward_pareto_indices]
+                self.pareto_state_rewards = reward_pareto_points  # Same as pareto_front_rewards
+                
+                # Get corresponding value points for the same Pareto indices
+                self.pareto_front_values = all_values_array[reward_pareto_indices]
+                
+            else:
+                self.pareto_front_rewards = np.array([])
+                self.pareto_front_values = np.array([])
+                self.pareto_states = np.array([])
+                self.pareto_state_rewards = np.array([])
+                
+        except Exception as e:
+            print(f"Warning: Failed to compute Pareto front: {e}, traceback: {traceback.format_exc()}")
+            self.pareto_front_rewards = np.array([])
+            self.pareto_front_values = np.array([])
+            self.pareto_states = np.array([])
+            self.pareto_state_rewards = np.array([])
+            
+        # Update reference point if we have rewards
+        if hasattr(self, 'pareto_front_rewards') and len(self.pareto_front_rewards) > 0:
+            self.reference_point = np.max(self.pareto_front_rewards, axis=0) * 1.1
+            
+            # Sync to environment for compatibility
+            self.env.pareto_front = self.pareto_front_rewards
+            self.env.reference_point = self.reference_point
 
     def _load_legacy_training_state(self) -> None:
         """Load training state from legacy scattered files."""
@@ -621,9 +608,6 @@ class UnifiedHPPOTrainer:
         states_dir = os.path.join(self.root_dir, HPPOConstants.STATES_DIR)
         os.makedirs(states_dir, exist_ok=True)
 
-        # Initial Pareto front sync to ensure trainer has current data
-        self._sync_pareto_front_with_environment()
-
         start_time = time.time()
         
         # Main training loop
@@ -697,13 +681,6 @@ class UnifiedHPPOTrainer:
                     'pareto_front_size': len(self.env.pareto_front) if hasattr(self.env, 'pareto_front') else 0,
                     'training_time': time.time() - self.training_start_time
                 }
-                
-                # Add Pareto update for plot manager (every 20 episodes)
-                if episode % 20 == 0:
-                    pareto_update = self._generate_pareto_update(episode)
-                    if pareto_update:
-                        episode_info['pareto_update'] = pareto_update
-                
                 self.callbacks.on_episode_complete(episode, episode_info)
             
             # Send data to UI queue if available
@@ -1124,9 +1101,6 @@ class UnifiedHPPOTrainer:
     def _perform_periodic_tasks(self, episode: int, all_materials: List, episode_start_time: float, start_time: float, final_state: np.ndarray, episode_reward: float) -> None:
         """Perform periodic tasks like plotting, saving, and logging."""
         
-        # Sync Pareto front with environment periodically
-        self._sync_pareto_front_with_environment()
-        
         # Save using unified checkpoint system or legacy system
         if self.use_unified_checkpoints:
             self._save_unified_checkpoint(episode)
@@ -1179,7 +1153,8 @@ class UnifiedHPPOTrainer:
                 'reference_point': self.reference_point,
                 'all_rewards': np.array(self.all_rewards) if self.all_rewards else np.array([]),
                 'all_values': np.array(self.all_values) if self.all_values else np.array([]),
-                # Removed all_states to reduce checkpoint file size
+                'all_states': [state.get_array() if hasattr(state, 'get_array') else state 
+                             for state in self.all_states] if len(self.all_states) > 0 else [],
             }
             
             trainer_data = {
@@ -1472,8 +1447,6 @@ class UnifiedHPPOTrainer:
             'pareto_front': np.array(transformed_pareto_points) if transformed_pareto_points else np.array([]),
             'pareto_front_rewards': self.pareto_front_rewards,
             'pareto_front_values': self.pareto_front_values,
-            'all_rewards': self.all_rewards,  # Add all_rewards for background points
-            'all_values': self.all_values,    # Add all_values for background points
             'pareto_states': pareto_states_arrays,
             'pareto_indices': list(range(len(self.pareto_states))),
         }
