@@ -14,7 +14,8 @@ dependencies = [
     "tmm",
     "pandas",
     "tmm_fast",
-    "numba"
+    "numba",
+    "mlflow"
 ]
 
 [tool.setuptools.packages.find]
