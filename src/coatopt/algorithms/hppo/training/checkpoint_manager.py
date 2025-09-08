@@ -237,6 +237,8 @@ class TrainingCheckpointManager:
                                           data=value, 
                                           compression='gzip', 
                                           compression_opts=6)
+            elif not isinstance(value, np.ndarray):
+                print("WARNING: Skipping non-array Pareto data key:", key)
         
         # Save historical Pareto fronts
         if 'fronts_history' in pareto_data:

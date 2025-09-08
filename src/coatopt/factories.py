@@ -219,6 +219,7 @@ def create_pc_hppo_agent(config: CoatingOptimisationConfig, env: Union[HPPOEnvir
         lower_bound=0,
         upper_bound=1,
         n_updates=config.training.n_updates_per_epoch,
+        batch_size=config.training.batch_size,
         beta=config.training.entropy_beta_start,
         clip_ratio=config.training.clip_ratio,
         gamma=config.training.gamma,
@@ -260,7 +261,7 @@ def create_pc_hppo_agent(config: CoatingOptimisationConfig, env: Union[HPPOEnvir
     return agent
 
 
-def create_trainer(config: CoatingOptimisationConfig, agent: hppo.PCHPPO, env: Union[HPPOEnvironment, MultiObjectiveEnvironment], continue_training: bool = False) -> Union[hppo.HPPOTrainer, HypervolumeTrainer]:
+def create_trainer(config: CoatingOptimisationConfig, agent: hppo.PCHPPO, env: Union[HPPOEnvironment, MultiObjectiveEnvironment], continue_training: bool = False, callbacks = None) -> Union[hppo.HPPOTrainer, HypervolumeTrainer]:
     """
     Create HPPO trainer from structured configuration.
     
@@ -293,10 +294,12 @@ def create_trainer(config: CoatingOptimisationConfig, agent: hppo.PCHPPO, env: U
         'entropy_beta_continuous_end': config.training.entropy_beta_continuous_end,
         'entropy_beta_use_restarts': config.training.entropy_beta_use_restarts,
         'n_episodes_per_epoch': config.training.n_episodes_per_epoch,
+        'n_updates_per_epoch': config.training.n_updates_per_epoch,
         'scheduler_start': config.training.scheduler_start,
         'scheduler_end': config.training.scheduler_end,
         'continue_training': continue_training,
         'weight_network_save': config.training.weight_network_save,
+        'callbacks': callbacks,
     }
     
     if use_hypervolume:

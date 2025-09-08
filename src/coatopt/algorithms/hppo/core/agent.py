@@ -71,6 +71,7 @@ class PCHPPO:
         entropy_beta_use_restarts: bool = False,
         hyper_networks: bool = False,
         buffer_size: int = 10000,
+        batch_size: int = 64,
         use_mixture_of_experts: bool = False,
         moe_n_experts: int = 5,
         moe_expert_specialization: str = "weight_regions",
@@ -127,6 +128,8 @@ class PCHPPO:
             entropy_beta_continuous_end: Final entropy coefficient for continuous policy (optional)
             entropy_beta_use_restarts: Whether to use warm restarts for entropy beta decay (like LR scheduler)
             hyper_networks: Whether to use hypernetworks
+            buffer_size: Maximum size of replay buffer
+            batch_size: Mini-batch size for policy updates
             use_mixture_of_experts: Whether to use Mixture of Experts networks
             moe_n_experts: Number of expert networks in MoE
             moe_expert_specialization: How experts specialize ('weight_regions' or 'random')
@@ -177,6 +180,7 @@ class PCHPPO:
         self.pre_type = pre_type
         self.n_updates = n_updates
         self.buffer_size = buffer_size
+        self.batch_size = batch_size
         
         # Initialize current entropy coefficients
         self.beta_discrete = self.entropy_beta_discrete_start
@@ -710,9 +714,29 @@ class PCHPPO:
         # Concatenate all masked probabilities
         return torch.cat(masked_probs_list, dim=0)
 
+    def _create_mini_batches(self, total_size: int) -> List[slice]:
+        """
+        Create mini-batch indices for processing replay buffer data.
+        
+        Args:
+            total_size: Total number of samples in replay buffer
+            
+        Returns:
+            List of slice objects for mini-batches
+        """
+        indices = torch.randperm(total_size)  # Shuffle indices for better training
+        mini_batches = []
+        
+        for start_idx in range(0, total_size, self.batch_size):
+            end_idx = min(start_idx + self.batch_size, total_size)
+            batch_indices = indices[start_idx:end_idx]
+            mini_batches.append(batch_indices)
+        
+        return mini_batches
+
     def update(self, update_policy: bool = True, update_value: bool = True) -> Tuple[float, float, float]:
         """
-        Update policy and value networks using PPO algorithm.
+        Update policy and value networks using PPO algorithm with mini-batches.
         
         Args:
             update_policy: Whether to update policy networks
@@ -745,98 +769,140 @@ class PCHPPO:
         actionsc = torch.cat(list(self.replay_buffer.continuous_actions), dim=0).detach()
         actionsd = torch.cat(list(self.replay_buffer.discrete_actions), dim=-1).detach()
 
+        # Prepare states and layer numbers (full batch for creating mini-batches)
+        raw_states = list(self.replay_buffer.states)
+        
+        # Use pre-computed observations from replay buffer - much more efficient
+        if len(self.replay_buffer.observations) > 0:
+            states = torch.cat(list(self.replay_buffer.observations), dim=0).to(torch.float32)
+        else:
+            states = torch.empty(0, 0, 0).to(torch.float32)
+            
+        layer_numbers = (
+            torch.tensor(list(self.replay_buffer.layer_number)).to(torch.float32)
+            if self.include_layer_number else False
+        )
+
+        # Get total buffer size and create mini-batches
+        total_size = len(self.replay_buffer)
+        mini_batch_indices = self._create_mini_batches(total_size)
+
+        # Accumulate losses across mini-batches
+        total_discrete_loss = 0.0
+        total_continuous_loss = 0.0
+        total_value_loss = 0.0
+        num_batches = len(mini_batch_indices)
+
         # Perform multiple update epochs
         for epoch_idx in range(self.n_updates):
-            # Prepare states and layer numbers
-            # Convert observations (which may be dicts) to tensors using action_utils
-            raw_states = list(self.replay_buffer.states)
+            epoch_discrete_loss = 0.0
+            epoch_continuous_loss = 0.0
+            epoch_value_loss = 0.0
             
-            # Use pre-computed observations from replay buffer - much more efficient
-            if len(self.replay_buffer.observations) > 0:
-                states = torch.cat(list(self.replay_buffer.observations), dim=0).to(torch.float32)
-            else:
-                states = torch.empty(0, 0, 0).to(torch.float32)
+            # Process each mini-batch
+            for batch_idx, batch_indices in enumerate(mini_batch_indices):
+                # Extract mini-batch data
+                batch_returns = returns[batch_indices]
+                batch_state_vals = state_vals[batch_indices]
+                batch_old_lprobs_discrete = old_lprobs_discrete[batch_indices]
+                batch_old_lprobs_continuous = old_lprobs_continuous[batch_indices]
+                batch_objective_weights = objective_weights[batch_indices]
+                batch_actionsc = actionsc[batch_indices]
+                batch_actionsd = actionsd[batch_indices]
+                batch_states = states[batch_indices]
+                batch_raw_states = [raw_states[i] for i in batch_indices]
                 
-            layer_numbers = (
-                torch.tensor(list(self.replay_buffer.layer_number)).to(torch.float32)
-                if self.include_layer_number else False
-            )
+                batch_layer_numbers = (
+                    layer_numbers[batch_indices] if self.include_layer_number else False
+                )
 
-            # Get current policy outputs
-            (_, _, _, log_prob_discrete, log_prob_continuous, _, _, _, state_value, 
-             entropy_discrete, entropy_continuous, moe_aux_losses) = self.select_action(
-                states, layer_numbers, actionsc, actionsd, packed=True, 
-                objective_weights=objective_weights, original_states=raw_states
-            )
+                # Get current policy outputs for this mini-batch
+                (_, _, _, log_prob_discrete, log_prob_continuous, _, _, _, state_value, 
+                 entropy_discrete, entropy_continuous, moe_aux_losses) = self.select_action(
+                    batch_states, batch_layer_numbers, batch_actionsc, batch_actionsd, packed=True, 
+                    objective_weights=batch_objective_weights, original_states=batch_raw_states
+                )
 
-            # Calculate advantages
-            if returns.ndim > 1 and self.multi_value_rewards:  # Multi-objective returns
-                # Compute multi-objective advantages
-                multiobjective_advantages = returns.detach() - state_value.detach()
-                
-                # Weight the advantages using objective weights
-                if objective_weights is not None:
-                    # Ensure objective_weights has the right shape for broadcasting
-                    if objective_weights.size(-1) != multiobjective_advantages.size(-1):
-                        raise ValueError(f"Objective weights dimension ({objective_weights.size(-1)}) "
-                                       f"must match advantage dimension ({multiobjective_advantages.size(-1)})")
-                    # Compute weighted scalar advantage
-                    advantage = torch.sum(multiobjective_advantages * objective_weights, dim=-1, keepdim=True)
+                # Calculate advantages for this mini-batch
+                if batch_returns.ndim > 1 and self.multi_value_rewards:  # Multi-objective returns
+                    # Compute multi-objective advantages
+                    multiobjective_advantages = batch_returns.detach() - state_value.detach()
                     
-                    # Also compute weighted returns for value loss
-                    weighted_returns = torch.sum(returns * objective_weights, dim=-1, keepdim=True)
-                    weighted_state_value = torch.sum(state_value * objective_weights, dim=-1, keepdim=True)
+                    # Weight the advantages using objective weights
+                    if batch_objective_weights is not None:
+                        # Ensure objective_weights has the right shape for broadcasting
+                        if batch_objective_weights.size(-1) != multiobjective_advantages.size(-1):
+                            raise ValueError(f"Objective weights dimension ({batch_objective_weights.size(-1)}) "
+                                           f"must match advantage dimension ({multiobjective_advantages.size(-1)})")
+                        # Compute weighted scalar advantage
+                        advantage = torch.sum(multiobjective_advantages * batch_objective_weights, dim=-1, keepdim=True)
+                        
+                        # Also compute weighted returns for value loss
+                        weighted_returns = torch.sum(batch_returns * batch_objective_weights, dim=-1, keepdim=True)
+                        weighted_state_value = torch.sum(state_value * batch_objective_weights, dim=-1, keepdim=True)
+                    else:
+                        # Fallback: use mean of advantages if no weights provided
+                        print("Warning: No objective weights provided for multi-objective advantages. Using mean advantage.")
+                        advantage = torch.mean(multiobjective_advantages, dim=-1, keepdim=True)
+                        weighted_returns = torch.mean(batch_returns, dim=-1, keepdim=True)
+                        weighted_state_value = torch.mean(state_value, dim=-1, keepdim=True)
                 else:
-                    # Fallback: use mean of advantages if no weights provided
-                    print("Warning: No objective weights provided for multi-objective advantages. Using mean advantage.")
-                    advantage = torch.mean(multiobjective_advantages, dim=-1, keepdim=True)
-                    weighted_returns = torch.mean(returns, dim=-1, keepdim=True)
-                    weighted_state_value = torch.mean(state_value, dim=-1, keepdim=True)
-            else:
-                # Original scalar advantage computation
-                advantage = returns.detach() - state_value.detach().squeeze(1)
-                weighted_returns = returns
-                weighted_state_value = state_value
+                    # Original scalar advantage computation
+                    advantage = batch_returns.detach() - state_value.detach().squeeze(1)
+                    weighted_returns = batch_returns
+                    weighted_state_value = state_value
 
-            #print(returns.shape, state_value.shape, advantage.shape)
-            #print(returns[0], state_value[0], advantage[0])
-            #print(advantage[0], returns[0], state_value)
-            # Calculate policy losses (including MoE auxiliary losses)
-            discrete_policy_loss = self._calculate_discrete_policy_loss(
-                log_prob_discrete, old_lprobs_discrete, advantage, entropy_discrete, self.beta_discrete
-            )
-            
-            # Add MoE auxiliary losses to discrete policy loss
-            if self.use_mixture_of_experts and 'discrete_total_aux_loss' in moe_aux_losses:
-                discrete_policy_loss += moe_aux_losses['discrete_total_aux_loss']
-            
-            continuous_policy_loss = self._calculate_continuous_policy_loss(
-                log_prob_continuous, old_lprobs_continuous, advantage, entropy_continuous, self.beta_continuous
-            )
-            
-            # Add MoE auxiliary losses to continuous policy loss
-            if self.use_mixture_of_experts and 'continuous_total_aux_loss' in moe_aux_losses:
-                continuous_policy_loss += moe_aux_losses['continuous_total_aux_loss']
-            
-            if returns.ndim > 1 and self.multi_value_rewards:  # Multi-objective returns
-                # For multi-objective case, compute value loss using weighted returns and values
-                value_loss = self.mse_loss(weighted_returns.to(torch.float32).squeeze(), weighted_state_value.squeeze())
-            else:
-                # Original scalar value loss
-                value_loss = self.mse_loss(weighted_returns.to(torch.float32).squeeze(), weighted_state_value.squeeze())
-            
-            # Add MoE auxiliary losses to value loss
-            if self.use_mixture_of_experts and 'value_total_aux_loss' in moe_aux_losses:
-                value_loss += moe_aux_losses['value_total_aux_loss']
+                # Calculate policy losses (including MoE auxiliary losses)
+                discrete_policy_loss = self._calculate_discrete_policy_loss(
+                    log_prob_discrete, batch_old_lprobs_discrete, advantage, entropy_discrete, self.beta_discrete
+                )
+                
+                # Add MoE auxiliary losses to discrete policy loss
+                if self.use_mixture_of_experts and 'discrete_total_aux_loss' in moe_aux_losses:
+                    discrete_policy_loss += moe_aux_losses['discrete_total_aux_loss']
+                
+                continuous_policy_loss = self._calculate_continuous_policy_loss(
+                    log_prob_continuous, batch_old_lprobs_continuous, advantage, entropy_continuous, self.beta_continuous
+                )
+                
+                # Add MoE auxiliary losses to continuous policy loss
+                if self.use_mixture_of_experts and 'continuous_total_aux_loss' in moe_aux_losses:
+                    continuous_policy_loss += moe_aux_losses['continuous_total_aux_loss']
+                
+                if batch_returns.ndim > 1 and self.multi_value_rewards:  # Multi-objective returns
+                    # For multi-objective case, compute value loss using weighted returns and values
+                    value_loss = self.mse_loss(weighted_returns.to(torch.float32).squeeze(), weighted_state_value.squeeze())
+                else:
+                    # Original scalar value loss
+                    value_loss = self.mse_loss(weighted_returns.to(torch.float32).squeeze(), weighted_state_value.squeeze())
+                
+                # Add MoE auxiliary losses to value loss
+                if self.use_mixture_of_experts and 'value_total_aux_loss' in moe_aux_losses:
+                    value_loss += moe_aux_losses['value_total_aux_loss']
 
-            # Update networks
-            if update_policy:
-                self._update_discrete_policy(discrete_policy_loss)
-            
-            self._update_continuous_policy(continuous_policy_loss)
-            
-            if update_value:
-                self._update_value_network(value_loss)
+                # Update networks for this mini-batch
+                if update_policy:
+                    self._update_discrete_policy(discrete_policy_loss)
+                
+                self._update_continuous_policy(continuous_policy_loss)
+                
+                if update_value:
+                    self._update_value_network(value_loss)
+
+                # Accumulate losses for this epoch
+                epoch_discrete_loss += discrete_policy_loss.item()
+                epoch_continuous_loss += continuous_policy_loss.item()
+                epoch_value_loss += value_loss.item()
+
+            # Average losses across mini-batches for this epoch
+            total_discrete_loss += epoch_discrete_loss / num_batches
+            total_continuous_loss += epoch_continuous_loss / num_batches
+            total_value_loss += epoch_value_loss / num_batches
+
+        # Average losses across epochs
+        avg_discrete_loss = total_discrete_loss / self.n_updates
+        avg_continuous_loss = total_continuous_loss / self.n_updates
+        avg_value_loss = total_value_loss / self.n_updates
 
         # Update old networks
         self.policy_discrete_old.load_state_dict(self.policy_discrete.state_dict())
@@ -846,7 +912,7 @@ class PCHPPO:
         # Clear replay buffer
         self.replay_buffer.clear()
 
-        return discrete_policy_loss.item(), continuous_policy_loss.item(), value_loss.item()
+        return avg_discrete_loss, avg_continuous_loss, avg_value_loss
 
     def _calculate_discrete_policy_loss(self, log_prob, old_log_prob, advantage, entropy, entropy_coeff):
         """Calculate PPO clipped discrete policy loss."""

@@ -1,14 +1,4 @@
 #!/usr/bin/env python3
-"""
-Command-line training interface for coatopt
-
-This script allows running HPPO coating optimization training without the GUI,
-using the unified HPPOTrainer for simplified and consistent behavior.
-
-Usage:
-    coatopt-train -c config.ini [options]
-    python -m coatopt_cli.train -c config.ini [options]
-"""
 
 import argparse
 import os
@@ -171,11 +161,11 @@ class CommandLineTrainer:
             entropy_beta_continuous_end=getattr(self.config.training, 'entropy_beta_continuous_end', None),
             entropy_beta_use_restarts=getattr(self.config.training, 'entropy_beta_use_restarts', False),
             n_episodes_per_epoch=self.config.training.n_episodes_per_epoch,
+            n_updates_per_epoch=self.config.training.n_updates_per_epoch,
             use_obs=self.config.data.use_observation,
             scheduler_start=self.config.training.scheduler_start,
             scheduler_end=self.config.training.scheduler_end,
             weight_network_save=self.config.training.weight_network_save,
-            use_unified_checkpoints=True,
             save_plots=self.save_plots,
             save_episode_visualizations=self.save_visualizations,
             continue_training=self.continue_training,
