@@ -108,6 +108,20 @@ class BaseCoatingEnvironment:
         self.air_penalty_weight = getattr(config.data, 'air_penalty_weight', 1.0)
         self.divergence_penalty_weight = getattr(config.data, 'divergence_penalty_weight', 1.0)
         self.pareto_improvement_weight = getattr(config.data, 'pareto_improvement_weight', 1.0)
+        self.constraint_penalty_weight = getattr(config.data, 'constraint_penalty_weight', 100.0)
+        
+        # Preference constraints configuration from TrainingConfig (if available)
+        if config.training is not None:
+            self.apply_preference_constraints = getattr(config.training, 'use_preference_constraints', False)
+            self.preference_constraint_episodes_per_objective = getattr(config.training, 'preference_constraint_episodes_per_objective', 1000)
+            self.preference_constraint_episodes_per_phase = getattr(config.training, 'preference_constraint_episodes_per_phase', 2000)
+            # Override penalty weight from training config if provided
+            if hasattr(config.training, 'preference_constraint_penalty_weight'):
+                self.constraint_penalty_weight = config.training.preference_constraint_penalty_weight
+        else:
+            self.apply_preference_constraints = False
+            self.preference_constraint_episodes_per_objective = 1000
+            self.preference_constraint_episodes_per_phase = 2000
         
         # Training parameters from DataConfig
         self.ignore_air_option = config.data.ignore_air_option
@@ -268,12 +282,20 @@ class BaseCoatingEnvironment:
         self.current_index = 0
         self.previous_material = self.substrate_material_index
         
+        # Training epoch tracking for preference constraints
+        self.current_epoch = 0
+        
         # Calculate observation space dynamically
         self.obs_space_shape = self._get_observation_shape()
         self.obs_space_size = self.obs_space_shape[0] * self.obs_space_shape[1]
         
         # Initialize reward calculator with addon configuration
         reward_type = "default" if self.reward_function is None else str(self.reward_function)
+        
+        # Initialize objective range tracker for preference constraints
+        from coatopt.algorithms.hppo.training.weight_cycling import ObjectiveRangeTracker
+        n_objectives = len(self.get_parameter_names())
+        self.objective_range_tracker = ObjectiveRangeTracker(n_objectives)
         
         # Gather reward calculator configuration parameters
         reward_calc_config = {
@@ -291,9 +313,11 @@ class BaseCoatingEnvironment:
             'apply_divergence_penalty': getattr(self, 'apply_divergence_penalty', False),
             'apply_air_penalty': getattr(self, 'apply_air_penalty', False),
             'apply_pareto_improvement': getattr(self, 'apply_pareto_improvement', False),
+            'apply_preference_constraints': getattr(self, 'apply_preference_constraints', False),
             'air_penalty_weight': getattr(self, 'air_penalty_weight', 1.0),
             'divergence_penalty_weight': getattr(self, 'divergence_penalty_weight', 1.0),
             'pareto_improvement_weight': getattr(self, 'pareto_improvement_weight', 1.0),
+            'constraint_penalty_weight': getattr(self, 'constraint_penalty_weight', 100.0),
         }
         
         self.reward_calculator = RewardCalculator(**reward_calc_config)
@@ -517,8 +541,20 @@ class BaseCoatingEnvironment:
                 absorption=new_E_integrated,
                 weights=weights,
                 expert_constraints=self.current_expert_constraints,
-                env=self
+                env=self,
+                epoch=self.current_epoch
             )
+        
+        # Update objective range tracker for preference constraints
+        if hasattr(self, 'objective_range_tracker') and self.objective_range_tracker is not None:
+            individual_phase_episodes = len(self.get_parameter_names()) * getattr(self, 'preference_constraint_episodes_per_objective', 1000)
+            self.objective_range_tracker.update(
+                objective_values=vals,
+                objective_names=self.get_parameter_names(),
+                epoch=self.current_epoch,
+                individual_phase_episodes=individual_phase_episodes
+            )
+        
         return total_reward, vals, rewards
     
     def set_expert_constraints(self, constraints: Dict[str, float]):
@@ -533,6 +569,14 @@ class BaseCoatingEnvironment:
     def clear_expert_constraints(self):
         """Clear expert constraints."""
         self.current_expert_constraints = None
+        
+    def set_epoch(self, epoch: int):
+        """Set the current training epoch for preference constraints tracking."""
+        self.current_epoch = epoch
+    
+    def get_epoch(self) -> int:
+        """Get the current training epoch."""
+        return getattr(self, 'current_epoch', 0)
     
     def update_state(self, current_state, thickness, material):
         """

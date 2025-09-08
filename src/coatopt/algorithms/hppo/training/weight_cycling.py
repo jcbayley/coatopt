@@ -1,10 +1,89 @@
-"""
-Weight cycling utilities for multi-objective optimization.
-Simple functions for handling weight sampling and cycling strategies.
-"""
 import numpy as np
 from typing import Optional, List, Tuple, Dict
 import warnings
+
+
+class ObjectiveRangeTracker:
+    """
+    Tracks objective ranges during individual exploration phase for later constraint application.
+    """
+    
+    def __init__(self, n_objectives: int):
+        self.n_objectives = n_objectives
+        self.objective_ranges = {}  # Dict[objective_idx] -> {'min': float, 'max': float, 'values': List[float]}
+        self.is_tracking = True
+        
+    def update(self, objective_values: Dict[str, float], objective_names: List[str], epoch: int, 
+               individual_phase_episodes: int):
+        """
+        Update objective ranges during individual exploration phase.
+        
+        Args:
+            objective_values: Current objective values (e.g., {'reflectivity': 0.999, 'thermal_noise': 1e-21})
+            objective_names: List of objective names in order
+            epoch: Current epoch
+            individual_phase_episodes: Total episodes for individual exploration
+        """
+        # Only track during individual exploration phase
+        if epoch >= individual_phase_episodes:
+            self.is_tracking = False
+            return
+            
+        # Determine which objective is currently being optimized
+        episodes_per_objective = individual_phase_episodes // self.n_objectives
+        current_objective_idx = (epoch // episodes_per_objective) % self.n_objectives
+        
+        if current_objective_idx < len(objective_names):
+            current_objective_name = objective_names[current_objective_idx]
+            
+            if current_objective_name in objective_values:
+                value = objective_values[current_objective_name]
+                
+                # Initialize if first time seeing this objective
+                if current_objective_idx not in self.objective_ranges:
+                    self.objective_ranges[current_objective_idx] = {
+                        'min': value,
+                        'max': value,
+                        'values': [],
+                        'name': current_objective_name
+                    }
+                
+                # Update range
+                range_info = self.objective_ranges[current_objective_idx]
+                range_info['min'] = min(range_info['min'], value)
+                range_info['max'] = max(range_info['max'], value)
+                range_info['values'].append(value)
+    
+    def get_constraint_bounds(self, objective_idx: int, constraint_fraction: float = 1.0) -> Optional[Tuple[float, float]]:
+        """
+        Get constraint bounds for an objective based on learned ranges.
+        
+        Args:
+            objective_idx: Index of the objective
+            constraint_fraction: Fraction of the learned range to use as constraint bounds (1.0 = full range)
+            
+        Returns:
+            Tuple of (min_bound, max_bound) or None if objective not tracked
+        """
+        if objective_idx not in self.objective_ranges:
+            return None
+            
+        range_info = self.objective_ranges[objective_idx]
+        range_span = range_info['max'] - range_info['min']
+        
+        # Add some buffer and use fraction of range
+        buffer = 0.05 * range_span  # 5% buffer
+        constraint_span = constraint_fraction * range_span
+        
+        min_bound = range_info['min'] - buffer
+        max_bound = range_info['min'] + constraint_span + buffer
+        
+        return (min_bound, max_bound)
+    
+    def get_all_ranges(self) -> Dict[int, Dict[str, float]]:
+        """Get all learned ranges for debugging/logging."""
+        return {idx: {'min': info['min'], 'max': info['max'], 'name': info['name']} 
+                for idx, info in self.objective_ranges.items()}
 
 
 def get_objective_exploration_phase(epoch: int, n_objectives: int, episodes_per_objective: int = 100) -> dict:
@@ -28,6 +107,51 @@ def get_objective_exploration_phase(epoch: int, n_objectives: int, episodes_per_
     else:
         # We're in combination exploration phase
         return {'phase': 'combination'}
+
+
+def get_preference_constrained_phase(epoch: int, n_objectives: int, episodes_per_objective: int = 1000, 
+                                   episodes_per_constrained_phase: int = 2000) -> dict:
+    """
+    Determine preference constrained training phase.
+    
+    Phase 1: Learn each objective individually for n_objectives * episodes_per_objective episodes
+    Phase 2: For each objective pair, constrain one while optimizing the other
+    
+    Args:
+        epoch: Current episode
+        n_objectives: Number of objectives
+        episodes_per_objective: Episodes to spend learning each objective individually
+        episodes_per_constrained_phase: Episodes to spend on each constrained optimization pair
+        
+    Returns:
+        dict with phase info including constraints and active objective
+    """
+    total_individual_episodes = n_objectives * episodes_per_objective
+    
+    if epoch < total_individual_episodes:
+        # Phase 1: Individual objective exploration
+        target_objective = (epoch // episodes_per_objective) % n_objectives
+        return {
+            'phase': 'individual',
+            'target_objective': target_objective,
+            'constrained_objectives': [],
+            'active_objective': target_objective
+        }
+    else:
+        # Phase 2: Constrained optimization - each objective gets optimized while others are constrained
+        epoch_in_phase2 = epoch - total_individual_episodes
+        
+        # Calculate which objective is being optimized and which are constrained
+        active_objective = (epoch_in_phase2 // episodes_per_constrained_phase) % n_objectives
+        constrained_objectives = [i for i in range(n_objectives) if i != active_objective]
+        
+        return {
+            'phase': 'constrained',
+            'target_objective': None,
+            'constrained_objectives': constrained_objectives,
+            'active_objective': active_objective,
+            'epoch_in_constrained_phase': epoch_in_phase2 % episodes_per_constrained_phase
+        }
 
 
 def analyze_objective_space_coverage(all_rewards: Optional[List[np.ndarray]], n_objectives: int) -> Dict[str, np.ndarray]:
@@ -345,7 +469,7 @@ def sample_reward_weights(n_objectives, cycle_weights, epoch=None, num_samples=1
                          final_weight_epoch=1, start_weight_alpha=1.0, 
                          final_weight_alpha=1.0, n_weight_cycles=2, 
                          pareto_front=None, weight_archive=None, all_rewards=None,
-                         transfer_fraction=0.75):
+                         transfer_fraction=0.75, env=None):
     """
     Sample weights for the reward function based on cycling strategy.
     
@@ -356,7 +480,8 @@ def sample_reward_weights(n_objectives, cycle_weights, epoch=None, num_samples=1
             - "smooth": Smooth cycling between objectives
             - "annealed_random": Random weights with annealing
             - "adaptive_pareto": Adaptive based on Pareto front gaps
-            - "individual_then_adaptive": NEW - First explore each objective individually, then adaptive combinations
+            - "individual_then_adaptive": First explore each objective individually, then adaptive combinations
+            - "preference_constrained": Learn each objective individually, then constrained optimization
             - "random": Pure random weights
             - "linear": Linear grid cycling
         epoch: Current epoch (used for scheduling)
@@ -368,7 +493,8 @@ def sample_reward_weights(n_objectives, cycle_weights, epoch=None, num_samples=1
         pareto_front: Current Pareto front for adaptive strategies (optional)
         weight_archive: Archive of recently used weights for diversity (optional)
         all_rewards: All reward vectors seen so far, used for objective space coverage analysis (optional)
-        extreme_fraction: Fraction of cycle spent at extremes (for smooth cycling)
+        transfer_fraction: Fraction of cycle spent at extremes (for smooth cycling)
+        env: Environment object (for getting preference constraints configuration)
         
     Returns:
         Weight vector for reward function
@@ -411,6 +537,34 @@ def sample_reward_weights(n_objectives, cycle_weights, epoch=None, num_samples=1
             
             if weight_archive is not None:
                 weight_archive.add_weight(weights)
+    
+    elif cycle_weights == "preference_constrained":
+        # Two-phase strategy: learn each objective individually, then constrained optimization
+        # Get parameters from environment if available
+        if env is not None:
+            episodes_per_objective = getattr(env, 'preference_constraint_episodes_per_objective', 1000)
+            episodes_per_constrained_phase = getattr(env, 'preference_constraint_episodes_per_phase', 2000)
+        else:
+            episodes_per_objective = 1000
+            episodes_per_constrained_phase = 2000
+            
+        phase_info = get_preference_constrained_phase(
+            epoch or 0, n_objectives, 
+            episodes_per_objective=episodes_per_objective,
+            episodes_per_constrained_phase=episodes_per_constrained_phase
+        )
+        
+        if phase_info['phase'] == 'individual':
+            # Phase 1: Focus 100% on one objective at a time
+            weights = np.zeros(n_objectives)
+            weights[phase_info['target_objective']] = 1.0
+        else:
+            # Phase 2: Constrained optimization - focus on active objective
+            weights = np.zeros(n_objectives)
+            weights[phase_info['active_objective']] = 1.0
+            
+            # Note: Constraints will be handled in the reward system
+            # The weight vector just indicates which objective to optimize
     
     elif cycle_weights == "step":
         if n_objectives != 2:

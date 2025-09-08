@@ -134,6 +134,7 @@ class DataConfig(BaseConfig):
     air_penalty_weight: float = 1.0
     divergence_penalty_weight: float = 1.0
     pareto_improvement_weight: float = 1.0
+    constraint_penalty_weight: float = 100.0
 
 
 @dataclass
@@ -220,6 +221,12 @@ class TrainingConfig(BaseConfig):
     entropy_beta_discrete_end: Optional[float] = None
     entropy_beta_continuous_start: Optional[float] = None
     entropy_beta_continuous_end: Optional[float] = None
+
+    # Preference constrained RL parameters
+    use_preference_constraints: bool = False
+    preference_constraint_episodes_per_objective: int = 1000  # Episodes to learn each objective individually
+    preference_constraint_episodes_per_phase: int = 2000  # Episodes per constrained optimization phase
+    preference_constraint_penalty_weight: float = 100.0  # Penalty weight for constraint violations
 
 @dataclass
 class GeneticConfig(BaseConfig):

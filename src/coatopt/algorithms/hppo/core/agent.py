@@ -725,6 +725,7 @@ class PCHPPO:
         returns_array = np.array(self.replay_buffer.returns)
         returns = torch.from_numpy(returns_array)
         
+        """
         # Handle normalization for both scalar and multi-objective returns
         if returns.dim() > 1:  # Multi-objective returns
             # Normalize each objective separately
@@ -733,6 +734,7 @@ class PCHPPO:
             returns = (returns - mean_returns) / std_returns
         else:  # Scalar returns
             returns = (returns - returns.mean()) / (returns.std() + HPPOConstants.EPSILON)
+        """
         
         state_vals = torch.cat(list(self.replay_buffer.state_values)).to(torch.float32)
         old_lprobs_discrete = torch.cat(list(self.replay_buffer.logprobs_discrete)).to(torch.float32).detach()

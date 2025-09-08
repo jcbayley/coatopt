@@ -58,9 +58,9 @@ class RewardCalculator:
                  # Addon configuration parameters
                  apply_normalization=False, apply_boundary_penalties=False,
                  apply_divergence_penalty=False, apply_air_penalty=False,
-                 apply_pareto_improvement=False,
+                 apply_pareto_improvement=False, apply_preference_constraints=False,
                  air_penalty_weight=1.0, divergence_penalty_weight=1.0,
-                 pareto_improvement_weight=1.0,
+                 pareto_improvement_weight=1.0, constraint_penalty_weight=100.0,
                  target_mapping=None, **kwargs):
         """
         Initialize with basic parameters and addon configuration.
@@ -80,9 +80,11 @@ class RewardCalculator:
             apply_divergence_penalty: Whether to apply divergence penalty by default
             apply_air_penalty: Whether to apply air penalty by default
             apply_pareto_improvement: Whether to apply Pareto improvement reward by default
+            apply_preference_constraints: Whether to apply preference constraints by default
             air_penalty_weight: Weight for air penalty
             divergence_penalty_weight: Weight for divergence penalty
             pareto_improvement_weight: Weight for Pareto improvement reward
+            constraint_penalty_weight: Weight for constraint violation penalties
             target_mapping: Mapping of parameter names to scaling types
             **kwargs: Additional parameters passed to reward function
         """
@@ -114,9 +116,11 @@ class RewardCalculator:
         self.apply_divergence_penalty = apply_divergence_penalty
         self.apply_air_penalty = apply_air_penalty
         self.apply_pareto_improvement = apply_pareto_improvement
+        self.apply_preference_constraints = apply_preference_constraints
         self.air_penalty_weight = air_penalty_weight
         self.divergence_penalty_weight = divergence_penalty_weight
         self.pareto_improvement_weight = pareto_improvement_weight
+        self.constraint_penalty_weight = constraint_penalty_weight
         self.target_mapping = target_mapping or {
             "reflectivity": "log-",
             "thermal_noise": "log-",
@@ -365,9 +369,11 @@ class RewardCalculator:
             use_divergence_penalty=self.apply_divergence_penalty, 
             use_air_penalty=self.apply_air_penalty,
             use_pareto_improvement=self.apply_pareto_improvement,
+            use_preference_constraints=self.apply_preference_constraints,
             air_penalty_weight=self.air_penalty_weight, 
             divergence_penalty_weight=self.divergence_penalty_weight,
             pareto_improvement_weight=self.pareto_improvement_weight,
+            constraint_penalty_weight=self.constraint_penalty_weight,
             target_mapping=self.target_mapping, **extra_kwargs
         )
         
@@ -377,9 +383,9 @@ class RewardCalculator:
                             rewards: Dict[str, float], env=None, weights: Dict[str, float] = None,
                             use_normalization: bool = False, use_boundary_penalties: bool = False,
                             use_divergence_penalty: bool = False, use_air_penalty: bool = False,
-                            use_pareto_improvement: bool = False,
+                            use_pareto_improvement: bool = False, use_preference_constraints: bool = False,
                             air_penalty_weight: float = 1.0, divergence_penalty_weight: float = 1.0,
-                            pareto_improvement_weight: float = 1.0,
+                            pareto_improvement_weight: float = 1.0, constraint_penalty_weight: float = 100.0,
                             target_mapping: Dict[str, str] = None, **kwargs) -> Tuple[float, Dict[str, float], Dict[str, float]]:
         """
         Apply addon functions to reward calculation results.
@@ -395,9 +401,11 @@ class RewardCalculator:
             use_divergence_penalty: Whether to apply divergence penalty
             use_air_penalty: Whether to apply air penalty
             use_pareto_improvement: Whether to apply Pareto improvement reward
+            use_preference_constraints: Whether to apply preference constraints
             air_penalty_weight: Weight for air penalty
             divergence_penalty_weight: Weight for divergence penalty
             pareto_improvement_weight: Weight for Pareto improvement reward
+            constraint_penalty_weight: Weight for constraint violation penalties
             target_mapping: Mapping of parameter names to scaling types
             **kwargs: Additional parameters for addon functions
             
@@ -440,6 +448,14 @@ class RewardCalculator:
             updated_total_reward, updated_rewards = apply_pareto_improvement_addon(
                 updated_total_reward, updated_rewards, vals, env,
                 self.optimise_parameters, pareto_improvement_weight, **kwargs
+            )
+        
+        # Apply preference constraints addon
+        if use_preference_constraints:
+            updated_total_reward, updated_rewards = apply_preference_constraints_addon(
+                updated_total_reward, updated_rewards, vals, env,
+                self.optimise_parameters, constraint_penalty_weight, 
+                epoch=kwargs.get('epoch', 0), **kwargs
             )
         
         updated_rewards["total_reward"] = updated_total_reward
@@ -843,25 +859,18 @@ def apply_pareto_improvement_addon(total_reward: float, rewards: Dict[str, float
         and optimise_parameters is not None and len(optimise_parameters) >= 2):
         
         try:
-            # Extract objective values for the optimized parameters
-            new_point = np.array([vals.get(param, 0.0) for param in optimise_parameters])
+            # Check if the current solution improves the Pareto front
+            current_objectives = np.array([vals.get(param, 0.0) for param in optimise_parameters])
+            front, front_changed = env.pareto_tracker.add_point(current_objectives)
             
-            # Create a copy of the tracker to test without actually updating
-            import copy
-            test_tracker = copy.deepcopy(env.pareto_tracker)
-            
-            # Check if adding this point would change the Pareto front
-            _, was_updated = test_tracker.add_point(new_point, force_update=True)
-            
-            if was_updated:
-                pareto_improvement_reward = 1.0
+            if front_changed:
+                pareto_improvement_reward = 1.0  # Fixed reward for Pareto improvements
                 updated_rewards["pareto_front_changed"] = True
             else:
                 updated_rewards["pareto_front_changed"] = False
                 
         except Exception as e:
-            # Handle any errors gracefully
-            print(f"Warning: Error in Pareto improvement addon: {e}")
+            print(f"Error in pareto improvement calculation: {e}")
             updated_rewards["pareto_front_changed"] = False
     else:
         # Not applicable for this environment
@@ -873,12 +882,99 @@ def apply_pareto_improvement_addon(total_reward: float, rewards: Dict[str, float
     
     # Distribute Pareto improvement reward across individual objective rewards
     if optimise_parameters and len(optimise_parameters) > 0:
-        reward_per_objective = pareto_reward_scaled 
+        reward_per_objective = pareto_reward_scaled / len(optimise_parameters)
         for param in optimise_parameters:
             updated_rewards[param] = updated_rewards.get(param, 0.0) + reward_per_objective
     
     # Store original Pareto improvement reward for debugging
     updated_rewards["pareto_improvement_reward"] = pareto_improvement_reward
+    
+    return updated_total_reward, updated_rewards
+
+
+def apply_preference_constraints_addon(total_reward: float, rewards: Dict[str, float], vals: Dict[str, float],
+                                     env, optimise_parameters: List[str] = None,
+                                     constraint_penalty_weight: float = 100.0, 
+                                     epoch: int = 0, **kwargs) -> Tuple[float, Dict[str, float]]:
+    """
+    Apply preference constraints based on learned objective ranges.
+    
+    During constrained optimization phase, applies heavy penalties when constrained objectives
+    go outside their learned feasible ranges from the individual exploration phase.
+    
+    Args:
+        total_reward: Current total reward
+        rewards: Individual rewards dict
+        vals: Current objective values
+        env: Environment object (must have objective_range_tracker)
+        optimise_parameters: List of parameters being optimized
+        constraint_penalty_weight: Weight for constraint violation penalties
+        epoch: Current epoch to determine phase
+        **kwargs: Additional parameters
+        
+    Returns:
+        Tuple of (updated_total_reward, updated_rewards_dict)
+    """
+    updated_rewards = rewards.copy()
+    constraint_penalty = 0.0
+    
+    # Only apply during constrained phase and if environment has range tracker
+    if (env is not None and hasattr(env, 'objective_range_tracker') and env.objective_range_tracker is not None
+        and optimise_parameters is not None):
+        
+        # Import here to avoid circular imports
+        from coatopt.algorithms.hppo.training.weight_cycling import get_preference_constrained_phase
+        
+        try:
+            n_objectives = len(optimise_parameters)
+            phase_info = get_preference_constrained_phase(epoch, n_objectives)
+            
+            if phase_info['phase'] == 'constrained':
+                # During constrained phase - apply penalties for constraint violations
+                constrained_objectives = phase_info['constrained_objectives']
+                
+                for obj_idx in constrained_objectives:
+                    if obj_idx < len(optimise_parameters):
+                        param_name = optimise_parameters[obj_idx]
+                        
+                        if param_name in vals:
+                            current_value = vals[param_name]
+                            
+                            # Get constraint bounds from learned ranges
+                            bounds = env.objective_range_tracker.get_constraint_bounds(obj_idx)
+                            
+                            if bounds is not None:
+                                min_bound, max_bound = bounds
+                                
+                                # Calculate constraint violation
+                                violation = 0.0
+                                if current_value < min_bound:
+                                    violation = min_bound - current_value
+                                elif current_value > max_bound:
+                                    violation = current_value - max_bound
+                                
+                                if violation > 0:
+                                    # Apply penalty scaled by violation magnitude
+                                    penalty = constraint_penalty_weight * violation
+                                    constraint_penalty -= penalty
+                                    
+                                    # Store individual constraint info for debugging
+                                    updated_rewards[f"{param_name}_constraint_violation"] = violation
+                                    updated_rewards[f"{param_name}_constraint_penalty"] = penalty
+                            
+                            # Store constraint bounds for debugging
+                            if bounds is not None:
+                                updated_rewards[f"{param_name}_constraint_min"] = bounds[0]
+                                updated_rewards[f"{param_name}_constraint_max"] = bounds[1]
+                
+        except Exception as e:
+            print(f"Error in preference constraints calculation: {e}")
+    
+    # Apply constraint penalty to total reward
+    updated_total_reward = total_reward + constraint_penalty
+    
+    # Store total constraint penalty for debugging
+    updated_rewards["total_constraint_penalty"] = constraint_penalty
     
     return updated_total_reward, updated_rewards
 

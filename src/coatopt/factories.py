@@ -90,30 +90,9 @@ def create_hppo_environment(config: CoatingOptimisationConfig, materials: Dict[i
         Configured HPPOEnvironment
     """
     env = HPPOEnvironment(
-        max_layers=config.data.n_layers,
-        min_thickness=config.data.min_thickness,
-        max_thickness=config.data.max_thickness,
+        config=config,
         materials=materials,
         opt_init=False,
-        use_intermediate_reward=config.data.use_intermediate_reward,
-        ignore_air_option=config.data.ignore_air_option,
-        ignore_substrate_option=config.data.ignore_substrate_option,
-        optimise_parameters=config.data.optimise_parameters,
-        optimise_targets=config.data.optimise_targets,
-        design_criteria=config.data.design_criteria,
-        use_optical_thickness=config.data.use_optical_thickness,
-        combine=config.data.combine,
-        optimise_weight_ranges=config.data.optimise_weight_ranges,
-        reward_function=config.data.reward_function,
-        objective_bounds=config.data.objective_bounds if hasattr(config.data, 'objective_bounds') else None,
-        apply_normalization=config.data.apply_normalization,
-        apply_boundary_penalties=config.data.apply_boundary_penalties,
-        apply_divergence_penalty=config.data.apply_divergence_penalty,
-        apply_air_penalty=config.data.apply_air_penalty,
-        apply_pareto_improvement=config.data.apply_pareto_improvement,
-        air_penalty_weight=config.data.air_penalty_weight,
-        divergence_penalty_weight=config.data.divergence_penalty_weight,
-        pareto_improvement_weight=config.data.pareto_improvement_weight,
     )
     return env
 
@@ -130,41 +109,9 @@ def create_multiobjective_environment(config: CoatingOptimisationConfig, materia
         Configured MultiObjectiveEnvironment
     """
     env = MultiObjectiveEnvironment(
-        max_layers=config.data.n_layers,
-        min_thickness=config.data.min_thickness,
-        max_thickness=config.data.max_thickness,
+        config=config,
         materials=materials,
         opt_init=False,
-        use_intermediate_reward=config.data.use_intermediate_reward,
-        ignore_air_option=config.data.ignore_air_option,
-        ignore_substrate_option=config.data.ignore_substrate_option,
-        optimise_parameters=config.data.optimise_parameters,
-        optimise_targets=config.data.optimise_targets,
-        design_criteria=config.data.design_criteria,
-        use_optical_thickness=config.data.use_optical_thickness,
-        combine=config.data.combine,
-        optimise_weight_ranges=config.data.optimise_weight_ranges,
-        reward_function=config.data.reward_function,
-        final_weight_epoch=config.training.final_weight_epoch if config.training else 1,
-        start_weight_alpha=config.training.start_weight_alpha if config.training else 1.0,
-        final_weight_alpha=config.training.final_weight_alpha if config.training else 1.0,
-        cycle_weights=config.training.cycle_weights if config.training else False,
-        n_weight_cycles=config.training.n_weight_cycles if config.training else 2,
-        # Reward normalization parameters
-        use_reward_normalization=config.data.use_reward_normalization,
-        reward_normalization_mode=config.data.reward_normalization_mode,
-        reward_normalization_ranges=config.data.reward_normalization_ranges,
-        reward_normalization_alpha=config.data.reward_normalization_alpha,
-        # Objective bounds
-        objective_bounds=config.data.objective_bounds if hasattr(config.data, 'objective_bounds') else None,
-        apply_normalization=config.data.apply_normalization,
-        apply_boundary_penalties=config.data.apply_boundary_penalties,
-        apply_divergence_penalty=config.data.apply_divergence_penalty,
-        apply_air_penalty=config.data.apply_air_penalty,
-        apply_pareto_improvement=config.data.apply_pareto_improvement,
-        air_penalty_weight=config.data.air_penalty_weight,
-        divergence_penalty_weight=config.data.divergence_penalty_weight,
-        pareto_improvement_weight=config.data.pareto_improvement_weight,
     )
 
     return env
