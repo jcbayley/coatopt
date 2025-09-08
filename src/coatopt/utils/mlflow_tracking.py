@@ -134,7 +134,7 @@ class MLflowTracker:
         # Training parameters
         mlflow.log_param("n_iterations", self.config.training.n_iterations)
         mlflow.log_param("n_init_solutions", self.config.training.n_init_solutions)
-        mlflow.log_param("n_epochs_per_update", self.config.training.n_epochs_per_update)
+        mlflow.log_param("n_episodes_per_epoch", self.config.training.n_episodes_per_epoch)
         mlflow.log_param("lr_value", self.config.training.lr_value)
         mlflow.log_param("lr_discrete_policy", self.config.training.lr_discrete_policy)
         mlflow.log_param("lr_continuous_policy", self.config.training.lr_continuous_policy)
@@ -195,71 +195,6 @@ class MLflowTracker:
                 
             mlflow.log_metric(metric_name, value, step=step)
     
-    def log_pareto_metrics(
-        self,
-        episode: int,
-        pareto_front_size: int,
-        hypervolume: Optional[float] = None,
-        coverage: Optional[float] = None
-    ) -> None:
-        """
-        Log Pareto front metrics.
-        
-        Args:
-            episode: Training episode number
-            pareto_front_size: Number of points in Pareto front
-            hypervolume: Hypervolume indicator (if computed)
-            coverage: Coverage metric (if computed)
-        """
-        if not self.enable_logging:
-            return
-            
-        mlflow.log_metric("pareto_front_size", pareto_front_size, step=episode)
-        
-        if hypervolume is not None:
-            mlflow.log_metric("hypervolume", hypervolume, step=episode)
-            
-        if coverage is not None:
-            mlflow.log_metric("coverage", coverage, step=episode)
-    
-    def log_episode_summary(
-        self,
-        episode: int,
-        rewards: float,
-        episode_length: int,
-        objectives: Dict[str, float],
-        materials_used: Optional[List[int]] = None
-    ) -> None:
-        """
-        Log summary information for a training episode.
-        
-        Args:
-            episode: Episode number
-            reward: Total episode reward
-            episode_length: Number of steps in episode
-            objectives: Dictionary of objective values
-            materials_used: List of material indices used
-        """
-        if not self.enable_logging:
-            return
-            
-        mlflow.log_metric("episode_reward", reward, step=episode)
-        mlflow.log_metric("episode_length", episode_length, step=episode)
-        
-        # Log individual objectives
-        for obj_name, obj_value in objectives.items():
-            mlflow.log_metric(f"objective_{obj_name}", obj_value, step=episode)
-            
-        # Log material usage statistics
-        if materials_used is not None:
-            unique_materials = len(set(materials_used))
-            mlflow.log_metric("unique_materials_used", unique_materials, step=episode)
-            
-            # Log material distribution
-            for i in range(1, 7):  # Assuming max 6 materials
-                count = materials_used.count(i)
-                if count > 0:
-                    mlflow.log_metric(f"material_{i}_count", count, step=episode)
     
     def log_model_checkpoint(
         self,

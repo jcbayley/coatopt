@@ -178,7 +178,7 @@ class TrainingConfig(BaseConfig):
     lr_continuous_policy: float
     lr_value: float
     n_episodes_per_update: int
-    n_epochs_per_update: int
+    n_episodes_per_epoch: int
     clip_ratio: float
     gamma: float
     batch_size: int

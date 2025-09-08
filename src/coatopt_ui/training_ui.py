@@ -392,7 +392,7 @@ class TrainingMonitorUI:
                 entropy_beta_end=self.config.training.entropy_beta_end,
                 entropy_beta_decay_length=self.config.training.entropy_beta_decay_length,
                 entropy_beta_decay_start=self.config.training.entropy_beta_decay_start,
-                n_epochs_per_update=self.config.training.n_epochs_per_update,
+                n_episodes_per_epoch=self.config.training.n_episodes_per_epoch,
                 use_obs=self.config.data.use_observation,
                 scheduler_start=self.config.training.scheduler_start,
                 scheduler_end=self.config.training.scheduler_end,

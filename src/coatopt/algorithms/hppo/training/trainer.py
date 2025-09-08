@@ -72,7 +72,7 @@ class UnifiedHPPOTrainer:
         entropy_beta_continuous_start: Optional[float] = None,
         entropy_beta_continuous_end: Optional[float] = None,
         entropy_beta_use_restarts: bool = False,
-        n_epochs_per_update: int = 10,
+        n_episodes_per_epoch: int = 10,
         use_obs: bool = True,  # DEPRECATED: Always True, observations are always processed
         scheduler_start: int = 0,
         scheduler_end: int = np.inf,
@@ -102,7 +102,7 @@ class UnifiedHPPOTrainer:
             entropy_beta_continuous_start: Initial entropy coefficient for continuous policy (optional)
             entropy_beta_continuous_end: Final entropy coefficient for continuous policy (optional)
             entropy_beta_use_restarts: Whether to use warm restarts for entropy beta decay (like LR scheduler)
-            n_epochs_per_update: Episodes per training iteration
+            n_episodes_per_epoch: Episodes per training iteration
             use_obs: Whether to use observations vs raw states
             scheduler_start: Episode to start learning rate scheduling
             scheduler_end: Episode to end learning rate scheduling
@@ -127,7 +127,7 @@ class UnifiedHPPOTrainer:
         self.entropy_beta_continuous_start = entropy_beta_continuous_start
         self.entropy_beta_continuous_end = entropy_beta_continuous_end
         self.entropy_beta_use_restarts = entropy_beta_use_restarts
-        self.n_epochs_per_update = n_epochs_per_update
+        self.n_episodes_per_epoch = n_episodes_per_epoch
         
         # DEPRECATED: use_obs parameter - observations are always processed now
         if not use_obs:
@@ -824,7 +824,7 @@ class UnifiedHPPOTrainer:
         means_list, stds_list, materials_list = [], [], []
         
         # Run multiple rollouts per episode
-        for rollout in range(self.n_epochs_per_update):
+        for rollout in range(self.n_episodes_per_epoch):
             rollout_data = self._run_single_rollout(episode)
             
             # Track rollout data
@@ -1002,7 +1002,8 @@ class UnifiedHPPOTrainer:
     def _perform_network_updates(self, episode: int, episode_metrics: Dict, make_scheduler_step: bool) -> None:
         """Perform network parameter updates."""
         if episode > HPPOConstants.DEFAULT_UPDATE_FREQUENCY:
-            loss1, loss2, loss3 = self.agent.update(update_policy=True, update_value=True)
+            for update_index in range(self.n_updates_per_epoch):
+                loss1, loss2, loss3 = self.agent.update(update_policy=True, update_value=True)
             lr_outs = self.agent.scheduler_step(episode, make_scheduler_step, make_scheduler_step)
             
             # Handle both old format (4 values) and new format (5 values) for backward compatibility
@@ -1162,7 +1163,7 @@ class UnifiedHPPOTrainer:
                     'training_config': {
                         'n_iterations': self.n_iterations,
                         'n_layers': self.n_layers,
-                        'n_epochs_per_update': self.n_epochs_per_update,
+                        'n_episodes_per_epoch': self.n_episodes_per_epoch,
                         'use_obs': self.use_obs,
                     },
                     'environment_config': {

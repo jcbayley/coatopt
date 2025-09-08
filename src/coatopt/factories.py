@@ -292,7 +292,7 @@ def create_trainer(config: CoatingOptimisationConfig, agent: hppo.PCHPPO, env: U
         'entropy_beta_continuous_start': config.training.entropy_beta_continuous_start,
         'entropy_beta_continuous_end': config.training.entropy_beta_continuous_end,
         'entropy_beta_use_restarts': config.training.entropy_beta_use_restarts,
-        'n_epochs_per_update': config.training.n_epochs_per_update,
+        'n_episodes_per_epoch': config.training.n_episodes_per_epoch,
         'scheduler_start': config.training.scheduler_start,
         'scheduler_end': config.training.scheduler_end,
         'continue_training': continue_training,
