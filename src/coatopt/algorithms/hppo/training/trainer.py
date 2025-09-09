@@ -376,10 +376,9 @@ class UnifiedHPPOTrainer:
                 combined_rewards = np.vstack([self.pareto_front_rewards, reward_point.reshape(1, -1)])
                 combined_values = np.vstack([self.pareto_front_values, value_point.reshape(1, -1)])
                 combined_states = np.vstack([self.pareto_states, state.reshape(1, self.env.max_layers, -1)])
-                
+
                 # Compute new Pareto front from combined data
                 reward_pareto_indices, new_pareto_rewards = self._compute_pareto_front(combined_rewards, data_type='rewards')
-                
                 if len(new_pareto_rewards) > 0:
                     # Update Pareto front with new points
                     self.pareto_front_rewards = new_pareto_rewards
@@ -396,12 +395,7 @@ class UnifiedHPPOTrainer:
                     
         except Exception as e:
             print(f"Warning: Failed to update Pareto front incrementally: {e}, traceback: {traceback.format_exc()}")
-            # Fallback: just add the point without Pareto computation
-            if len(self.pareto_front_rewards) == 0:
-                self.pareto_front_rewards = reward_point.reshape(1, -1)
-                self.pareto_front_values = value_point.reshape(1, -1)
-                self.pareto_states = state.reshape(1, -1)
-                self.pareto_state_rewards = reward_point.reshape(1, -1)
+            raise Exception 
 
     def _compute_pareto_front(self, data_array: np.ndarray, data_type: str = 'rewards') -> Tuple[np.ndarray, np.ndarray]:
         """
@@ -423,21 +417,12 @@ class UnifiedHPPOTrainer:
         # Use environment's method with appropriate optimization approach
         if data_type == 'rewards':
             # Rewards are all maximized - use legacy maximize=True
-            pareto_points = self.env.compute_pareto_front(data_array, maximize=True)
+            pareto_indices, pareto_points = self.env.compute_pareto_front(data_array, maximize=True)
         elif data_type == 'values':
             # Values use mixed optimization directions from config - use new maximize=None
-            pareto_points = self.env.compute_pareto_front(data_array, maximize=None)
+            pareto_indices, pareto_points = self.env.compute_pareto_front(data_array, maximize=None)
         else:
             raise ValueError(f"data_type must be 'rewards' or 'values', got {data_type}")
-        
-        # Find indices of the Pareto points in the original array
-        pareto_indices = []
-        for pf_point in pareto_points:
-            distances = np.sum((data_array - pf_point) ** 2, axis=1)
-            closest_idx = np.argmin(distances)
-            # Bounds check to ensure the index is valid
-            if 0 <= closest_idx < len(data_array) and closest_idx not in pareto_indices:
-                pareto_indices.append(closest_idx)
                 
         return np.array(pareto_indices), pareto_points
 
@@ -884,6 +869,8 @@ class UnifiedHPPOTrainer:
             if done or finished:
                 break
         
+        self._update_pareto_tracking(state.get_array(), rewards, vals)
+
         # Calculate returns and update replay buffer
         if len(multiobjective_rewards_list) > 0 and self.agent.multi_value_rewards:
             returns = self.agent.get_returns(rewards_list, multiobjective_rewards=multiobjective_rewards_list)
@@ -1011,7 +998,7 @@ class UnifiedHPPOTrainer:
                 episode_metrics[f"{obj_name}_reward_weights"] = 0.0
 
         # Update Pareto tracking attributes (simple and direct!)
-        self._update_pareto_tracking(final_state, rewards, vals)
+        #self._update_pareto_tracking(final_state, rewards, vals)
         
         # Add to metrics dataframe
         self.metrics = pd.concat([self.metrics, pd.DataFrame([episode_metrics])], ignore_index=True)
@@ -1158,7 +1145,7 @@ class UnifiedHPPOTrainer:
         # Create Pareto front from objective values
         vals = np.array([sol_vals[key] for key in self.env.get_parameter_names()]).T
         
-        pareto_front = self.env.compute_pareto_front(vals)
+        pareto_indices, pareto_front = self.env.compute_pareto_front(vals)
         
         # Set Pareto front and reference point
         self.env.pareto_front = pareto_front

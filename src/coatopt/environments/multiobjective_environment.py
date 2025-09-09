@@ -184,7 +184,7 @@ class MultiObjectiveEnvironment(HPPOEnvironment):
         else:
             pareto_front = np.array([])
     
-        return pareto_front
+        return fronts[0], pareto_front
 
     def update_pareto_front(self, pareto_front, new_point):
         """
@@ -228,36 +228,6 @@ class MultiObjectiveEnvironment(HPPOEnvironment):
         # Add new point using efficient tracker
         updated_front, was_updated = self.pareto_tracker.add_point(new_point)
         return updated_front, was_updated
-    
-    def _legacy_pareto_update(self, pareto_front, new_point):
-        """Legacy Pareto update method for backward compatibility."""
-        # Handle empty Pareto front case
-        if len(pareto_front) == 0 or (isinstance(pareto_front, np.ndarray) and pareto_front.size == 0):
-            # Warning when Pareto front is empty
-            print("WARNING: Pareto front is empty. Starting fresh front.")
-            
-            new_point_array = np.array([new_point]) if new_point.ndim == 1 else new_point
-            updated_pareto_front = self.compute_pareto_front(new_point_array)
-            self._reset_pareto_update_tracking()
-            return updated_pareto_front, True
-        
-        # Add to pending points buffer for lazy evaluation
-        if new_point.ndim == 1:
-            new_point = new_point.reshape(1, -1)
-        self.pending_pareto_points.append(new_point.copy())
-        self.steps_since_pareto_update += 1
-        
-        # Check if we should perform a batch Pareto update
-        should_update = (
-            self.steps_since_pareto_update >= self.pareto_update_interval or
-            self.force_pareto_update or
-            len(self.pending_pareto_points) >= 50
-        )
-        
-        if should_update:
-            return self._perform_batch_pareto_update(pareto_front)
-        else:
-            return pareto_front, False
     
     def _perform_batch_pareto_update(self, pareto_front):
         """Perform batch Pareto front update with all pending points."""
