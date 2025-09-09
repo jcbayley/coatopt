@@ -772,19 +772,21 @@ def calculate_air_penalty_reward_new(state, air_material_index: int = 0, design_
         air_fraction = 1.0 - (non_air_layers / total_layers) if total_layers > 0 else 1.0
     
     # Check if design criteria are met
-    criteria_met = False if design_criteria is None else True
+    criteria_met = {key:False for key in optimise_parameters}
     if design_criteria is not None and current_vals is not None:
         for key, threshold in design_criteria.items():
             if key in current_vals and key in optimise_parameters:
                 val = current_vals[key]
+                # !!!!!!!!!!! This should be changed to handle the direction of optimization properly !!!!!!!!!!!!!!!!!!
                 if key in ["reflectivity"]:
-                    if val < threshold:
-                        criteria_met = False
+                    if val > threshold:
+                        criteria_met[key] = True
                         break
                 else:
-                    if val > threshold:
-                        criteria_met = False
+                    if val < threshold:
+                        criteria_met[key] = True
                         break
+    criteria_met = all(criteria_met.values())
 
     #print(f"Penalty strength: {penalty_strength}, Reward strength: {reward_strength}, Cirteria met: {criteria_met}, Non-air layers: {non_air_layers}, Air fraction: {air_fraction:.3f}")
     if criteria_met:
@@ -797,7 +799,7 @@ def calculate_air_penalty_reward_new(state, air_material_index: int = 0, design_
             return -penalty_strength
         else:
             # Fractional penalty for excess air beyond minimum
-            return -penalty_strength * air_fraction * 0.5
+            return 0#-penalty_strength * air_fraction * 0.1
 
 
 def apply_air_penalty_addon(total_reward: float, rewards: Dict[str, float], vals: Dict[str, float],
@@ -846,7 +848,7 @@ def apply_air_penalty_addon(total_reward: float, rewards: Dict[str, float], vals
                 updated_rewards[param] = updated_rewards.get(param, 0.0) + penalty_per_objective
         
         # Store original air penalty for debugging
-        updated_rewards["air_addon"] = air_penalty * air_penalty_weight
+        updated_rewards["air_addon"] = air_penalty_scaled
     else:
         updated_total_reward = total_reward
     
