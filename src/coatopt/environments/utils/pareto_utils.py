@@ -184,6 +184,7 @@ def _divide_conquer_pareto_front(points: np.ndarray) -> np.ndarray:
 class EfficientParetoTracker:
     """
     Efficient Pareto front tracker with lazy updates and caching.
+    Can track multiple data types (rewards, values, states) in sync.
     """
     
     def __init__(self, update_interval: int = 10, max_pending: int = 50):
@@ -195,17 +196,24 @@ class EfficientParetoTracker:
             max_pending: Maximum pending points before forced update
         """
         self.current_front = np.array([])
+        self.current_values = np.array([])  # Secondary data (e.g., values when front is rewards)
+        self.current_states = np.array([])  # Tertiary data (states)
         self.pending_points = []
+        self.pending_values = []  # Corresponding values for pending points
+        self.pending_states = []  # Corresponding states for pending points
         self.update_interval = update_interval
         self.max_pending = max_pending
         self.points_since_update = 0
         
-    def add_point(self, point: np.ndarray, force_update: bool = False) -> Tuple[np.ndarray, bool]:
+    def add_point(self, point: np.ndarray, values: np.ndarray = None, state: np.ndarray = None, 
+                  force_update: bool = False) -> Tuple[np.ndarray, bool]:
         """
         Add a point to the tracker with lazy evaluation.
         
         Args:
-            point: New point to add
+            point: New point to add (primary data for Pareto computation)
+            values: Corresponding values (secondary data, optional)
+            state: Corresponding state (tertiary data, optional)
             force_update: Force immediate update
             
         Returns:
@@ -215,6 +223,22 @@ class EfficientParetoTracker:
         if point.ndim == 1:
             point = point.reshape(1, -1)
         self.pending_points.append(point)
+        
+        # Add corresponding values and states if provided
+        if values is not None:
+            if values.ndim == 1:
+                values = values.reshape(1, -1)
+            self.pending_values.append(values)
+        else:
+            self.pending_values.append(None)
+            
+        if state is not None:
+            if state.ndim == 2:
+                state = state[np.newaxis, ...]
+            self.pending_states.append(state)
+        else:
+            self.pending_states.append(None)
+            
         self.points_since_update += 1
         
         # Check if update is needed
@@ -237,12 +261,68 @@ class EfficientParetoTracker:
         # Combine all pending points
         new_points = np.vstack(self.pending_points)
         
-        # Update front
+        # Combine pending values and states (filter out None entries)
+        new_values = None
+        new_states = None
+        
+        valid_values = [v for v in self.pending_values if v is not None]
+        if valid_values:
+            new_values = np.vstack(valid_values)
+            
+        valid_states = [s for s in self.pending_states if s is not None]
+        if valid_states:
+            new_states = np.vstack(valid_states)
+        
+        # Update front using the primary data (points)
         updated_front, was_updated = incremental_pareto_update(self.current_front, new_points)
         
-        # Update state
-        self.current_front = updated_front
+        if was_updated:
+            # Find which indices from the combined data are in the new front
+            if self.current_front.size == 0:
+                # First update - all new points considered
+                combined_points = new_points
+                combined_values = new_values
+                combined_states = new_states
+            else:
+                # Combine current and new data
+                combined_points = np.vstack([self.current_front, new_points])
+                
+                combined_values = None
+                if self.current_values.size > 0 and new_values is not None:
+                    combined_values = np.vstack([self.current_values, new_values])
+                elif new_values is not None:
+                    combined_values = new_values
+                elif self.current_values.size > 0:
+                    combined_values = self.current_values
+                    
+                combined_states = None
+                if self.current_states.size > 0 and new_states is not None:
+                    combined_states = np.vstack([self.current_states, new_states])
+                elif new_states is not None:
+                    combined_states = new_states
+                elif self.current_states.size > 0:
+                    combined_states = self.current_states
+            
+            # Find indices of the updated front in the combined data
+            front_indices = []
+            for front_point in updated_front:
+                # Find matching indices (allowing for floating point tolerance)
+                matches = np.all(np.abs(combined_points - front_point) < 1e-10, axis=1)
+                idx = np.where(matches)[0]
+                if len(idx) > 0:
+                    front_indices.append(idx[0])  # Take first match
+            
+            # Update current data with new front
+            self.current_front = updated_front
+            if combined_values is not None and len(front_indices) > 0:
+                self.current_values = combined_values[front_indices]
+            if combined_states is not None and len(front_indices) > 0:
+                self.current_states = combined_states[front_indices]
+        
+        # Clear pending data
         self.pending_points = []
+        self.pending_values = []
+        self.pending_states = []
         self.points_since_update = 0
         
         return updated_front, was_updated
@@ -254,10 +334,38 @@ class EfficientParetoTracker:
             return front
         return self.current_front
     
+    def get_values(self, force_update: bool = False) -> np.ndarray:
+        """Get values corresponding to current Pareto front."""
+        if force_update and self.pending_points:
+            self._perform_update()
+        return self.current_values
+    
+    def get_states(self, force_update: bool = False) -> np.ndarray:
+        """Get states corresponding to current Pareto front.""" 
+        if force_update and self.pending_points:
+            self._perform_update()
+        return self.current_states
+    
+    def set_current_data(self, front: np.ndarray, values: np.ndarray = None, states: np.ndarray = None):
+        """Set current front data (for loading from checkpoint)."""
+        if states.ndim == 2 and states.size > 0:
+            raise Exception("States must be 3D array (n_points, state_dim1, state_dim2)")
+        self.current_front = front.copy() if front.size > 0 else np.array([])
+        self.current_values = values.copy() if values is not None and values.size > 0 else np.array([])
+        self.current_states = states.copy() if states is not None and states.size > 0 else np.array([])
+        
+        # Clear pending data
+        self.pending_points = []
+        self.pending_values = []
+        self.pending_states = []
+        self.points_since_update = 0
+    
     def get_stats(self) -> dict:
         """Get tracker statistics."""
         return {
             'front_size': len(self.current_front) if self.current_front.size > 0 else 0,
+            'values_size': len(self.current_values) if self.current_values.size > 0 else 0,
+            'states_size': len(self.current_states) if self.current_states.size > 0 else 0,
             'pending_points': len(self.pending_points),
             'points_since_update': self.points_since_update,
             'update_interval': self.update_interval

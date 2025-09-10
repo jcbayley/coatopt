@@ -69,16 +69,11 @@ class MultiObjectiveEnvironment(HPPOEnvironment):
         self.pareto_update_interval = kwargs.get('pareto_update_interval', 10)  # Update every N steps
         self.use_efficient_pareto = kwargs.get('use_efficient_pareto', True)  # Use optimized algorithms
         
-        if self.use_efficient_pareto:
-            self.pareto_tracker = EfficientParetoTracker(
+        self.pareto_tracker = EfficientParetoTracker(
                 update_interval=self.pareto_update_interval,
                 max_pending=50
             )
-        else:
-            # Legacy tracking
-            self.steps_since_pareto_update = 0
-            self.pending_pareto_points = []  # Buffer points between updates
-            self.force_pareto_update = False  # Flag to force immediate update
+
 
     def setup_multiobjective_specific_attributes(self, **kwargs):
         """Setup multi-objective specific attributes."""
@@ -126,84 +121,8 @@ class MultiObjectiveEnvironment(HPPOEnvironment):
                     
         return optimization_directions
     
-    def compute_pareto_front(self, points, maximize=None):        
-        """
-        Compute the Pareto front from a set of points.
-
-        Parameters:
-            points (numpy.ndarray): Array of points (shape: [n_points, n_dimensions]).
-            maximize (bool or None): Whether to maximize all objectives (True), minimize all (False),
-                                   or use mixed directions from config (None, default).
-
-        Returns:
-            numpy.ndarray: Pareto front points.
-        """
-        if len(points) == 0:
-            return np.array([])
-            
-        nds = NonDominatedSorting()
-        
-        if maximize is None:
-            # Use mixed optimization directions from config
-            if not hasattr(self, 'optimization_directions'):
-                # Fallback to default behavior
-                print("Warning: No optimization_directions found, using legacy defaults")
-                maximize = True
-            
-            # Create minimization objectives array based on config directions
-            minimization_points = np.zeros_like(points)
-            param_names = self.get_parameter_names() if hasattr(self, 'optimise_parameters') else []
-            
-            for i in range(points.shape[1]):
-                if i < len(param_names):
-                    param_name = param_names[i]
-                    direction = self.optimization_directions.get(param_name, 'min')
-                    
-                    if direction == 'max':
-                        # Maximize: negate for NDS (which assumes minimization)
-                        minimization_points[:, i] = -points[:, i]
-                    else:
-                        # Minimize: use as-is
-                        minimization_points[:, i] = points[:, i]
-                else:
-                    # Fallback for extra dimensions
-                    minimization_points[:, i] = points[:, i]
-                    
-            fronts = nds.do(minimization_points)
-            
-        elif maximize:
-            # Legacy behavior: maximize all objectives
-            fronts = nds.do(-points)
-        else:
-            # Legacy behavior: minimize all objectives  
-            fronts = nds.do(points)
     
-        # Extract the Pareto front (the first front)
-        if len(fronts) > 0 and len(fronts[0]) > 0:
-            pareto_front = points[fronts[0]]
-        else:
-            pareto_front = np.array([])
-    
-        return fronts[0], pareto_front
-
-    def update_pareto_front(self, pareto_front, new_point):
-        """
-        Update the Pareto front with a new point using efficient algorithms.
-
-        Parameters:
-            pareto_front (numpy.ndarray or list): Current Pareto front points (shape: [n_points, n_dimensions]).
-            new_point (numpy.ndarray): New point to be added (shape: [n_dimensions]).
-
-        Returns:
-            numpy.ndarray: Updated Pareto front.
-            bool: Whether the Pareto front was updated or not.
-        """
-        if self.use_efficient_pareto:
-            return self._efficient_pareto_update(pareto_front, new_point)
-        else:
-            return self._legacy_pareto_update(pareto_front, new_point)
-    
-    def _efficient_pareto_update(self, pareto_front, new_point):
+    def update_pareto_front(self, pareto_front, new_point, new_value, new_state):
         """Use efficient Pareto tracker for updates."""
         # Initialize tracker if needed
         if not hasattr(self, 'pareto_tracker') or self.pareto_tracker is None:
@@ -211,22 +130,8 @@ class MultiObjectiveEnvironment(HPPOEnvironment):
                 update_interval=self.pareto_update_interval,
                 max_pending=50
             )
-            
-        # Handle empty front initialization
-        if len(pareto_front) == 0 or (isinstance(pareto_front, np.ndarray) and pareto_front.size == 0):
-            if new_point.ndim == 1:
-                new_point = new_point.reshape(1, -1)
-            self.pareto_tracker.current_front = new_point.copy()
-            return new_point.copy(), True
-        
-        # Sync tracker with current front if needed
-        if self.pareto_tracker.current_front.size == 0:
-            if isinstance(pareto_front, list):
-                pareto_front = np.array(pareto_front)
-            self.pareto_tracker.current_front = pareto_front.copy()
-        
-        # Add new point using efficient tracker
-        updated_front, was_updated = self.pareto_tracker.add_point(new_point)
+        # Add new point using efficient tracker (only rewards for environment)
+        updated_front, was_updated = self.pareto_tracker.add_point(new_point, new_value, new_state)
         return updated_front, was_updated
     
     def _perform_batch_pareto_update(self, pareto_front):
@@ -268,6 +173,7 @@ class MultiObjectiveEnvironment(HPPOEnvironment):
             stats['algorithm'] = 'efficient'
             return stats
         else:
+            raise Exception("Legacy Pareto tracking not supported in this version.")
             return {
                 'algorithm': 'legacy',
                 'front_size': len(self.pareto_front) if hasattr(self, 'pareto_front') else 0,
@@ -282,6 +188,11 @@ class MultiObjectiveEnvironment(HPPOEnvironment):
             state (_type_): _description_
             action (_type_): _description_
         """
+        if isinstance(new_state, CoatingState):
+            # Use state.get_tensor() for calculations
+            state_array = new_state.get_array()
+        else:
+            state_array = new_state  # Assume numpy array for backward compatibility
 
         new_reflectivity, new_thermal_noise, new_E_integrated, new_total_thickness = self.compute_state_value(new_state, return_separate=True)
         
@@ -304,13 +215,15 @@ class MultiObjectiveEnvironment(HPPOEnvironment):
             )
         
         new_point = np.zeros((len(self.optimise_parameters),))
+        new_values = np.zeros((len(self.optimise_parameters),))
 
         i = 0
         for key in self.get_parameter_names():
             new_point[i] = rewards[key]
+            new_values[i] = vals[key]
             i += 1
 
-        updated_pareto_front, front_updated = self.update_pareto_front(copy.copy(self.pareto_front), copy.copy(new_point))
+        updated_pareto_front, front_updated = self.update_pareto_front(copy.copy(self.pareto_front), copy.copy(new_point), copy.copy(new_values), state_array)
 
         rewards["updated_pareto_front"] = updated_pareto_front
         rewards["front_updated"] = front_updated

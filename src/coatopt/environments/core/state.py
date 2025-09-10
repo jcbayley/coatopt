@@ -227,6 +227,15 @@ class CoatingState:
         onehot[material_idx] = 1.0
         return onehot
     
+    def get_state_shape(self) -> Tuple[int, int]:
+        """
+        Get shape of the underlying state tensor.
+        
+        Returns:
+            Tuple of (max_layers, n_features) where n_features = 1 + n_materials
+        """
+        return self._state_tensor.shape
+    
     def get_material_indices_sequence(self, max_layers: Optional[int] = None, 
                                     active_only: bool = True) -> List[int]:
         """
@@ -628,7 +637,6 @@ class CoatingState:
         
         # Convert to tensor format
         tensor = self._enhanced_observation_to_tensor(obs_dict)
-        
         # Apply pre_type formatting
         if pre_type == "linear":
             # For linear networks, flatten all dimensions except batch
@@ -641,18 +649,19 @@ class CoatingState:
             else:
                 # [batch, n_layers, n_features] -> [batch, n_layers * n_features]
                 tensor = tensor.flatten(1)
-            
+
         return tensor
     
     def _build_layer_stack_observation(self) -> Dict:
         """Build basic layer stack observation with material properties."""
         layer_stack = []
         active_layers = self.get_active_layers()
-        
+
         for layer in active_layers:
             # Get material properties
             if layer.material_index < len(self.materials):
                 material = self.materials[layer.material_index]
+                material_onehot = self.material_index_to_onehot(layer.material_index).numpy().tolist()
                 n = material.get("n", 1.0)
                 k = material.get("k", 0.0)
             else:
@@ -662,7 +671,7 @@ class CoatingState:
             
             layer_stack.append({
                 'thickness': layer.thickness,
-                'material_index': layer.material_index,
+                'material_index': material_onehot,
                 'n': n,
                 'k': k
             })
@@ -758,18 +767,15 @@ class CoatingState:
         # Convert layer stack to tensor [n_layers, 4] -> [thickness, material_index, n, k]
         layer_data = []
         for layer in layer_stack:
-            layer_data.append([
-                layer['thickness'],
-                layer['material_index'], 
-                layer['n'],
-                layer['k']
-            ])
-        
+            # Flatten material_index (which is a list) into the row
+            row = [layer['thickness']] + layer['material_index'] + [layer['n'], layer['k']]
+            layer_data.append(row)
+
         if not layer_data:
             # Empty state - return minimal tensor
-            return torch.zeros(1, 4)
+            return torch.zeros(1, 3 + self.n_materials)
         
-        layer_tensor = torch.tensor(layer_data, dtype=torch.float32)  # [n_layers, 4]
+        layer_tensor = torch.tensor(layer_data, dtype=torch.float32)  # [n_layers, 3+n_materials]
         
         # Add electric field information if available
         if 'electric_field' in obs and obs['electric_field'] is not None:

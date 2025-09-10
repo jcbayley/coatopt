@@ -276,6 +276,15 @@ class UnifiedHPPOTrainer:
             self.reference_point = np.array([])
             self.all_rewards = []
             self.all_values = []
+            
+        # Initialize environment's efficient tracker if available
+        if hasattr(self.env, 'pareto_tracker') and self.env.use_efficient_pareto:
+            # Clear the tracker for fresh training
+            self.env.pareto_tracker.set_current_data(
+                front=np.array([]),
+                values=np.array([]),
+                states=np.array([])
+            )
 
     def _load_training_state(self) -> None:
         """Load training state from unified checkpoint."""
@@ -326,10 +335,25 @@ class UnifiedHPPOTrainer:
                 print(f"Warning: Loaded all_rewards ({n_rewards}) and all_values ({n_values}) have different lengths. "
                       f"This won't affect Pareto computation but may indicate data inconsistency.")
             
-            # Also sync to environment for compatibility
+            # Also sync to environment for compatibility and load into efficient tracker
             if len(self.pareto_front_rewards) > 0:
                 self.env.pareto_front = self.pareto_front_rewards
-                print(f"Loaded Pareto front with {len(self.pareto_front_rewards)} points")
+                
+                # Load data into environment's efficient tracker if available
+                if hasattr(self.env, 'pareto_tracker') and self.env.use_efficient_pareto:
+                    # Prepare states for tracker (flatten if needed)
+                    states_for_tracker = None
+                    if len(self.pareto_states) > 0:
+                        states_for_tracker = self.pareto_states.reshape(len(self.pareto_states), self.env.max_layers, -1)
+                    
+                    self.env.pareto_tracker.set_current_data(
+                        front=self.pareto_front_rewards,
+                        values=self.pareto_front_values,
+                        states=states_for_tracker
+                    )
+                    print(f"Loaded Pareto front with {len(self.pareto_front_rewards)} points into efficient tracker")
+                else:
+                    print(f"Loaded Pareto front with {len(self.pareto_front_rewards)} points")
             
             if len(self.reference_point) > 0:
                 self.env.reference_point = self.reference_point
@@ -347,7 +371,7 @@ class UnifiedHPPOTrainer:
 
     def _update_pareto_tracking(self, state: np.ndarray, rewards_dict: Dict, vals_dict: Dict) -> None:
         """
-        Update Pareto tracking attributes during training using incremental Pareto computation.
+        Update Pareto tracking attributes during training using the environment's efficient tracker.
         This is called for each episode to update the Pareto front incrementally.
         
         Args:
@@ -364,67 +388,54 @@ class UnifiedHPPOTrainer:
         self.all_values.append(value_point.tolist())
         
         try:
-            # Incremental Pareto front update: combine current front with new point
-            if len(self.pareto_front_rewards) == 0:
-                # First point - initialize Pareto front
-                self.pareto_front_rewards = reward_point.reshape(1, -1)
-                self.pareto_front_values = value_point.reshape(1, -1)
-                self.pareto_states = state.reshape(1, self.env.max_layers, -1)
-                self.pareto_state_rewards = reward_point.reshape(1, -1)
-            else:
-                # Combine current Pareto front with new point
-                combined_rewards = np.vstack([self.pareto_front_rewards, reward_point.reshape(1, -1)])
-                combined_values = np.vstack([self.pareto_front_values, value_point.reshape(1, -1)])
-                combined_states = np.vstack([self.pareto_states, state.reshape(1, self.env.max_layers, -1)])
-
-                # Compute new Pareto front from combined data
-                reward_pareto_indices, new_pareto_rewards = self._compute_pareto_front(combined_rewards, data_type='rewards')
-                if len(new_pareto_rewards) > 0:
-                    # Update Pareto front with new points
-                    self.pareto_front_rewards = new_pareto_rewards
-                    self.pareto_front_values = combined_values[reward_pareto_indices]
-                    self.pareto_states = combined_states[reward_pareto_indices]
-                    self.pareto_state_rewards = new_pareto_rewards  # Same as pareto_front_rewards
+            # Use environment's efficient Pareto tracker if available
+            if hasattr(self.env, 'pareto_tracker') and self.env.use_efficient_pareto:
+                # Initialize tracker with current data if needed
+                if self.env.pareto_tracker.current_front.size == 0 and len(self.pareto_front_rewards) > 0:
+                    # Load existing Pareto data into tracker
+                    self.env.pareto_tracker.set_current_data(
+                        front=self.pareto_front_rewards,
+                        values=self.pareto_front_values,
+                        states=self.pareto_states.reshape(len(self.pareto_states), -1) if len(self.pareto_states) > 0 else None
+                    )
+                
+                # Add new point to tracker
+                updated_front, was_updated = self.env.pareto_tracker.add_point(
+                    point=reward_point,
+                    values=value_point,
+                    state=state
+                )
+                
+                if was_updated:
+                    # Update trainer's data from the efficient tracker
+                    self.pareto_front_rewards = self.env.pareto_tracker.get_front(force_update=True)
+                    self.pareto_front_values = self.env.pareto_tracker.get_values(force_update=True)
+                    tracker_states = self.env.pareto_tracker.get_states(force_update=True)
+                    # Reshape states back to original format if available
+                    if tracker_states.size > 0:
+                        self.pareto_states = tracker_states.reshape(len(tracker_states), self.env.max_layers, -1)
+                    else:
+                        self.pareto_states = np.array([])
+                    
+                    self.pareto_state_rewards = self.pareto_front_rewards.copy()
                     
                     # Update reference point
-                    self.reference_point = np.max(self.pareto_front_rewards, axis=0) * 1.1
+                    if len(self.pareto_front_rewards) > 0:
+                        self.reference_point = np.max(self.pareto_front_rewards, axis=0) * 1.1
                     
                     # Sync to environment for compatibility
                     self.env.pareto_front = self.pareto_front_rewards
                     self.env.reference_point = self.reference_point
                     
-        except Exception as e:
-            print(f"Warning: Failed to update Pareto front incrementally: {e}, traceback: {traceback.format_exc()}")
-            raise Exception 
-
-    def _compute_pareto_front(self, data_array: np.ndarray, data_type: str = 'rewards') -> Tuple[np.ndarray, np.ndarray]:
-        """
-        Unified Pareto front computation using the environment's method.
-        
-        Args:
-            data_array: Array of points (n_points, n_objectives)
-            data_type: Either 'rewards' (all maximized) or 'values' (mixed optimization from config)
-            
-        Returns:
-            Tuple of (pareto_indices, pareto_points)
-        """
-        if len(data_array) == 0:
-            return np.array([]), np.array([])
-            
-        if not hasattr(self.env, 'compute_pareto_front'):
-            raise ValueError("Environment does not have compute_pareto_front method")
-            
-        # Use environment's method with appropriate optimization approach
-        if data_type == 'rewards':
-            # Rewards are all maximized - use legacy maximize=True
-            pareto_indices, pareto_points = self.env.compute_pareto_front(data_array, maximize=True)
-        elif data_type == 'values':
-            # Values use mixed optimization directions from config - use new maximize=None
-            pareto_indices, pareto_points = self.env.compute_pareto_front(data_array, maximize=None)
-        else:
-            raise ValueError(f"data_type must be 'rewards' or 'values', got {data_type}")
+            else:
+                # Fallback to original incremental computation
+                raise Exception("Environment does not have efficient Pareto tracker")
+                self._update_pareto_tracking_legacy(state, reward_point, value_point)
                 
-        return np.array(pareto_indices), pareto_points
+        except Exception as e:
+            raise Exception(f"Warning: Failed to update Pareto front using efficient tracker: {e}")
+            # Fallback to legacy method
+            self._update_pareto_tracking_legacy(state, reward_point, value_point)
 
     def write_metrics_to_file(self) -> None:
         """Save training metrics to CSV file."""
@@ -1125,33 +1136,30 @@ class UnifiedHPPOTrainer:
         """
         print(f"Initializing Pareto front with {n_solutions} random solutions...")
         
-        sol_vals = {"reflectivity": [], "thermal_noise": [], "absorption": [], "thickness": []}
+        sol_vals = np.zeros((n_solutions, len(self.env.get_parameter_names())))
+        sol_rewards = np.zeros((n_solutions, len(self.env.get_parameter_names())))
+        state_shape = self.env._get_state_shape()
+        sol_states = np.zeros((n_solutions, self.env.max_layers, state_shape[1]))  # Assuming 2D observation shape
+        print(sol_states.shape)
         
-        for _ in range(n_solutions):
+        for i in range(n_solutions):
             state = self.env.sample_state_space(random_material=True)
             reflectivity, thermal_noise, absorption, thickness = self.env.compute_state_value(state, return_separate=True)
             
-            if self.env.reward_function in ["area", "hypervolume"]:
-                sol_vals["reflectivity"].append(reflectivity)
-                sol_vals["thermal_noise"].append(thermal_noise)
-                sol_vals["absorption"].append(absorption)
-                sol_vals["thickness"].append(thickness)
-            else:
-                _, _, rewards = self.env.reward_calculator.calculate(reflectivity, thermal_noise, thickness, absorption, weights=None)
+            
+            _, vals, rewards = self.env.reward_calculator.calculate(reflectivity, thermal_noise, thickness, absorption, weights=None, env=self.env)
                 
-                for key in sol_vals.keys():
-                    sol_vals[key].append(rewards[key])
+        
+            vals = [vals.get(key, 0.0) for key in self.env.get_parameter_names()]
+            rewards = [rewards.get(key, 0.0) for key in self.env.get_parameter_names()]
+            sol_vals[i] = vals
+            sol_rewards[i] = rewards
+            sol_states[i] = state.get_array()
 
-        # Create Pareto front from objective values
-        vals = np.array([sol_vals[key] for key in self.env.get_parameter_names()]).T
+
+        self.env.pareto_tracker.set_current_data(sol_rewards, sol_vals, sol_states)
         
-        pareto_indices, pareto_front = self.env.compute_pareto_front(vals)
-        
-        # Set Pareto front and reference point
-        self.env.pareto_front = pareto_front
-        self.env.reference_point = np.max(self.env.pareto_front, axis=0) * 1.1
-        
-        print(f"Initialized Pareto front with {len(self.env.pareto_front)} solutions")
+        print(f"Initialized Pareto front with {n_solutions} solutions")
 
     def generate_solutions(self, n_solutions: int, random_weights: bool = True) -> Tuple[List[np.ndarray], List[Dict], List[np.ndarray], List[Dict]]:
         """

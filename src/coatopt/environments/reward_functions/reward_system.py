@@ -9,6 +9,14 @@ import numpy as np
 from collections import deque
 import torch
 
+# Optional import for hypervolume calculation
+try:
+    from pymoo.indicators.hv import HV
+    PYMOO_AVAILABLE = True
+except ImportError:
+    PYMOO_AVAILABLE = False
+    print("Warning: pymoo not available. Hypervolume calculation will not work.")
+
 
 class RewardRegistry:
     """Registry for reward functions using automatic discovery."""
@@ -84,6 +92,7 @@ class RewardCalculator:
             divergence_penalty_weight: Weight for divergence penalty
             pareto_improvement_weight: Weight for Pareto improvement reward
             target_mapping: Mapping of parameter names to scaling types
+            combine: Method to combine rewards - "sum", "product", "logproduct", or "hypervolume"
             **kwargs: Additional parameters passed to reward function
         """
         self.registry = RewardRegistry()
@@ -103,7 +112,7 @@ class RewardCalculator:
         self.reward_normalization_ranges = reward_normalization_ranges or {}
         self.reward_normalization_alpha = reward_normalization_alpha
     
-        self.combine = combine  # "sum", "product", or "logproduct"
+        self.combine = combine  # "sum", "product", "logproduct", or "hypervolume"
 
         self.multi_value_rewards = kwargs.get('multi_value_rewards', False)
         
@@ -375,17 +384,21 @@ class RewardCalculator:
             target_mapping=self.target_mapping, **extra_kwargs
         )
 
-        final_reward = self.combine_rewards(final_rewards, objective_weights=weights)
+        final_reward = self.combine_rewards(final_rewards, objective_weights=weights, env=env, vals=vals)
         final_rewards["total_reward"] = final_reward
         
         return final_reward, final_vals, final_rewards
 
-    def combine_rewards(self, rewards: Dict[str, float], objective_weights: Dict[str, float] = None) -> float:
+    def combine_rewards(self, rewards: Dict[str, float], objective_weights: Dict[str, float] = None, 
+                       env=None, vals: Dict[str, float] = None) -> float:
         """
         Combine individual rewards into a single total reward.
         
         Args:
             rewards: Dict of individual rewards
+            objective_weights: Weights for each objective
+            env: Environment object (needed for hypervolume calculation)
+            vals: Current objective values (needed for hypervolume calculation)
             
         Returns:
             Combined total reward
@@ -393,6 +406,7 @@ class RewardCalculator:
         # Simple sum of all rewards as an example
         if objective_weights is None:
             objective_weights = {param: 1.0 for param in self.optimise_parameters}
+        
         # Combine the rewards 
         if self.combine == "sum":
             total_reward = np.sum([rewards[key] * objective_weights[key] for key in self.optimise_parameters])
@@ -400,8 +414,10 @@ class RewardCalculator:
             total_reward = np.prod([rewards[key] * objective_weights[key] for key in self.optimise_parameters])
         elif self.combine == "logproduct":
             total_reward = np.log(np.prod([rewards[key] * objective_weights[key] for key in self.optimise_parameters]))
+        elif self.combine == "hypervolume":
+            total_reward = self._calculate_hypervolume_reward(env, vals, rewards)
         else:
-            raise ValueError(f"combine must be either 'sum', 'product', or 'logproduct', not {self.combine}")
+            raise ValueError(f"combine must be either 'sum', 'product', 'logproduct', or 'hypervolume', not {self.combine}")
         
         #apply addons
         for key in rewards.keys():
@@ -410,6 +426,137 @@ class RewardCalculator:
                 rewards["total_reward"] = total_reward
 
         return total_reward
+    
+    def _calculate_hypervolume_reward(self, env, vals: Dict[str, float], rewards: Dict[str, float]) -> float:
+        """
+        Calculate reward based on hypervolume of Pareto front including the new point.
+        
+        Args:
+            env: Environment object containing pareto_tracker
+            vals: Current objective values
+            rewards: Individual rewards dict (for fallback)
+            
+        Returns:
+            Hypervolume-based reward
+        """
+        if not PYMOO_AVAILABLE:
+            print("Warning: pymoo not available for hypervolume calculation. Falling back to sum.")
+            return np.sum([rewards[key] for key in self.optimise_parameters])
+        
+        # Check if environment has a pareto tracker
+        if env is None or not hasattr(env, 'pareto_tracker') or env.pareto_tracker is None:
+            raise Exception("Warning: No pareto_tracker available in environment. Falling back to sum.", env)
+            return np.sum([rewards[key] for key in self.optimise_parameters])
+        
+        try:
+            # Get current Pareto front
+            pareto_tracker = env.pareto_tracker
+            
+            # Extract current objective values for the optimized parameters
+            current_point = np.array([rewards.get(param, 0.0) for param in self.optimise_parameters])
+            current_val = np.array([vals.get(param, 0.0) for param in self.optimise_parameters])
+            current_state = env.current_state.get_array()
+            
+            # Create a temporary copy of the tracker to test with the new point
+            import copy
+            temp_tracker = copy.deepcopy(pareto_tracker)
+            temp_tracker.add_point(current_point, current_val, current_state, force_update=True)
+            
+            # Get the Pareto front points (including the new point if it's non-dominated)
+            pareto_points = temp_tracker.get_front()
+            
+            if len(pareto_points) == 0:
+                print("Warning: Empty Pareto front. Falling back to sum.")
+                return np.sum([rewards[key] for key in self.optimise_parameters])
+            
+            # Convert to numpy array if needed
+            if not isinstance(pareto_points, np.ndarray):
+                pareto_points = np.array(pareto_points)
+            
+            # Ensure we have a 2D array
+            if pareto_points.ndim == 1:
+                pareto_points = pareto_points.reshape(1, -1)
+            
+            # Define reference point for hypervolume calculation
+            # Use the worst values from objective bounds or current worst in Pareto set
+            reference_point = self._get_reference_point(env, pareto_points)
+            
+            # Calculate hypervolume using pymoo
+            hv_indicator = HV(ref_point=reference_point)
+            
+            # For minimization problems, we need to negate the objectives
+            # Check optimization direction from target_mapping or assume minimization
+            pareto_for_hv = self._prepare_objectives_for_hypervolume(pareto_points)
+            
+            hypervolume = hv_indicator(pareto_for_hv)
+            
+            # Store hypervolume info in rewards dict for debugging
+            rewards["hypervolume_value"] = hypervolume
+            rewards["pareto_front_size"] = len(pareto_points)
+            
+            return hypervolume
+            
+        except Exception as e:
+            raise Exception(f"Warning: Error calculating hypervolume: {e}. Falling back to sum. traceback: {e.__traceback__}")
+            return np.sum([rewards[key] for key in self.optimise_parameters])
+    
+    def _get_reference_point(self, env, pareto_points: np.ndarray) -> np.ndarray:
+        """
+        Get reference point for hypervolume calculation.
+        
+        Args:
+            env: Environment object
+            pareto_points: Current Pareto front points
+            
+        Returns:
+            Reference point for hypervolume calculation
+        """
+        # Method 1: Use objective bounds if available
+        if hasattr(env, 'objective_bounds') and env.objective_bounds:
+            reference_point = []
+            for param in self.optimise_parameters:
+                if param in env.objective_bounds:
+                    bounds = env.objective_bounds[param]
+                    if isinstance(bounds, list):
+                        # Use the worse bound based on optimization direction
+                        if self.target_mapping.get(param, "").endswith("-"):
+                            # For maximization, use minimum as reference
+                            reference_point.append(bounds[0])
+                        else:
+                            # For minimization, use maximum as reference
+                            reference_point.append(bounds[1])
+                    else:
+                        # Fallback: use worst point in current front + margin
+                        reference_point.append(np.max(pareto_points[:, len(reference_point)]) * 1.1)
+                else:
+                    # Fallback: use worst point in current front + margin
+                    reference_point.append(np.max(pareto_points[:, len(reference_point)]) * 1.1)
+            return np.array(reference_point)
+        
+        # Method 2: Use worst points in current front + margin
+        return np.max(pareto_points, axis=0) * 1.1
+    
+    def _prepare_objectives_for_hypervolume(self, pareto_points: np.ndarray) -> np.ndarray:
+        """
+        Prepare objectives for hypervolume calculation by handling maximization/minimization.
+        
+        Args:
+            pareto_points: Pareto front points
+            
+        Returns:
+            Transformed points for hypervolume calculation (pymoo expects minimization)
+        """
+        transformed_points = pareto_points.copy()
+        
+        # Transform maximization objectives to minimization by negating
+        for i, param in enumerate(self.optimise_parameters):
+            if i < transformed_points.shape[1]:
+                # Check if this is a maximization objective
+                if self.target_mapping.get(param, "").endswith("-"):
+                    # This is maximization, negate for pymoo (which expects minimization)
+                    transformed_points[:, i] = -transformed_points[:, i]
+        
+        return transformed_points
     
     def apply_addon_functions(self, total_reward: float, vals: Dict[str, float], 
                             rewards: Dict[str, float], env=None, weights: Dict[str, float] = None,
@@ -885,14 +1032,16 @@ def apply_pareto_improvement_addon(total_reward: float, rewards: Dict[str, float
         
         try:
             # Extract objective values for the optimized parameters
-            new_point = np.array([vals.get(param, 0.0) for param in optimise_parameters])
+            new_point = np.array([rewards.get(param, 0.0) for param in optimise_parameters])
+            new_value = np.array([vals.get(param, 0.0) for param in optimise_parameters])
+            new_state = getattr(env, 'current_state', None).get_array()
             
             # Create a copy of the tracker to test without actually updating
             import copy
             test_tracker = copy.deepcopy(env.pareto_tracker)
             
             # Check if adding this point would change the Pareto front
-            _, was_updated = test_tracker.add_point(new_point, force_update=True)
+            _, was_updated = test_tracker.add_point(new_point, new_value, new_state, force_update=True)
             
             if was_updated:
                 pareto_improvement_reward = 1.0

@@ -301,6 +301,14 @@ class BaseCoatingEnvironment:
         
         self.reward_calculator = RewardCalculator(**reward_calc_config)
 
+    def _get_state_shape(self):
+        """
+        Get shape of the underlying state tensor.
+        
+        Returns:
+            Tuple of (max_layers, n_features) where n_features = 1 + n_materials
+        """
+        return (self.max_layers, 1 + self.n_materials)
     def _get_observation_shape(self):
         """
         Dynamically calculate observation shape by creating a sample CoatingState.
@@ -329,7 +337,7 @@ class BaseCoatingEnvironment:
                 air_index=self.air_material_index,
                 use_optical_thickness=getattr(self, 'use_optical_thickness', True)
             )
-            
+
             # Return actual tensor shape
             return tuple(sample_obs_tensor.shape)
             
@@ -453,16 +461,15 @@ class BaseCoatingEnvironment:
         # Handle CoatingState input
         if isinstance(state, CoatingState):
             # Use state.get_tensor() for calculations
-            state_tensor = state.get_tensor()
+            state_array = state.get_array()
         else:
             # Backward compatibility with numpy arrays/tensors
             if isinstance(state, torch.Tensor):
                 state_tensor = state
             else:
                 state_tensor = torch.from_numpy(state).float()
-        
-        # Convert to numpy for existing trim_state function
-        state_array = state_tensor.numpy()
+            # Convert to numpy for existing trim_state function
+            state_array = state_tensor.numpy()
         
         # trim out the duplicate air layers and inverse order
         state_trim = state_utils.trim_state(state_array)
