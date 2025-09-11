@@ -425,8 +425,11 @@ class PCHPPO:
 
         # Calculate entropy coefficients using cosine annealing with optional warm restarts
         def calculate_entropy_coefficient(start_val, end_val):
-            # If scheduler not active or before decay starts, use start value
-            if not scheduler_active or step < self.entropy_beta_decay_start:
+            # If scheduler not active, use end value (stay at minimum)
+            if not scheduler_active:
+                return end_val
+            # If before decay starts, use start value
+            elif step < self.entropy_beta_decay_start:
                 return start_val
             elif self.entropy_beta_use_restarts and hasattr(self, 'lr_step'):
                 # Use warm restarts similar to learning rate scheduler
