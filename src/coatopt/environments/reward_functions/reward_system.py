@@ -66,9 +66,9 @@ class RewardCalculator:
                  # Addon configuration parameters
                  apply_normalization=False, apply_boundary_penalties=False,
                  apply_divergence_penalty=False, apply_air_penalty=False,
-                 apply_pareto_improvement=False,
+                 apply_pareto_improvement=False, apply_preference_constraints=False,
                  air_penalty_weight=1.0, divergence_penalty_weight=1.0,
-                 pareto_improvement_weight=1.0,
+                 pareto_improvement_weight=1.0, preference_constraint_weight=1.0,
                  target_mapping=None, combine: str = "sum", **kwargs):
         """
         Initialize with basic parameters and addon configuration.
@@ -127,9 +127,12 @@ class RewardCalculator:
         self.apply_divergence_penalty = apply_divergence_penalty
         self.apply_air_penalty = apply_air_penalty
         self.apply_pareto_improvement = apply_pareto_improvement
+        self.apply_preference_constraints = apply_preference_constraints
+        print("Preference constraint:", self.apply_preference_constraints)
         self.air_penalty_weight = air_penalty_weight
         self.divergence_penalty_weight = divergence_penalty_weight
         self.pareto_improvement_weight = pareto_improvement_weight
+        self.preference_constraint_weight = preference_constraint_weight
         self.target_mapping = target_mapping or {
             "reflectivity": "log-",
             "thermal_noise": "log-",
@@ -379,8 +382,10 @@ class RewardCalculator:
             use_air_penalty=self.apply_air_penalty,
             use_pareto_improvement=self.apply_pareto_improvement,
             air_penalty_weight=self.air_penalty_weight, 
+            use_preference_constraints=self.apply_preference_constraints,
             divergence_penalty_weight=self.divergence_penalty_weight,
             pareto_improvement_weight=self.pareto_improvement_weight,
+            constraint_penalty_weight=self.preference_constraint_weight,
             target_mapping=self.target_mapping, **extra_kwargs
         )
 
@@ -562,9 +567,10 @@ class RewardCalculator:
                             rewards: Dict[str, float], env=None, weights: Dict[str, float] = None,
                             use_normalization: bool = False, use_boundary_penalties: bool = False,
                             use_divergence_penalty: bool = False, use_air_penalty: bool = False,
-                            use_pareto_improvement: bool = False,
+                            use_pareto_improvement: bool = False, use_preference_constraints: bool = False,
                             air_penalty_weight: float = 1.0, divergence_penalty_weight: float = 1.0,
-                            pareto_improvement_weight: float = 1.0,
+                            pareto_improvement_weight: float = 1.0, pc_tracker=None, phase_info=None,
+                            constraint_penalty_weight: float = 1.0,
                             target_mapping: Dict[str, str] = None, **kwargs) -> Tuple[float, Dict[str, float], Dict[str, float]]:
         """
         Apply addon functions to reward calculation results.
@@ -580,9 +586,12 @@ class RewardCalculator:
             use_divergence_penalty: Whether to apply divergence penalty
             use_air_penalty: Whether to apply air penalty
             use_pareto_improvement: Whether to apply Pareto improvement reward
+            use_preference_constraints: Whether to apply preference constraints addon
             air_penalty_weight: Weight for air penalty
             divergence_penalty_weight: Weight for divergence penalty
             pareto_improvement_weight: Weight for Pareto improvement reward
+            pc_tracker: PreferenceConstrainedTracker instance
+            phase_info: Phase information from preference-constrained training
             target_mapping: Mapping of parameter names to scaling types
             **kwargs: Additional parameters for addon functions
             
@@ -625,6 +634,13 @@ class RewardCalculator:
             updated_rewards = apply_pareto_improvement_addon(
                 updated_total_reward, updated_rewards, vals, env,
                 self.optimise_parameters, pareto_improvement_weight, self.multi_value_rewards, **kwargs
+            )
+        
+        # Apply preference constraints addon
+        if use_preference_constraints:
+            updated_total_reward, updated_rewards = apply_preference_constraints_addon(
+                updated_total_reward, updated_rewards, vals, env,
+                self.optimise_parameters, pc_tracker, phase_info, constraint_penalty_weight, **kwargs
             )
         
 
@@ -1083,6 +1099,75 @@ def reward_function_plugin(name: str = None):
         registry.register(plugin_name, func)
         return func
     return decorator
+
+
+def apply_preference_constraints_addon(total_reward: float, rewards: Dict[str, float], 
+                                     vals: Dict[str, float], env, 
+                                     optimise_parameters: List[str], pc_tracker=None, 
+                                     phase_info=None, constraint_penalty_weight=1.0, **kwargs) -> Tuple[float, Dict[str, float]]:
+    """
+    Apply preference constraints addon for constrained multi-objective optimization.
+    
+    Phase 1: Updates reward bounds with current observations
+    Phase 2: Applies constraint penalties to non-target objectives
+    
+    Args:
+        total_reward: Current total reward
+        rewards: Individual rewards dict
+        vals: Current objective values
+        env: Environment object
+        optimise_parameters: List of parameters being optimized
+        pc_tracker: PreferenceConstrainedTracker instance
+        phase_info: Phase information from preference-constrained training
+        **kwargs: Additional parameters
+        
+    Returns:
+        Tuple of (updated_total_reward, updated_rewards_dict)
+    """
+    updated_rewards = rewards.copy()
+    updated_total_reward = total_reward
+    print(pc_tracker, phase_info)
+    if pc_tracker is None or phase_info is None:
+        # No preference constraints active
+        updated_rewards["pc_phase"] = 0
+        updated_rewards["pc_constraints_active"] = {}
+        return updated_total_reward, updated_rewards
+    
+    # Update reward bounds with current observations
+    print("Updating PC reward bounds with current observations")
+    pc_tracker.update_reward_bounds(rewards)
+    
+    # Get current phase information
+    current_phase = phase_info.get("phase", 1)
+    updated_rewards["pc_phase"] = current_phase
+    print(f"Current PC phase: {current_phase}")
+    if current_phase == 2:
+        # Phase 2: Apply constraint penalties
+        constraints = phase_info.get("constraints", {})
+        print("Constraints", constraints)
+        if constraints:
+            # Apply constraint penalties
+            constraint_penalty = pc_tracker.apply_constraint_penalties(rewards, constraints)
+            print(f"Constraint penalty applied: {constraint_penalty}")
+            
+            # Add constraint info to rewards dict for debugging
+            updated_rewards["pc_constraint_penalty"] = constraint_penalty
+            updated_rewards["pc_constraints_active"] = constraints
+            updated_rewards["pc_target_objective"] = phase_info.get("target_objective", "unknown")
+        else:
+            updated_rewards["pc_constraints_active"] = {}
+    else:
+        # Phase 1: No constraints, just track bounds
+        updated_rewards["pc_constraints_active"] = {}
+        constraint_penalty = 0.0
+    
+    # Update total reward in rewards dict
+    updated_total_reward = total_reward - constraint_penalty
+    updated_rewards["total_reward"] = updated_total_reward
+    print(constraint_penalty)
+    updated_rewards["pc_penalty_addon"] = constraint_penalty
+    
+    return updated_total_reward, updated_rewards
 
 
 # Example of how to add new reward functions easily:

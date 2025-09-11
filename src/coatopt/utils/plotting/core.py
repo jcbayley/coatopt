@@ -54,6 +54,9 @@ class TrainingPlotManager:
         self.last_plot_update = 0
         self.plot_update_interval = 40
         
+        # Preference constraints tracking
+        self.constraint_data = []
+        
         # Initialize figures
         self._init_figures()
     
@@ -67,6 +70,7 @@ class TrainingPlotManager:
         self.rewards_fig = Figure(figsize=self.figure_size, dpi=100)
         self.values_fig = Figure(figsize=self.figure_size, dpi=100)
         self.pareto_fig = Figure(figsize=(14, 10), dpi=100)
+        self.constraints_fig = Figure(figsize=(14, 8), dpi=100)
         
         self._init_subplot_layout()
     
@@ -192,12 +196,37 @@ class TrainingPlotManager:
         self.update_rewards_plot()
         self.update_values_plot()
         self.update_pareto_plot()
+        self.update_constraints_plot()
         
         if current_episode:
             self.last_plot_update = current_episode
         
         if self.save_plots and self.output_dir:
             self.save_plots_to_disk()
+    
+    def add_constraint_data(self, episode: int, phase: int, target_objective: str = None, 
+                           constraints: Dict = None, reward_bounds: Dict = None, 
+                           constraint_step: int = 0):
+        """
+        Add constraint tracking data for preference-constrained training.
+        
+        Args:
+            episode: Current training episode
+            phase: Training phase (1 or 2)
+            target_objective: Currently optimized objective (Phase 2 only)
+            constraints: Active constraint thresholds (Phase 2 only)
+            reward_bounds: Current reward min/max bounds
+            constraint_step: Current constraint step (Phase 2 only)
+        """
+        constraint_entry = {
+            'episode': episode,
+            'phase': phase,
+            'target_objective': target_objective,
+            'constraints': constraints.copy() if constraints else {},
+            'reward_bounds': reward_bounds.copy() if reward_bounds else {},
+            'constraint_step': constraint_step
+        }
+        self.constraint_data.append(constraint_entry)
     
     def update_rewards_plot(self):
         """Update the comprehensive rewards plot."""
@@ -401,6 +430,130 @@ class TrainingPlotManager:
             
         except Exception as e:
             print(f"Error updating values plot: {e}")
+    
+    def update_constraints_plot(self):
+        """Update the preference constraints tracking plot."""
+        if not self.constraint_data:
+            return
+        
+        try:
+            self.constraints_fig.clear()
+            
+            # Convert constraint data to more workable format
+            episodes = [entry['episode'] for entry in self.constraint_data]
+            phases = [entry['phase'] for entry in self.constraint_data]
+            
+            # Get all objective parameters
+            all_objectives = set()
+            for entry in self.constraint_data:
+                all_objectives.update(entry['reward_bounds'].keys())
+                all_objectives.update(entry['constraints'].keys())
+            all_objectives = sorted(list(all_objectives))
+            
+            if not all_objectives:
+                return
+            
+            # Create subplots: 2x2 layout
+            # Top row: Phase tracking and constraint steps
+            # Bottom row: Reward bounds evolution and active constraints
+            axes = self.constraints_fig.subplots(2, 2)
+            
+            # Plot 1: Training phases
+            axes[0, 0].plot(episodes, phases, 'b-', linewidth=2, marker='o', markersize=3)
+            axes[0, 0].set_title('Training Phases')
+            axes[0, 0].set_ylabel('Phase')
+            axes[0, 0].set_ylim(0.5, 2.5)
+            axes[0, 0].set_yticks([1, 2])
+            axes[0, 0].set_yticklabels(['Phase 1\n(Exploration)', 'Phase 2\n(Constrained)'])
+            axes[0, 0].grid(True, alpha=0.3)
+            
+            # Plot 2: Constraint steps (Phase 2 only)
+            constraint_steps = [entry['constraint_step'] for entry in self.constraint_data]
+            phase2_episodes = [ep for ep, phase in zip(episodes, phases) if phase == 2]
+            phase2_steps = [step for step, phase in zip(constraint_steps, phases) if phase == 2]
+            
+            if phase2_episodes:
+                axes[0, 1].plot(phase2_episodes, phase2_steps, 'r-', linewidth=2, marker='s', markersize=3)
+                axes[0, 1].set_title('Constraint Steps (Phase 2)')
+                axes[0, 1].set_ylabel('Constraint Step')
+                axes[0, 1].grid(True, alpha=0.3)
+            else:
+                axes[0, 1].text(0.5, 0.5, 'Phase 2 not started', 
+                               transform=axes[0, 1].transAxes, ha='center', va='center')
+                axes[0, 1].set_title('Constraint Steps (Phase 2)')
+            
+            # Plot 3: Reward bounds evolution
+            colors = plt.cm.Set1(np.linspace(0, 1, len(all_objectives)))
+            for i, obj in enumerate(all_objectives):
+                obj_mins = []
+                obj_maxs = []
+                obj_episodes = []
+                
+                for entry in self.constraint_data:
+                    if obj in entry['reward_bounds']:
+                        bounds = entry['reward_bounds'][obj]
+                        if 'min' in bounds and 'max' in bounds:
+                            obj_episodes.append(entry['episode'])
+                            obj_mins.append(bounds['min'])
+                            obj_maxs.append(bounds['max'])
+                
+                if obj_episodes:
+                    # Plot min and max bounds
+                    axes[1, 0].plot(obj_episodes, obj_mins, '--', color=colors[i], 
+                                   alpha=0.7, label=f'{obj} min')
+                    axes[1, 0].plot(obj_episodes, obj_maxs, '-', color=colors[i], 
+                                   alpha=0.9, label=f'{obj} max')
+            
+            axes[1, 0].set_title('Reward Bounds Evolution')
+            axes[1, 0].set_ylabel('Reward Value')
+            axes[1, 0].legend(fontsize=8, bbox_to_anchor=(1.05, 1), loc='upper left')
+            axes[1, 0].grid(True, alpha=0.3)
+            
+            # Plot 4: Active constraints (Phase 2)
+            for i, obj in enumerate(all_objectives):
+                constraint_values = []
+                constraint_episodes = []
+                
+                for entry in self.constraint_data:
+                    if entry['phase'] == 2 and obj in entry['constraints']:
+                        constraint_episodes.append(entry['episode'])
+                        constraint_values.append(entry['constraints'][obj])
+                
+                if constraint_episodes:
+                    axes[1, 1].plot(constraint_episodes, constraint_values, 'o-', 
+                                   color=colors[i], alpha=0.8, label=f'{obj} threshold', 
+                                   linewidth=2, markersize=4)
+            
+            axes[1, 1].set_title('Active Constraint Thresholds (Phase 2)')
+            axes[1, 1].set_ylabel('Constraint Threshold')
+            if len(all_objectives) <= 5:  # Only show legend if not too many objectives
+                axes[1, 1].legend(fontsize=8)
+            axes[1, 1].grid(True, alpha=0.3)
+            
+            # Set x-labels for bottom plots
+            axes[1, 0].set_xlabel('Episode')
+            axes[1, 1].set_xlabel('Episode')
+            
+            # Add phase transition annotations
+            phase_transitions = []
+            current_phase = None
+            for episode, phase in zip(episodes, phases):
+                if phase != current_phase:
+                    phase_transitions.append((episode, phase))
+                    current_phase = phase
+            
+            # Annotate phase transitions on all plots
+            for ax in axes.flatten():
+                for transition_ep, new_phase in phase_transitions:
+                    if new_phase == 2:  # Transition to Phase 2
+                        ax.axvline(x=transition_ep, color='red', linestyle='--', 
+                                 alpha=0.5, linewidth=1)
+            
+            self.constraints_fig.tight_layout()
+            
+        except Exception as e:
+            print(f"Error updating constraints plot: {e}")
+            traceback.print_exc()
     
     def update_pareto_plot(self, episode: int = None):
         """Update the Pareto front plot using unified Pareto tracking data."""
@@ -972,6 +1125,8 @@ class TrainingPlotManager:
                                   dpi=150, bbox_inches='tight')
             self.pareto_fig.savefig(os.path.join(self.output_dir, "pareto_plot.png"), 
                                   dpi=150, bbox_inches='tight')
+            self.constraints_fig.savefig(os.path.join(self.output_dir, "constraints_plot.png"), 
+                                        dpi=150, bbox_inches='tight')
             
         except Exception as e:
             print(f"Warning: Failed to save plots to disk: {e}")

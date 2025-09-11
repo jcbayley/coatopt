@@ -23,6 +23,7 @@ from coatopt.algorithms.hppo.core.agent import PCHPPO
 from coatopt.algorithms.hppo.training.checkpoint_manager import TrainingCheckpointManager
 from coatopt.algorithms.hppo.training.consolidation import ConsolidationStrategy, ConsolidationConfig
 from coatopt.algorithms.hppo.training.weight_cycling import sample_reward_weights, WeightArchive
+from coatopt.algorithms.hppo.training.preference_constrained_tracker import PreferenceConstrainedTracker
 import traceback
 
 
@@ -162,6 +163,9 @@ class UnifiedHPPOTrainer:
         self.callbacks = callbacks or TrainingCallbacks()
         self.training_start_time = None
         self.last_progress_time = time.time()
+        
+        # Preference constraints tracking data (saved in checkpoint)
+        self.constraint_history = []
 
         # Initialize Pareto tracking attributes (consistent format for HPPO and genetic)
         self.pareto_front_rewards = np.array([])      # Pareto front in reward space
@@ -203,6 +207,18 @@ class UnifiedHPPOTrainer:
         
         # Phase 2 Enhancement: Initialize weight archive for adaptive exploration
         self.weight_archive = WeightArchive(max_size=50)  # Track last 50 weight vectors
+        
+        # Initialize preference constrained tracker if using preference_constrained cycling
+        self.pc_tracker = None
+        if hasattr(self.env, 'cycle_weights') and self.env.cycle_weights == "preference_constrained":
+            self.pc_tracker = PreferenceConstrainedTracker(
+                optimise_parameters=getattr(self.env, 'optimise_parameters', ['reflectivity', 'thermal_noise', 'absorption']),
+                phase1_epochs_per_objective=getattr(self.env, 'pc_phase1_epochs_per_objective', 1000),
+                phase2_epochs_per_step=getattr(self.env, 'pc_phase2_epochs_per_step', 300),
+                constraint_steps=getattr(self.env, 'pc_constraint_steps', 8),
+                constraint_penalty_weight=getattr(self.env, 'pc_constraint_penalty_weight', 50.0),
+                constraint_margin=getattr(self.env, 'pc_constraint_margin', 0.05)
+            )
 
     def _setup_directories(self) -> None:
         """Create necessary directories for training outputs."""
@@ -360,6 +376,20 @@ class UnifiedHPPOTrainer:
             
             # Load best states
             self.best_states = checkpoint_data.get('best_states', [])
+            
+            # Load preference constrained tracker data if available
+            pc_data = checkpoint_data.get('preference_constrained', {})
+            if pc_data and pc_data.get('tracker_data') and self.pc_tracker:
+                success = self.pc_tracker.load_from_checkpoint_data(pc_data['tracker_data'])
+                if success:
+                    print("Loaded preference-constrained tracker state from checkpoint")
+                else:
+                    print("Warning: Failed to load preference-constrained tracker state")
+            
+            # Load constraint history if available
+            if pc_data and 'constraint_history' in pc_data:
+                self.constraint_history = pc_data['constraint_history']
+                print(f"Loaded {len(self.constraint_history)} constraint history entries")
             
             self.continue_training = True
             print(f"Successfully loaded unified checkpoint from episode {self.start_episode}")
@@ -791,7 +821,7 @@ class UnifiedHPPOTrainer:
             current_pareto_front = self.env.pareto_front
         
         # Standard MultiObjectiveEnvironment: sample objective weights
-        objective_weights = sample_reward_weights(
+        weights_result = sample_reward_weights(
             n_objectives=n_objectives,
             cycle_weights=getattr(self.env, 'cycle_weights', 'random'),
             epoch=episode,
@@ -802,8 +832,30 @@ class UnifiedHPPOTrainer:
             pareto_front=current_pareto_front,  # Phase 2 enhancement
             weight_archive=self.weight_archive if hasattr(self, 'weight_archive') else None,  # Phase 2 enhancement
             all_rewards=self.all_rewards if hasattr(self, 'all_rewards') else None,  # Pass all rewards for coverage analysis
-            transfer_fraction=getattr(self.env, 'transfer_fraction', 0.25)
+            transfer_fraction=getattr(self.env, 'transfer_fraction', 0.25),
+            pc_tracker=self.pc_tracker  # Preference constrained tracker
         )
+        
+        # Handle preference constrained cycling which returns (weights, phase_info)
+        if isinstance(weights_result, tuple) and len(weights_result) == 2:
+            objective_weights, phase_info = weights_result
+            # Store phase_info for use in reward calculation
+            self.current_phase_info = phase_info
+            
+            # Add constraint data to history for checkpoint saving
+            if self.pc_tracker:
+                constraint_entry = {
+                    'episode': episode,
+                    'phase': phase_info.get('phase', 1),
+                    'target_objective': phase_info.get('target_objective'),
+                    'constraints': phase_info.get('constraints', {}),
+                    'reward_bounds': self.pc_tracker.reward_bounds.copy(),
+                    'constraint_step': phase_info.get('constraint_step', 0)
+                }
+                self.constraint_history.append(constraint_entry)
+        else:
+            objective_weights = weights_result
+            self.current_phase_info = None
         
         
         
@@ -837,8 +889,11 @@ class UnifiedHPPOTrainer:
             if len(action) > 1:
                 action[1] = action[1] * (self.env.max_thickness - self.env.min_thickness) + self.env.min_thickness
             
-            # Take environment step  
-            next_state, rewards, done, finished, _, full_action, vals = self.env.step(action, objective_weights=objective_weights)
+            # Take environment step with preference constraints support
+            step_kwargs = {'objective_weights': objective_weights}
+            
+            
+            next_state, rewards, done, finished, _, full_action, vals = self.env.step(action, **step_kwargs)
             reward = rewards["total_reward"]
             
             # Extract multi-objective rewards for each parameter
@@ -1086,7 +1141,13 @@ class UnifiedHPPOTrainer:
                 
                 'pareto_data': pareto_data,
                 'best_states': [state.get_array() if hasattr(state, 'get_array') else state 
-                               for state in getattr(self, 'best_states', [])]
+                               for state in getattr(self, 'best_states', [])],
+                
+                # Preference constrained tracker data
+                'preference_constrained': {
+                    'tracker_data': self.pc_tracker.get_checkpoint_data() if self.pc_tracker else None,
+                    'constraint_history': self.constraint_history
+                }
             }
             
             # Save checkpoint
@@ -1510,7 +1571,7 @@ class UnifiedHPPOTrainer:
 
 # Convenience functions for creating callbacks
 
-def create_cli_callbacks(verbose: bool = True, plot_manager=None) -> TrainingCallbacks:
+def create_cli_callbacks(verbose: bool = True, plot_manager=None, trainer=None) -> TrainingCallbacks:
     """Create callbacks optimized for CLI usage."""
     
     def cli_progress_update(episode: int, info: Dict[str, Any]):
@@ -1544,6 +1605,22 @@ def create_cli_callbacks(verbose: bool = True, plot_manager=None) -> TrainingCal
             # Add Pareto data if available
             if 'pareto_update' in info:
                 plot_manager.add_pareto_data(info['pareto_update'])
+            
+            # Add constraint data if available (for preference-constrained training)
+            if (trainer and hasattr(trainer, 'constraint_history') and 
+                trainer.constraint_history and 
+                len(trainer.constraint_history) > 0):
+                # Add the latest constraint entry
+                latest_entry = trainer.constraint_history[-1]
+                if latest_entry['episode'] == episode:  # Make sure it's for this episode
+                    plot_manager.add_constraint_data(
+                        episode=latest_entry['episode'],
+                        phase=latest_entry['phase'],
+                        target_objective=latest_entry.get('target_objective'),
+                        constraints=latest_entry.get('constraints', {}),
+                        reward_bounds=latest_entry.get('reward_bounds', {}),
+                        constraint_step=latest_entry.get('constraint_step', 0)
+                    )
             
             # Update plots periodically
             if plot_manager.should_update_plots(episode):

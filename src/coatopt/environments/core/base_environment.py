@@ -199,9 +199,11 @@ class BaseCoatingEnvironment:
                                  apply_divergence_penalty=False,
                                  apply_air_penalty=False,
                                  apply_pareto_improvement=False,
+                                 apply_preference_constraints=False,
                                  air_penalty_weight=1.0,
                                  divergence_penalty_weight=1.0,
                                  pareto_improvement_weight=1.0,
+                                 preference_constraint_weight=1.0,
                                  multi_value_rewards=False,):
         """Legacy parameter initialization for backward compatibility."""
         
@@ -251,8 +253,10 @@ class BaseCoatingEnvironment:
         self.apply_divergence_penalty = apply_divergence_penalty
         self.apply_air_penalty = apply_air_penalty
         self.apply_pareto_improvement = apply_pareto_improvement
+        self.apply_preference_constraints = apply_preference_constraints
         self.air_penalty_weight = air_penalty_weight
         self.divergence_penalty_weight = divergence_penalty_weight
+        self.preference_constraint_weight = preference_constraint_weight
         self.pareto_improvement_weight = pareto_improvement_weight
 
     def _setup_common_attributes(self):
@@ -293,9 +297,11 @@ class BaseCoatingEnvironment:
             'apply_divergence_penalty': getattr(self, 'apply_divergence_penalty', False),
             'apply_air_penalty': getattr(self, 'apply_air_penalty', False),
             'apply_pareto_improvement': getattr(self, 'apply_pareto_improvement', False),
+            'apply_preference_constraints': getattr(self, 'apply_preference_constraints', False),
             'air_penalty_weight': getattr(self, 'air_penalty_weight', 1.0),
             'divergence_penalty_weight': getattr(self, 'divergence_penalty_weight', 1.0),
             'pareto_improvement_weight': getattr(self, 'pareto_improvement_weight', 1.0),
+            'preference_constraint_weight': getattr(self, 'preference_constraint_weight', 1.0),
             'multi_value_rewards': hasattr(self, 'multi_value_rewards')
         }
         

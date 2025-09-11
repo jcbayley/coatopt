@@ -345,7 +345,7 @@ def sample_reward_weights(n_objectives, cycle_weights, epoch=None, num_samples=1
                          final_weight_epoch=1, start_weight_alpha=1.0, 
                          final_weight_alpha=1.0, n_weight_cycles=2, 
                          pareto_front=None, weight_archive=None, all_rewards=None,
-                         transfer_fraction=0.75):
+                         transfer_fraction=0.75, pc_tracker=None):
     """
     Sample weights for the reward function based on cycling strategy.
     
@@ -357,6 +357,7 @@ def sample_reward_weights(n_objectives, cycle_weights, epoch=None, num_samples=1
             - "annealed_random": Random weights with annealing
             - "adaptive_pareto": Adaptive based on Pareto front gaps
             - "individual_then_adaptive": NEW - First explore each objective individually, then adaptive combinations
+            - "preference_constrained": NEW - Phase 1: individual exploration, Phase 2: constrained optimization
             - "random": Pure random weights
             - "linear": Linear grid cycling
         epoch: Current epoch (used for scheduling)
@@ -369,9 +370,10 @@ def sample_reward_weights(n_objectives, cycle_weights, epoch=None, num_samples=1
         weight_archive: Archive of recently used weights for diversity (optional)
         all_rewards: All reward vectors seen so far, used for objective space coverage analysis (optional)
         extreme_fraction: Fraction of cycle spent at extremes (for smooth cycling)
+        pc_tracker: PreferenceConstrainedTracker instance for preference-constrained cycling (optional)
         
     Returns:
-        Weight vector for reward function
+        Weight vector for reward function, and optionally constraints dict
     """
     
     if cycle_weights == "individual_then_adaptive":
@@ -411,6 +413,19 @@ def sample_reward_weights(n_objectives, cycle_weights, epoch=None, num_samples=1
             
             if weight_archive is not None:
                 weight_archive.add_weight(weights)
+    
+    elif cycle_weights == "preference_constrained":
+        # Preference-constrained training: Phase 1 individual exploration, Phase 2 constrained optimization
+        if pc_tracker is None:
+            raise ValueError("preference_constrained cycling requires pc_tracker parameter")
+        
+        phase_info = pc_tracker.get_training_phase_info(epoch or 0)
+        weights_dict = phase_info["weights"]
+
+        # Convert weights_dict values to a numpy array (order by sorted keys for consistency)
+        weights = np.array([weights_dict[k] for k in pc_tracker.optimise_parameters])
+        # Return both weights and phase info for use in reward calculation
+        return weights, phase_info
     
     elif cycle_weights == "step":
         if n_objectives != 2:

@@ -163,9 +163,11 @@ def create_multiobjective_environment(config: CoatingOptimisationConfig, materia
         apply_divergence_penalty=config.data.apply_divergence_penalty,
         apply_air_penalty=config.data.apply_air_penalty,
         apply_pareto_improvement=config.data.apply_pareto_improvement,
+        apply_preference_constraints=config.training.cycle_weights == "preference_constrained" if config.training else False,
         air_penalty_weight=config.data.air_penalty_weight,
         divergence_penalty_weight=config.data.divergence_penalty_weight,
         pareto_improvement_weight=config.data.pareto_improvement_weight,
+        preference_constraint_weight=getattr(config.training, 'pc_constraint_penalty_weight', 1.0) if config.training else 1.0,
         multi_value_rewards=config.network.multi_value_rewards
     )
 
@@ -301,6 +303,18 @@ def create_trainer(config: CoatingOptimisationConfig, agent: hppo.PCHPPO, env: U
         'weight_network_save': config.training.weight_network_save,
         'callbacks': callbacks,
     }
+    
+    # Add preference-constrained training parameters to environment
+    if config.training.cycle_weights == "preference_constrained":
+        env.pc_phase1_epochs_per_objective = getattr(config.training, 'pc_phase1_epochs_per_objective', 1000)
+        env.pc_phase2_epochs_per_step = getattr(config.training, 'pc_phase2_epochs_per_step', 300)
+        env.pc_constraint_steps = getattr(config.training, 'pc_constraint_steps', 8)
+        env.pc_constraint_penalty_weight = getattr(config.training, 'pc_constraint_penalty_weight', 50.0)
+        env.pc_constraint_margin = getattr(config.training, 'pc_constraint_margin', 0.05)
+        
+        # Enable preference constraints addon in reward system
+        if hasattr(env, 'reward_calculator'):
+            env.reward_calculator.apply_preference_constraints = True
     
     if use_hypervolume:
         # Add hypervolume-specific parameters

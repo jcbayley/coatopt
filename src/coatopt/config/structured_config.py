@@ -131,9 +131,11 @@ class DataConfig(BaseConfig):
     apply_divergence_penalty: bool = False
     apply_air_penalty: bool = False
     apply_pareto_improvement: bool = False
+    apply_preference_constraints: bool = False
     air_penalty_weight: float = 1.0
     divergence_penalty_weight: float = 1.0
     pareto_improvement_weight: float = 1.0
+    constraint_penalty_weight: float = 50.0
 
 
 @dataclass
@@ -222,6 +224,13 @@ class TrainingConfig(BaseConfig):
     entropy_beta_discrete_end: Optional[float] = None
     entropy_beta_continuous_start: Optional[float] = None
     entropy_beta_continuous_end: Optional[float] = None
+    
+    # Preference-constrained training parameters
+    pc_phase1_epochs_per_objective: int = 1000
+    pc_phase2_epochs_per_step: int = 300
+    pc_constraint_steps: int = 8
+    pc_constraint_penalty_weight: float = 50.0
+    pc_constraint_margin: float = 0.05
 
 @dataclass
 class GeneticConfig(BaseConfig):

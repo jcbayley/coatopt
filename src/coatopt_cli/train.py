@@ -18,6 +18,7 @@ from coatopt.factories import setup_optimisation_pipeline
 from coatopt.algorithms.hppo.training.trainer import HPPOTrainer, create_cli_callbacks, HPPOConstants
 from coatopt.utils.evaluation import run_evaluation_pipeline, create_enhanced_pareto_plots
 from coatopt.utils.plotting import TrainingPlotManager
+from coatopt.utils.plotting.core import TrainingPlotManager as CoreTrainingPlotManager
 from coatopt.utils.mlflow_tracking import create_mlflow_tracker, MLflowTracker
 
 
@@ -123,7 +124,7 @@ class CommandLineTrainer:
         
         # Create plot manager if saving plots
         if self.save_plots:
-            self.plot_manager = TrainingPlotManager(
+            self.plot_manager = CoreTrainingPlotManager(
                 save_plots=True,
                 output_dir=self.config.general.root_dir,
                 ui_mode=False
@@ -139,8 +140,8 @@ class CommandLineTrainer:
             design_list = [self.config.data.design_criteria[param] for param in param_names]
             self.plot_manager.set_objective_info(param_names, target_list, design_list)
         
-        # Create callbacks for progress reporting
-        callbacks = create_cli_callbacks(verbose=self.verbose, plot_manager=self.plot_manager)
+        # Create callbacks for progress reporting (trainer will be set later)
+        callbacks = create_cli_callbacks(verbose=self.verbose, plot_manager=self.plot_manager, trainer=None)
         callbacks.should_stop = lambda: self.should_stop
         callbacks.save_plots = self.save_plots
         callbacks.save_visualizations = self.save_visualizations
@@ -172,9 +173,30 @@ class CommandLineTrainer:
             callbacks=callbacks
         )
         
+        # Update callbacks with trainer reference for constraint tracking
+        if self.plot_manager:
+            callbacks = create_cli_callbacks(verbose=self.verbose, plot_manager=self.plot_manager, trainer=self.trainer)
+            callbacks.should_stop = lambda: self.should_stop
+            callbacks.save_plots = self.save_plots
+            callbacks.save_visualizations = self.save_visualizations
+            self.trainer.callbacks = callbacks
+        
         # Load historical data for plotting if continuing training
         if self.continue_training and self.plot_manager:
             self.trainer.load_historical_data_to_plot_manager(self.plot_manager)
+            
+            # Load constraint history into plot manager for preference-constrained training
+            if hasattr(self.trainer, 'constraint_history') and self.trainer.constraint_history:
+                for entry in self.trainer.constraint_history:
+                    self.plot_manager.add_constraint_data(
+                        episode=entry['episode'],
+                        phase=entry['phase'],
+                        target_objective=entry.get('target_objective'),
+                        constraints=entry.get('constraints', {}),
+                        reward_bounds=entry.get('reward_bounds', {}),
+                        constraint_step=entry.get('constraint_step', 0)
+                    )
+                print(f"Loaded {len(self.trainer.constraint_history)} constraint history entries into plot manager")
         
         # Check if we have existing data
         if self.continue_training:
