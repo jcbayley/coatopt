@@ -189,8 +189,8 @@ class PreferenceConstrainedTracker:
             if param in rewards:
                 current_reward = rewards[param]
                 if current_reward < threshold:
-                    violation = abs(current_reward - threshold)
-                    penalty = self.constraint_penalty_weight #* violation
+                    violation = abs(current_reward - threshold) * 10
+                    penalty = self.constraint_penalty_weight * violation
                     total_penalty += penalty
         
         return total_penalty
