@@ -183,12 +183,15 @@ class MultiObjectiveEnvironment(HPPOEnvironment):
                 'steps_since_update': getattr(self, 'steps_since_pareto_update', 0)
             }
     
-    def compute_reward(self, new_state, max_value=0.0, target_reflectivity=1.0, objective_weights=None):
+    def compute_reward(self, new_state, max_value=0.0, target_reflectivity=1.0, objective_weights=None, 
+                      pc_tracker=None, phase_info=None):
         """reward is the improvement of the state over the previous one
 
         Args:
             state (_type_): _description_
             action (_type_): _description_
+            pc_tracker: PreferenceConstrainedTracker instance for preference-constrained optimization
+            phase_info: Phase information from preference-constrained training
         """
         if isinstance(new_state, CoatingState):
             # Use state.get_tensor() for calculations
@@ -213,7 +216,9 @@ class MultiObjectiveEnvironment(HPPOEnvironment):
                 absorption=new_E_integrated,
                 weights=weights,  # Pass weights directly to calculator
                 expert_constraints=self.current_expert_constraints,
-                env=self
+                env=self,
+                pc_tracker=pc_tracker,
+                phase_info=phase_info
             )
         
         new_point = np.zeros((len(self.optimise_parameters),))
@@ -232,7 +237,7 @@ class MultiObjectiveEnvironment(HPPOEnvironment):
 
         return total_reward, vals, rewards
     
-    def step(self, action, max_state=0, verbose=False, state=None, layer_index=None, always_return_value=False, objective_weights=None):
+    def step(self, action, max_state=0, verbose=False, state=None, layer_index=None, always_return_value=False, objective_weights=None, pc_tracker=None, phase_info=None):
         """Step function simplified to work directly with CoatingState objects."""
         
         # Use current state if none provided
@@ -275,10 +280,10 @@ class MultiObjectiveEnvironment(HPPOEnvironment):
         elif self.current_index == self.max_layers-1 or material == self.air_material_index:
             # Episode finished
             finished = True
-            reward, vals, rewards = self.compute_reward(self.current_state, max_state, objective_weights=objective_weights)
+            reward, vals, rewards = self.compute_reward(self.current_state, max_state, objective_weights=objective_weights, pc_tracker=pc_tracker, phase_info=phase_info)
         elif self.use_intermediate_reward:
             # Intermediate reward calculation
-            reward, vals, rewards = self.compute_reward(self.current_state, max_state, objective_weights=objective_weights)
+            reward, vals, rewards = self.compute_reward(self.current_state, max_state, objective_weights=objective_weights, pc_tracker=pc_tracker, phase_info=phase_info)
 
         # Check for invalid states using CoatingState validation
         if not self.current_state.is_valid() or np.isnan(reward) or np.isinf(reward):

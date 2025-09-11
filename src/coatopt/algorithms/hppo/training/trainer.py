@@ -212,7 +212,7 @@ class UnifiedHPPOTrainer:
         self.pc_tracker = None
         if hasattr(self.env, 'cycle_weights') and self.env.cycle_weights == "preference_constrained":
             self.pc_tracker = PreferenceConstrainedTracker(
-                optimise_parameters=getattr(self.env, 'optimise_parameters', ['reflectivity', 'thermal_noise', 'absorption']),
+                optimise_parameters=self.env.get_parameter_names(),
                 phase1_epochs_per_objective=getattr(self.env, 'pc_phase1_epochs_per_objective', 1000),
                 phase2_epochs_per_step=getattr(self.env, 'pc_phase2_epochs_per_step', 300),
                 constraint_steps=getattr(self.env, 'pc_constraint_steps', 8),
@@ -582,7 +582,7 @@ class UnifiedHPPOTrainer:
                 
                 # Extract objectives from final state if available
                 try:
-                    _, vals, rewards = self.env.compute_reward(final_state)
+                    _, vals, rewards = self.env.compute_reward(final_state, pc_tracker=self.pc_tracker, phase_info=self.current_phase_info)
                     if hasattr(rewards, 'keys'):
                         consolidation_episode_data['objectives'] = rewards
                     elif hasattr(self.env, 'optimise_parameters'):
@@ -893,7 +893,7 @@ class UnifiedHPPOTrainer:
             step_kwargs = {'objective_weights': objective_weights}
             
             
-            next_state, rewards, done, finished, _, full_action, vals = self.env.step(action, **step_kwargs)
+            next_state, rewards, done, finished, _, full_action, vals = self.env.step(action, pc_tracker=self.pc_tracker, phase_info=self.current_phase_info, **step_kwargs)
             reward = rewards["total_reward"]
             
             # Extract multi-objective rewards for each parameter
@@ -1046,7 +1046,7 @@ class UnifiedHPPOTrainer:
         episode_metrics["reward"] = episode_reward
         
         # Compute final state values and rewards
-        _, vals, rewards = self.env.compute_reward(final_state)
+        _, vals, rewards = self.env.compute_reward(final_state, pc_tracker=self.pc_tracker, phase_info=self.current_phase_info)
         
         # Store physical values
         for key in ["reflectivity", "thermal_noise", "absorption", "thickness"]:
@@ -1208,7 +1208,11 @@ class UnifiedHPPOTrainer:
             reflectivity, thermal_noise, absorption, thickness = self.env.compute_state_value(state, return_separate=True)
             
             
-            _, vals, rewards = self.env.reward_calculator.calculate(reflectivity, thermal_noise, thickness, absorption, weights=None, env=self.env)
+            _, vals, rewards = self.env.reward_calculator.calculate(
+                reflectivity, thermal_noise, 
+                thickness, absorption, 
+                weights=None, env=self.env, 
+                pc_tracker=self.pc_tracker, phase_info={"phase":"individual", "objective":None})
                 
         
             vals = [vals.get(key, 0.0) for key in self.env.get_parameter_names()]
@@ -1291,7 +1295,7 @@ class UnifiedHPPOTrainer:
                 
                 action[1] = action[1] * (self.env.max_thickness - self.env.min_thickness) + self.env.min_thickness
                 
-                next_state, rewards, done, finished, _, full_action, vals = self.env.step(action, objective_weights=objective_weights)
+                next_state, rewards, done, finished, _, full_action, vals = self.env.step(action, objective_weights=objective_weights, pc_tracker=self.pc_tracker, phase_info=self.current_phase_info)
                 state = next_state
                 
                 if done or finished:

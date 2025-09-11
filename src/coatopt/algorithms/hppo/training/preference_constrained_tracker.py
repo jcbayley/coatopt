@@ -188,6 +188,7 @@ class PreferenceConstrainedTracker:
         for param, threshold in constraints.items():
             if param in rewards:
                 current_reward = rewards[param]
+                print("DEBUG", param, threshold, current_reward) # DEBUG
                 if current_reward < threshold:
                     violation = abs(current_reward - threshold)
                     penalty = self.constraint_penalty_weight #* violation

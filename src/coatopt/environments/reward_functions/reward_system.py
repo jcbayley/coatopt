@@ -345,7 +345,8 @@ class RewardCalculator:
         return total_reward, vals, rewards
     
     def calculate(self, reflectivity, thermal_noise, thickness, absorption, env=None, weights=None, 
-                  expert_constraints=None, constraint_penalty_weight=100.0, **extra_kwargs):
+                  expert_constraints=None, constraint_penalty_weight=100.0, pc_tracker=None, 
+                  phase_info=None, **extra_kwargs):
         """
         Calculate reward with addons automatically applied based on initialization config.
         
@@ -386,7 +387,10 @@ class RewardCalculator:
             divergence_penalty_weight=self.divergence_penalty_weight,
             pareto_improvement_weight=self.pareto_improvement_weight,
             constraint_penalty_weight=self.preference_constraint_weight,
-            target_mapping=self.target_mapping, **extra_kwargs
+            target_mapping=self.target_mapping,
+            pc_tracker=pc_tracker,
+            phase_info=phase_info,
+            **extra_kwargs
         )
 
         final_reward = self.combine_rewards(final_rewards, objective_weights=weights, env=env, vals=vals)
@@ -1126,29 +1130,21 @@ def apply_preference_constraints_addon(total_reward: float, rewards: Dict[str, f
     """
     updated_rewards = rewards.copy()
     updated_total_reward = total_reward
-    print(pc_tracker, phase_info)
     if pc_tracker is None or phase_info is None:
-        # No preference constraints active
-        updated_rewards["pc_phase"] = 0
-        updated_rewards["pc_constraints_active"] = {}
-        return updated_total_reward, updated_rewards
+        raise Exception("PreferenceConstrainedTracker and phase_info must be provided for preference constraints addon.")
     
     # Update reward bounds with current observations
-    print("Updating PC reward bounds with current observations")
     pc_tracker.update_reward_bounds(rewards)
     
     # Get current phase information
     current_phase = phase_info.get("phase", 1)
     updated_rewards["pc_phase"] = current_phase
-    print(f"Current PC phase: {current_phase}")
     if current_phase == 2:
         # Phase 2: Apply constraint penalties
         constraints = phase_info.get("constraints", {})
-        print("Constraints", constraints)
         if constraints:
             # Apply constraint penalties
             constraint_penalty = pc_tracker.apply_constraint_penalties(rewards, constraints)
-            print(f"Constraint penalty applied: {constraint_penalty}")
             
             # Add constraint info to rewards dict for debugging
             updated_rewards["pc_constraint_penalty"] = constraint_penalty
@@ -1164,7 +1160,6 @@ def apply_preference_constraints_addon(total_reward: float, rewards: Dict[str, f
     # Update total reward in rewards dict
     updated_total_reward = total_reward - constraint_penalty
     updated_rewards["total_reward"] = updated_total_reward
-    print(constraint_penalty)
     updated_rewards["pc_penalty_addon"] = constraint_penalty
     
     return updated_total_reward, updated_rewards

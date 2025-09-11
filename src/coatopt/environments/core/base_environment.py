@@ -509,12 +509,15 @@ class BaseCoatingEnvironment:
             else:
                 return r, thermal_noise
         
-    def compute_reward(self, new_state, max_value=0.0, target_reflectivity=1.0, objective_weights=None):
+    def compute_reward(self, new_state, max_value=0.0, target_reflectivity=1.0, objective_weights=None, 
+                      pc_tracker=None, phase_info=None):
         """reward is the improvement of the state over the previous one
 
         Args:
             state (_type_): _description_
             action (_type_): _description_
+            pc_tracker: PreferenceConstrainedTracker instance for preference-constrained optimization
+            phase_info: Phase information from preference-constrained training
         """
 
         new_reflectivity, new_thermal_noise, new_E_integrated, new_total_thickness = self.compute_state_value(new_state, return_separate=True)
@@ -533,7 +536,9 @@ class BaseCoatingEnvironment:
                 absorption=new_E_integrated,
                 weights=weights,
                 expert_constraints=self.current_expert_constraints,
-                env=self
+                env=self,
+                pc_tracker=pc_tracker,
+                phase_info=phase_info
             )
         return total_reward, vals, rewards
     
@@ -679,7 +684,7 @@ class BaseCoatingEnvironment:
 
         return np.array(observation)
 
-    def step(self, action, max_state=0, verbose=False, state=None, layer_index=None, always_return_value=False, objective_weights=None):
+    def step(self, action, max_state=0, verbose=False, state=None, layer_index=None, always_return_value=False, objective_weights=None, pc_tracker=None, phase_info=None):
         """action[0] - thickness
            action[1:N] - material probability
 
@@ -746,12 +751,12 @@ class BaseCoatingEnvironment:
         elif self.current_index == self.max_layers-1 or material == self.air_material_index:
             finished = True
             self.current_state = new_state
-            reward, vals, rewards = self.compute_reward(new_state, max_state, objective_weights=objective_weights)
+            reward, vals, rewards = self.compute_reward(new_state, max_state, objective_weights=objective_weights, pc_tracker=pc_tracker, phase_info=phase_info)
 
         else:
             self.current_state = new_state
             if self.use_intermediate_reward:
-                reward, vals, rewards = self.compute_reward(new_state, max_state, objective_weights=objective_weights)
+                reward, vals, rewards = self.compute_reward(new_state, max_state, objective_weights=objective_weights, pc_tracker=pc_tracker, phase_info=phase_info)
         
 
         if np.any(np.isinf(new_state)) or np.any(np.isnan(new_state)) or np.isnan(reward) or np.isinf(reward):
