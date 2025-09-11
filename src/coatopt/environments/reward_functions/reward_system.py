@@ -1160,7 +1160,7 @@ def apply_preference_constraints_addon(total_reward: float, rewards: Dict[str, f
     # Update total reward in rewards dict
     updated_total_reward = total_reward - constraint_penalty
     updated_rewards["total_reward"] = updated_total_reward
-    updated_rewards["pc_penalty_addon"] = constraint_penalty
+    updated_rewards["pc_penalty_addon"] = -constraint_penalty
     
     return updated_total_reward, updated_rewards
 
