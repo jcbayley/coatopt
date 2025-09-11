@@ -419,7 +419,7 @@ class UnifiedHPPOTrainer:
         
         try:
             # Use environment's efficient Pareto tracker if available
-            if hasattr(self.env, 'pareto_tracker') and self.env.use_efficient_pareto:
+            if hasattr(self.env, 'pareto_tracker'):
                 # Initialize tracker with current data if needed
                 if self.env.pareto_tracker.current_front.size == 0 and len(self.pareto_front_rewards) > 0:
                     # Load existing Pareto data into tracker
@@ -1212,7 +1212,7 @@ class UnifiedHPPOTrainer:
                 reflectivity, thermal_noise, 
                 thickness, absorption, 
                 weights=None, env=self.env, 
-                pc_tracker=self.pc_tracker, phase_info={"phase":"individual", "objective":None})
+                pc_tracker=self.pc_tracker, phase_info={"phase":"individual", "objective":"reflectivity"})
                 
         
             vals = [vals.get(key, 0.0) for key in self.env.get_parameter_names()]
@@ -1220,7 +1220,6 @@ class UnifiedHPPOTrainer:
             sol_vals[i] = vals
             sol_rewards[i] = rewards
             sol_states[i] = state.get_array()
-
 
         self.env.pareto_tracker.set_current_data(sol_rewards, sol_vals, sol_states)
         

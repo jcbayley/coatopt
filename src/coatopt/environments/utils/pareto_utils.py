@@ -206,7 +206,7 @@ class EfficientParetoTracker:
         self.points_since_update = 0
         
     def add_point(self, point: np.ndarray, values: np.ndarray = None, state: np.ndarray = None, 
-                  force_update: bool = False) -> Tuple[np.ndarray, bool]:
+                  force_update: bool = True) -> Tuple[np.ndarray, bool]:
         """
         Add a point to the tracker with lazy evaluation.
         
