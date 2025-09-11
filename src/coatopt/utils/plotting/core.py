@@ -70,6 +70,7 @@ class TrainingPlotManager:
         self.rewards_fig = Figure(figsize=self.figure_size, dpi=100)
         self.values_fig = Figure(figsize=self.figure_size, dpi=100)
         self.pareto_fig = Figure(figsize=(14, 10), dpi=100)
+        self.pareto_rewards_fig = Figure(figsize=(14, 10), dpi=100)
         self.constraints_fig = Figure(figsize=(14, 8), dpi=100)
         
         self._init_subplot_layout()
@@ -107,8 +108,9 @@ class TrainingPlotManager:
         
         self.values_fig.tight_layout()
         
-        # Pareto front plot - will be dynamically created
+        # Pareto front plots - will be dynamically created
         self._init_pareto_plot()
+        self._init_pareto_rewards_plot()
     
     def _init_pareto_plot(self):
         """Initialize Pareto front plot."""
@@ -118,6 +120,15 @@ class TrainingPlotManager:
                 transform=ax.transAxes, ha='center', va='center', fontsize=12)
         ax.set_title("Pareto Front Visualization")
         self.pareto_fig.tight_layout()
+    
+    def _init_pareto_rewards_plot(self):
+        """Initialize Pareto rewards plot."""
+        self.pareto_rewards_fig.clear()
+        ax = self.pareto_rewards_fig.add_subplot(1, 1, 1)
+        ax.text(0.5, 0.5, 'Load configuration to see Pareto rewards visualization', 
+                transform=ax.transAxes, ha='center', va='center', fontsize=12)
+        ax.set_title("Pareto Front - Objective Rewards")
+        self.pareto_rewards_fig.tight_layout()
     
     def set_objective_info(self, optimisation_parameters: List[str], objective_targets: Optional[List[float]] = None, design_criteria: Optional[List[float]] = None):
         """Set objective information for consistent labeling."""
@@ -196,6 +207,7 @@ class TrainingPlotManager:
         self.update_rewards_plot()
         self.update_values_plot()
         self.update_pareto_plot()
+        self.update_pareto_rewards_plot()
         self.update_constraints_plot()
         
         if current_episode:
@@ -677,6 +689,209 @@ class TrainingPlotManager:
             print(f"Traceback: {traceback.format_exc()}")
             return None
     
+    def update_pareto_rewards_plot(self, episode: int = None):
+        """Update the Pareto rewards plot using objective rewards data."""
+        if not self.pareto_data:
+            print("Warning: No pareto_data available for rewards plot")
+            return None
+            
+        try:
+            self.pareto_rewards_fig.clear()
+            
+            # Get the latest data or specific episode data
+            if episode and episode in self.historical_pareto_data:
+                latest_data = self.historical_pareto_data[episode]
+            else:
+                latest_data = self.pareto_data[-1]
+            
+            # Use reward keys instead of value keys
+            pareto_front_rewards_raw = latest_data.get('pareto_front_rewards', [])
+            all_rewards_raw = latest_data.get('all_rewards', [])
+            pareto_states = latest_data.get('pareto_states', [])
+            current_episode = latest_data.get('episode', 'unknown')
+            eval_points = self.eval_data.get('eval_rewards', None)
+            
+            # Convert to numpy arrays if needed
+            if isinstance(pareto_front_rewards_raw, list) and len(pareto_front_rewards_raw) > 0:
+                pareto_front_rewards = np.array(pareto_front_rewards_raw)
+            elif isinstance(pareto_front_rewards_raw, np.ndarray) and pareto_front_rewards_raw.size > 0:
+                pareto_front_rewards = pareto_front_rewards_raw
+            else:
+                pareto_front_rewards = np.array([])
+                
+            if isinstance(all_rewards_raw, list) and len(all_rewards_raw) > 0:
+                all_rewards = np.array(all_rewards_raw)
+            elif isinstance(all_rewards_raw, np.ndarray) and all_rewards_raw.size > 0:
+                all_rewards = all_rewards_raw
+            else:
+                all_rewards = np.array([])
+
+            # Check if we have any data to plot
+            if pareto_front_rewards.size == 0 and all_rewards.size == 0:
+                ax = self.pareto_rewards_fig.add_subplot(1, 1, 1)
+                ax.text(0.5, 0.5, f'No Pareto rewards data available for episode {current_episode}', 
+                       transform=ax.transAxes, ha='center', va='center', fontsize=12)
+                ax.set_title("Pareto Front - Objective Rewards")
+                self.pareto_rewards_fig.tight_layout()
+                return None
+            
+            # No transformation needed for rewards - they're already in the correct space
+            pareto_front = pareto_front_rewards
+            best_points = all_rewards
+            
+            # Set optimization parameters if not set
+            if not self.optimisation_parameters:
+                if pareto_front.size > 0:
+                    n_objectives = pareto_front.shape[1] if pareto_front.ndim > 1 else 1
+                elif best_points.size > 0:
+                    n_objectives = best_points.shape[1] if best_points.ndim > 1 else 1
+                else:
+                    n_objectives = 2  # Default
+                    
+                self.optimisation_parameters = [f'objective_{i}' for i in range(n_objectives)]
+            
+            # Create reward-specific labels
+            reward_labels = [f'{param.replace("_", " ").title()} Reward' for param in self.optimisation_parameters]
+            
+            # Ensure we have at least 2 objectives for plotting
+            if len(reward_labels) < 2:
+                ax = self.pareto_rewards_fig.add_subplot(1, 1, 1)
+                ax.text(0.5, 0.5, 'Need at least 2 objectives for Pareto rewards visualization', 
+                       transform=ax.transAxes, ha='center', va='center')
+                return None
+            
+            # Plot based on number of objectives
+            if len(reward_labels) == 2:
+                self._plot_2d_pareto_rewards(pareto_front, best_points, current_episode, eval_points, reward_labels)
+            else:
+                self._plot_multi_objective_pareto_rewards(pareto_front, best_points, current_episode, reward_labels)
+            
+            self.pareto_rewards_fig.tight_layout()
+            return None
+            
+        except Exception as e:
+            print(f"Error updating Pareto rewards plot: {e}")
+            import traceback
+            print(f"Traceback: {traceback.format_exc()}")
+            return None
+    
+    def _plot_2d_pareto_rewards(self, pareto_front, best_points, episode, eval_points, reward_labels):
+        """Plot 2D Pareto front for rewards."""
+        ax = self.pareto_rewards_fig.add_subplot(1, 1, 1)
+        
+        # Plot background points with training progression gradient
+        if best_points is not None and len(best_points) > 0:
+            try:
+                best_points_array = np.array(best_points)
+                if len(best_points_array.shape) == 2 and best_points_array.shape[1] >= 2:
+                    # Create color gradient based on order (training progression)
+                    n_points = len(best_points_array)
+                    if n_points > 1:
+                        # Create colormap from blue (early) to red (late)
+                        colors = plt.cm.coolwarm(np.linspace(0, 1, n_points))
+                        ax.scatter(best_points_array[:, 0], best_points_array[:, 1],
+                                 c=colors, alpha=0.6, s=8, 
+                                 label='All Solutions (Blue→Red: Training Progression)')
+                    else:
+                        # Single point case
+                        ax.scatter(best_points_array[:, 0], best_points_array[:, 1],
+                                 c='lightblue', alpha=0.3, s=10, label='All Solutions')
+            except Exception as e:
+                print(f"Error plotting background reward points: {e}")
+        
+        # Plot Pareto front
+        if pareto_front.size > 0:
+            # Ensure 2D array
+            if pareto_front.ndim == 1:
+                pareto_front = pareto_front.reshape(1, -1)
+            
+            ax.scatter(pareto_front[:, 0], pareto_front[:, 1],
+                      c='red', s=40, alpha=0.8, label='Pareto Front',
+                      edgecolors='black', linewidths=1)
+            
+            # Connect Pareto points if not too many
+            if len(pareto_front) < 20:
+                try:
+                    sorted_indices = np.argsort(pareto_front[:, 0])
+                    sorted_front_x = pareto_front[sorted_indices, 0]
+                    sorted_front_y = pareto_front[sorted_indices, 1]
+                    ax.plot(sorted_front_x, sorted_front_y, 'r-', alpha=0.5, linewidth=1)
+                except:
+                    pass
+        
+        # Add evaluation points if available
+        if eval_points is not None and len(eval_points) > 0:
+            eval_points_array = np.array(eval_points)
+            if eval_points_array.shape[1] >= 2:
+                ax.scatter(eval_points_array[:, 0], eval_points_array[:, 1],
+                           c='orange', s=10, alpha=0.5, label='Evaluation Points')
+        
+        # Configure axes
+        ax.set_xlabel(reward_labels[0])
+        ax.set_ylabel(reward_labels[1])
+        ax.set_title(f'Pareto Front - Objective Rewards - Episode {episode}')
+        ax.grid(True, alpha=0.3)
+        ax.legend(fontsize=8)
+    
+    def _plot_multi_objective_pareto_rewards(self, pareto_front, best_points, episode, reward_labels):
+        """Plot multi-objective Pareto front for rewards using 2D pairs."""
+        n_objectives = len(reward_labels)
+        n_pairs = min(4, n_objectives * (n_objectives - 1) // 2)  # Limit to 4 pairs for readability
+        
+        n_cols = 2
+        n_rows = (n_pairs + n_cols - 1) // n_cols
+        
+        pair_idx = 0
+        for i in range(n_objectives):
+            for j in range(i + 1, n_objectives):
+                if pair_idx >= n_pairs:
+                    break
+                    
+                ax = self.pareto_rewards_fig.add_subplot(n_rows, n_cols, pair_idx + 1)
+                
+                # Plot background points with training progression gradient
+                if best_points is not None and len(best_points) > 0:
+                    try:
+                        best_points_array = np.array(best_points)
+                        if best_points_array.shape[1] > max(i, j):
+                            # Create color gradient based on order (training progression)
+                            n_points = len(best_points_array)
+                            if n_points > 1:
+                                # Create colormap from blue (early) to red (late)
+                                colors = plt.cm.coolwarm(np.linspace(0, 1, n_points))
+                                ax.scatter(best_points_array[:, i], best_points_array[:, j],
+                                         c=colors, alpha=0.6, s=4, 
+                                         label='All Solutions (Blue→Red: Training)')
+                            else:
+                                # Single point case
+                                ax.scatter(best_points_array[:, i], best_points_array[:, j],
+                                         c='lightblue', alpha=0.3, s=5, label='All Solutions')
+                    except:
+                        pass
+                
+                # Plot Pareto front
+                if pareto_front.size > 0:
+                    # Ensure 2D array
+                    if pareto_front.ndim == 1:
+                        pareto_front = pareto_front.reshape(1, -1)
+                    
+                    ax.scatter(pareto_front[:, i], pareto_front[:, j],
+                              c='red', s=20, alpha=0.8, label='Pareto Front',
+                              edgecolors='black', linewidths=0.5)
+                
+                # Set labels
+                ax.set_xlabel(reward_labels[i])
+                ax.set_ylabel(reward_labels[j])
+                
+                ax.grid(True, alpha=0.3)
+                if pair_idx == 0:  # Only show legend on first subplot
+                    ax.legend(fontsize=6)
+                
+                pair_idx += 1
+        
+        # Add overall title
+        self.pareto_rewards_fig.suptitle(f'Multi-Objective Pareto Front - Objective Rewards - Episode {episode}')
+    
     def _update_objective_labels_from_data(self, n_objectives: int):
         """Update objective labels based on data dimensions."""
         if self.optimisation_parameters and len(self.optimisation_parameters) == n_objectives:
@@ -1125,6 +1340,8 @@ class TrainingPlotManager:
                                   dpi=150, bbox_inches='tight')
             self.pareto_fig.savefig(os.path.join(self.output_dir, "pareto_plot.png"), 
                                   dpi=150, bbox_inches='tight')
+            self.pareto_rewards_fig.savefig(os.path.join(self.output_dir, "pareto_rewards_plot.png"), 
+                                           dpi=150, bbox_inches='tight')
             self.constraints_fig.savefig(os.path.join(self.output_dir, "constraints_plot.png"), 
                                         dpi=150, bbox_inches='tight')
             
@@ -1133,7 +1350,7 @@ class TrainingPlotManager:
     
     def get_figures(self):
         """Get matplotlib figures for UI display."""
-        return self.rewards_fig, self.values_fig, self.pareto_fig
+        return self.rewards_fig, self.values_fig, self.pareto_fig, self.pareto_rewards_fig
     
     def clear_data(self):
         """Clear all stored data."""

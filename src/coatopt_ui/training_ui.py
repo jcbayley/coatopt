@@ -443,12 +443,13 @@ class TrainingMonitorUI:
         
         try:
             # Get figures from plot manager
-            rewards_fig, values_fig, pareto_fig = self.plot_manager.get_figures()
+            rewards_fig, values_fig, pareto_fig, pareto_rewards_fig = self.plot_manager.get_figures()
             
             # Replace UI figure references with plot manager figures
             self.rewards_fig = rewards_fig
             self.values_fig = values_fig 
             self.pareto_fig = pareto_fig
+            self.pareto_rewards_fig = pareto_rewards_fig
             
             # Update canvases
             self.rewards_canvas.figure = rewards_fig
