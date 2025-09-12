@@ -24,7 +24,7 @@ from coatopt.algorithms.hppo.training.checkpoint_manager import TrainingCheckpoi
 from coatopt.algorithms.hppo.training.utils.weight_tracker import sample_reward_weights, WeightArchive
 from coatopt.algorithms.hppo.training.utils.preference_constrained_tracker import PreferenceConstrainedTracker
 from .context import TrainingContext
-from .utils.pareto_tracker import EfficientParetoTracker
+from .utils.pareto_tracker import ParetoTracker
 import traceback
 
 
@@ -207,7 +207,7 @@ class HPPOTrainer:
             )
         
         # Initialize Pareto tracker for the trainer (centralized)
-        self.pareto_tracker = EfficientParetoTracker(update_interval=5, max_pending=20)
+        self.pareto_tracker = ParetoTracker(update_interval=5, max_pending=20)
         
         # Register trackers with checkpoint manager
         self.checkpoint_manager.register_weight_archive(self.weight_archive)
