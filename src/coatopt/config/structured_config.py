@@ -111,6 +111,31 @@ class DataConfig(BaseConfig):
     use_optical_thickness: bool
     combine: str
     reward_function: str
+    
+    # Electric field configuration
+    include_electric_field: bool = False
+    electric_field_points: int = 50
+    
+    # Objective bounds for reward normalization and optimization constraints
+    objective_bounds: Dict[str, Dict[str, float]] = field(default_factory=dict)
+    
+    # Reward normalization parameters
+    use_reward_normalization: bool = False
+    reward_normalization_mode: str = "fixed"  # "fixed" or "adaptive"
+    reward_normalization_ranges: Dict[str, List[float]] = field(default_factory=dict)
+    reward_normalization_alpha: float = 0.1
+    
+    # Reward addon system configuration
+    apply_normalization: bool = False
+    apply_boundary_penalties: bool = False
+    apply_divergence_penalty: bool = False
+    apply_air_penalty: bool = False
+    apply_pareto_improvement: bool = False
+    apply_preference_constraints: bool = False
+    air_penalty_weight: float = 1.0
+    divergence_penalty_weight: float = 1.0
+    pareto_improvement_weight: float = 1.0
+    constraint_penalty_weight: float = 50.0
 
 
 @dataclass
@@ -130,6 +155,21 @@ class NetworkConfig(BaseConfig):
     continuous_hidden_size: int
     value_hidden_size: int
     buffer_size: int = 10000  # Default buffer size for replay memory
+    
+    # Mixture of Experts configuration
+    use_mixture_of_experts: bool = False
+    moe_n_experts: int = 5
+    moe_expert_specialization: str = "sobol_sequence"  # "sobol_sequence", "random", or "adaptive_constraints"
+    moe_gate_hidden_dim: int = 64
+    moe_gate_temperature: float = 1.0
+    moe_load_balancing_weight: float = 0.01
+    
+    # Adaptive constraints configuration (for moe_expert_specialization = "adaptive_constraints")
+    moe_constraint_experts_per_objective: int = 2  # Number of constraint experts per objective
+    moe_constraint_penalty_weight: float = 100.0  # Penalty weight for constraint violations
+    moe_phase1_episodes: int = 1000  # Episodes to train pure experts before switching to constraints
+
+    multi_value_rewards: bool = False  # Whether the environment provides multi-objective rewards
 
 
 @dataclass
@@ -139,8 +179,8 @@ class TrainingConfig(BaseConfig):
     lr_discrete_policy: float
     lr_continuous_policy: float
     lr_value: float
-    n_episodes_per_update: int
-    n_epochs_per_update: int
+    n_episodes_per_epoch: int
+    n_updates_per_epoch: int
     clip_ratio: float
     gamma: float
     batch_size: int
@@ -153,6 +193,7 @@ class TrainingConfig(BaseConfig):
     entropy_beta_end: float
     entropy_beta_decay_length: Optional[int]
     entropy_beta_decay_start: int
+    entropy_beta_use_restarts: bool
     
     # Learning rate scheduling
     scheduler_start: int
@@ -169,12 +210,27 @@ class TrainingConfig(BaseConfig):
     cycle_weights: bool
     n_weight_cycles: int
     weight_network_save: bool
+    transfer_fraction: float = 0.25
+
+    # Phase 3.2: Hypervolume-based training options
+    use_hypervolume_trainer: Optional[bool] = False
+    use_hypervolume_loss: Optional[bool] = False
+    hv_loss_weight: Optional[float] = 0.5
+    hv_update_interval: Optional[int] = 10
+    adaptive_reference_point: Optional[bool] = True
 
     # Separate entropy coefficients for discrete and continuous policies
     entropy_beta_discrete_start: Optional[float] = None
     entropy_beta_discrete_end: Optional[float] = None
     entropy_beta_continuous_start: Optional[float] = None
     entropy_beta_continuous_end: Optional[float] = None
+    
+    # Preference-constrained training parameters
+    pc_phase1_epochs_per_objective: int = 1000
+    pc_phase2_epochs_per_step: int = 300
+    pc_constraint_steps: int = 8
+    pc_constraint_penalty_weight: float = 50.0
+    pc_constraint_margin: float = 0.05
 
 @dataclass
 class GeneticConfig(BaseConfig):
@@ -209,11 +265,14 @@ class CoatingOptimisationConfig:
         
         # Define defaults for optional fields
         data_defaults = {
-            'reflectivity_reward_shape': 'none',
-            'absorption_reward_shape': 'none',
             'optimise_weight_ranges': {},
             'use_optical_thickness': True,
-            'combine': 'logproduct'
+            'combine': 'logproduct',
+            # Reward normalization defaults
+            'use_reward_normalization': False,
+            'reward_normalization_mode': 'fixed',
+            'reward_normalization_ranges': {},
+            'reward_normalization_alpha': 0.1
         }
         
         network_defaults = {
@@ -226,7 +285,13 @@ class CoatingOptimisationConfig:
         }
         
         training_defaults = {
-            'cycle_weights': False
+            'cycle_weights': False,
+            'transfer_fraction': 0.25,
+            'use_hypervolume_trainer': False,
+            'use_hypervolume_loss': False,
+            'hv_loss_weight': 0.5,
+            'hv_update_interval': 10,
+            'adaptive_reference_point': True
         }
         
         genetic_defaults = {

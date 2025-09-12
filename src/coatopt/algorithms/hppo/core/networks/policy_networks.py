@@ -114,6 +114,22 @@ class BaseNetwork(nn.Module):
         inputs = [state]
         
         if self.include_layer_number and layer_number is not None:
+            # Ensure layer_number has the right shape for concatenation with state
+            if layer_number.dim() == 1 and state.dim() == 2:
+                # If layer_number is 1D and state is 2D, expand layer_number
+                layer_number = layer_number.unsqueeze(-1)  # Shape: (B, 1)
+            elif layer_number.dim() == 0 and state.dim() == 2:
+                # If layer_number is scalar and state is 2D, expand to match batch
+                layer_number = layer_number.unsqueeze(0).unsqueeze(-1)  # Shape: (1, 1)
+                layer_number = layer_number.expand(state.size(0), -1)  # Shape: (B, 1)
+            elif layer_number.dim() == 1 and state.dim() == 1:
+                # Both 1D, expand both to 2D
+                layer_number = layer_number.unsqueeze(-1)  # Shape: (B, 1)
+                
+            # Ensure batch dimensions match
+            if layer_number.size(0) != state.size(0):
+                layer_number = layer_number.expand(state.size(0), -1)
+                
             inputs.append(layer_number)
         elif self.include_layer_number:
             raise ValueError("layer_number must be provided when include_layer_number=True")
@@ -322,10 +338,14 @@ class ValueNetwork(BaseNetwork):
         use_hyper_networks: bool = False,
         hyper_hidden_dim: int = 128,
         hyper_n_layers: int = 2,
+        multi_value_rewards: bool = False,
     ):
         # Define output structure
+        self.multi_value_rewards = multi_value_rewards
         output_dim = n_objectives if n_objectives > 1 else 1
         output_dims = {'value': output_dim}
+        if self.multi_value_rewards:
+            n_objectives=0 # Temporary fix for new model
         
         super().__init__(
             input_dim, output_dims, hidden_dim, n_layers, include_layer_number, False,  # No material
@@ -338,17 +358,21 @@ class ValueNetwork(BaseNetwork):
     
     def forward(self, state: torch.Tensor, layer_number: Optional[torch.Tensor] = None, 
                objective_weights: Optional[torch.Tensor] = None) -> torch.Tensor:
-        """Override to match expected signature and handle multi-objective weighting."""
+        """Override to match expected signature and return raw multi-objective values."""
         # Get the raw multi-objective values from parent
-        values = super().forward(state, layer_number, None, objective_weights)
-        
-        # If we have multiple objectives and objective weights, return weighted combination
-        if values.size(-1) > 1 and objective_weights is not None:
-            # Ensure objective_weights has the right shape for broadcasting
-            if objective_weights.size(-1) != values.size(-1):
-                raise ValueError(f"Objective weights dimension ({objective_weights.size(-1)}) "
-                               f"must match value output dimension ({values.size(-1)})")
-            # Return scalar weighted combination
-            return torch.sum(values * objective_weights, dim=-1, keepdim=True)
-        
+        if self.multi_value_rewards:
+            values = super().forward(state, layer_number, None, None)
+        else:
+            values = super().forward(state, layer_number, None, objective_weights)
+            if values.size(-1) > 1 and objective_weights is not None:
+                # Ensure objective_weights has the right shape for broadcasting
+                if objective_weights.size(-1) != values.size(-1):
+                    raise ValueError(f"Objective weights dimension ({objective_weights.size(-1)}) "
+                                f"must match value output dimension ({values.size(-1)})")
+                # Return scalar weighted combination
+                return torch.sum(values * objective_weights, dim=-1, keepdim=True)
+
+
+        # Always return the raw N-dimensional values
+        # Weighting will be handled in the agent during advantage computation
         return values

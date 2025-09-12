@@ -91,6 +91,19 @@ class PreNetworkLinear(torch.nn.Module):
     def forward(self, x, layer_number=None):
         x = x.flatten(1)
         if layer_number is not None:
+            # Ensure layer_number has the right shape for concatenation
+            if layer_number.dim() == 1:
+                # If layer_number is 1D, expand it to match batch dimension  
+                layer_number = layer_number.unsqueeze(-1)  # Shape: (B, 1)
+            elif layer_number.dim() == 0:
+                # If layer_number is scalar, expand to match batch
+                layer_number = layer_number.unsqueeze(0).unsqueeze(-1)  # Shape: (1, 1)
+                layer_number = layer_number.expand(x.size(0), -1)  # Shape: (B, 1)
+                
+            # Ensure batch dimensions match
+            if layer_number.size(0) != x.size(0):
+                layer_number = layer_number.expand(x.size(0), -1)
+                
             x = torch.cat([x, layer_number], dim=1)
         x = self.input(x)
         x = self.activation(x)
@@ -156,9 +169,19 @@ class PreNetworkLSTM(torch.nn.Module):
             out = lstm_out[:, -1, :]  # Take the output from the last layer (N)
         
         if self.include_layer_number and layer_number is not None:
-            # Expand layer number to match the (B, N) shape
-            layer_number = layer_number#.unsqueeze(-1)  # Shape: (B, N, 1)
-            #print(out.size(), layer_number.size())
+            # Ensure layer_number has the right shape for concatenation
+            if layer_number.dim() == 1:
+                # If layer_number is 1D, expand it to match batch dimension
+                layer_number = layer_number.unsqueeze(-1)  # Shape: (B, 1)
+            elif layer_number.dim() == 0:
+                # If layer_number is scalar, expand to (1, 1) for batch processing
+                layer_number = layer_number.unsqueeze(0).unsqueeze(-1)  # Shape: (1, 1)
+            
+            # Ensure layer_number batch size matches out batch size
+            if layer_number.size(0) != out.size(0):
+                layer_number = layer_number.expand(out.size(0), -1)
+            
+            #print(f"out.size(): {out.size()}, layer_number.size(): {layer_number.size()}")
             out = torch.cat([out, layer_number], dim=-1)  # Concatenate along the last dimension
 
         # Fully connected layers

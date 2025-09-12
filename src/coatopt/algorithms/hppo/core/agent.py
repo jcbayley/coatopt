@@ -1,7 +1,3 @@
-"""
-PC-HPPO (Proximal Constrained Hierarchical Proximal Policy optimisation) Agent.
-Refactored from pc_hppo_oml.py for improved readability and maintainability.
-"""
 from typing import Union, Optional, Tuple, List
 import numpy as np
 import torch
@@ -14,9 +10,10 @@ from coatopt.algorithms.hppo.core.networks.pre_networks import PreNetworkLinear,
 from coatopt.algorithms.hppo.core.replay_buffer import ReplayBuffer
 from coatopt.algorithms.config import HPPOConstants
 from coatopt.algorithms.action_utils import (
-    prepare_state_input, prepare_layer_number, create_material_mask,
+    prepare_layer_number, create_material_mask_from_coating_state,
     pack_state_sequence, validate_probabilities, format_action_output
 )
+from coatopt.environments.core.state import CoatingState
 
 
 class PCHPPO:
@@ -71,8 +68,17 @@ class PCHPPO:
         entropy_beta_discrete_end: Optional[float] = None,
         entropy_beta_continuous_start: Optional[float] = None,
         entropy_beta_continuous_end: Optional[float] = None,
+        entropy_beta_use_restarts: bool = False,
         hyper_networks: bool = False,
-        buffer_size: int = 10000
+        buffer_size: int = 10000,
+        batch_size: int = 64,
+        use_mixture_of_experts: bool = False,
+        moe_n_experts: int = 5,
+        moe_expert_specialization: str = "weight_regions",
+        moe_gate_hidden_dim: int = 64,
+        moe_gate_temperature: float = 0.5,
+        moe_load_balancing_weight: float = 0.01,
+        multi_value_rewards: bool = False
     ):
         """
         Initialize PC-HPPO agent.
@@ -120,10 +126,25 @@ class PCHPPO:
             entropy_beta_discrete_end: Final entropy coefficient for discrete policy (optional)
             entropy_beta_continuous_start: Initial entropy coefficient for continuous policy (optional)
             entropy_beta_continuous_end: Final entropy coefficient for continuous policy (optional)
+            entropy_beta_use_restarts: Whether to use warm restarts for entropy beta decay (like LR scheduler)
             hyper_networks: Whether to use hypernetworks
+            buffer_size: Maximum size of replay buffer
+            batch_size: Mini-batch size for policy updates
+            use_mixture_of_experts: Whether to use Mixture of Experts networks
+            moe_n_experts: Number of expert networks in MoE
+            moe_expert_specialization: How experts specialize ('weight_regions' or 'random')
+            moe_gate_hidden_dim: Hidden dimension for MoE gating network
+            moe_gate_temperature: Temperature for MoE gating softmax
+            moe_load_balancing_weight: Weight for MoE load balancing loss
         """
         # Import network classes - now using unified policy networks
         from coatopt.algorithms.hppo.core.networks.policy_networks import DiscretePolicy, ContinuousPolicy, ValueNetwork 
+        
+        # Import MoE networks if needed
+        if use_mixture_of_experts:
+            from coatopt.algorithms.hppo.core.networks.mixture_of_experts import (
+                MoEDiscretePolicy, MoEContinuousPolicy, MoEValueNetwork
+            ) 
 
         # Store configuration
         self.upper_bound = upper_bound
@@ -139,16 +160,27 @@ class PCHPPO:
         self.entropy_beta_decay_start = entropy_beta_decay_start
         self.entropy_beta_decay_length = entropy_beta_decay_length
         self.hyper_networks = hyper_networks
+        self.multi_value_rewards = multi_value_rewards
+        
+        # MoE configuration
+        self.use_mixture_of_experts = use_mixture_of_experts
+        self.moe_n_experts = moe_n_experts
+        self.moe_expert_specialization = moe_expert_specialization
+        self.moe_gate_hidden_dim = moe_gate_hidden_dim
+        self.moe_gate_temperature = moe_gate_temperature
+        self.moe_load_balancing_weight = moe_load_balancing_weight
         
         # Set separate entropy coefficients for discrete and continuous policies
         self.entropy_beta_discrete_start = entropy_beta_discrete_start if entropy_beta_discrete_start is not None else entropy_beta_start
         self.entropy_beta_discrete_end = entropy_beta_discrete_end if entropy_beta_discrete_end is not None else entropy_beta_end
         self.entropy_beta_continuous_start = entropy_beta_continuous_start if entropy_beta_continuous_start is not None else entropy_beta_start
         self.entropy_beta_continuous_end = entropy_beta_continuous_end if entropy_beta_continuous_end is not None else entropy_beta_end
+        self.entropy_beta_use_restarts = entropy_beta_use_restarts
         
         self.pre_type = pre_type
         self.n_updates = n_updates
         self.buffer_size = buffer_size
+        self.batch_size = batch_size
         
         # Initialize current entropy coefficients
         self.beta_discrete = self.entropy_beta_discrete_start
@@ -161,13 +193,22 @@ class PCHPPO:
         )
 
         # Initialize policy and value networks (current and old versions)
-        self._create_networks(
-            DiscretePolicy, ContinuousPolicy, ValueNetwork,
-            num_discrete, num_cont, discrete_hidden_size, continuous_hidden_size,
-            value_hidden_size, n_discrete_layers, n_continuous_layers, n_value_layers,
-            lower_bound, upper_bound, include_layer_number, activation_function,
-            include_material_in_policy
-        )
+        if use_mixture_of_experts:
+            self._create_moe_networks(
+                MoEDiscretePolicy, MoEContinuousPolicy, MoEValueNetwork,
+                num_discrete, num_cont, discrete_hidden_size, continuous_hidden_size,
+                value_hidden_size, n_discrete_layers, n_continuous_layers, n_value_layers,
+                lower_bound, upper_bound, include_layer_number, activation_function,
+                include_material_in_policy
+            )
+        else:
+            self._create_networks(
+                DiscretePolicy, ContinuousPolicy, ValueNetwork,
+                num_discrete, num_cont, discrete_hidden_size, continuous_hidden_size,
+                value_hidden_size, n_discrete_layers, n_continuous_layers, n_value_layers,
+                lower_bound, upper_bound, include_layer_number, activation_function,
+                include_material_in_policy
+            )
 
         # Initialize optimizers and schedulers
         self._setup_optimizers(optimiser, lr_discrete_policy, lr_continuous_policy, lr_value)
@@ -179,11 +220,6 @@ class PCHPPO:
         self.beta = beta
         self.clip_ratio = clip_ratio
         self.gamma = gamma
-        
-        # Cache for expensive computations
-        self._material_mask_cache = {}
-        self._cache_hits = 0
-        self._cache_misses = 0
 
     def _create_pre_network(self, state_dim, hidden_size, pre_type, n_heads, n_pre_layers, num_objectives):
         """Create pre-network based on specified type."""
@@ -243,6 +279,61 @@ class PCHPPO:
         self.policy_continuous_old.load_state_dict(self.policy_continuous.state_dict())
         self.value_old.load_state_dict(self.value.state_dict())
 
+    def _create_moe_networks(self, MoEDiscretePolicy, MoEContinuousPolicy, MoEValueNetwork,
+                            num_discrete, num_cont, discrete_hidden_size, continuous_hidden_size,
+                            value_hidden_size, n_discrete_layers, n_continuous_layers, n_value_layers,
+                            lower_bound, upper_bound, include_layer_number, activation_function,
+                            include_material_in_policy):
+        """Create Mixture of Experts policy networks with shared value network (current and old versions).
+        
+        Note: Uses a single shared ValueNetwork instead of MoEValueNetwork for simplified value estimation.
+        The policy networks remain as MoE (multiple experts), but the value network is shared across all experts.
+        """
+        # Import standard ValueNetwork for shared value network
+        from coatopt.algorithms.hppo.core.networks.policy_networks import ValueNetwork
+        
+        for i in range(2):
+            suffix = "" if i == 0 else "_old"
+            
+            # MoE Discrete policy network
+            setattr(self, f"policy_discrete{suffix}", MoEDiscretePolicy(
+                self.pre_output_dim, num_discrete, discrete_hidden_size,
+                n_layers=n_discrete_layers, lower_bound=lower_bound, upper_bound=upper_bound,
+                include_layer_number=include_layer_number, activation=activation_function,
+                n_objectives=self.num_objectives, n_experts=self.moe_n_experts,
+                expert_specialization=self.moe_expert_specialization,
+                gate_hidden_dim=self.moe_gate_hidden_dim,
+                gate_temperature=self.moe_gate_temperature,
+                load_balancing_weight=self.moe_load_balancing_weight,
+                use_hyper_networks=self.hyper_networks
+            ))
+            
+            # MoE Continuous policy network
+            setattr(self, f"policy_continuous{suffix}", MoEContinuousPolicy(
+                self.pre_output_dim, num_cont, continuous_hidden_size,
+                n_layers=n_continuous_layers, lower_bound=lower_bound, upper_bound=upper_bound,
+                include_layer_number=include_layer_number, include_material=include_material_in_policy,
+                activation=activation_function, n_objectives=self.num_objectives,
+                n_experts=self.moe_n_experts, expert_specialization=self.moe_expert_specialization,
+                gate_hidden_dim=self.moe_gate_hidden_dim,
+                gate_temperature=self.moe_gate_temperature,
+                load_balancing_weight=self.moe_load_balancing_weight,
+                use_hyper_networks=self.hyper_networks
+            ))
+            
+            # Shared Value network (standard ValueNetwork, not MoE)
+            setattr(self, f"value{suffix}", ValueNetwork(
+                self.pre_output_dim, value_hidden_size, n_layers=n_value_layers,
+                include_layer_number=include_layer_number, activation=activation_function,
+                n_objectives=self.num_objectives, use_hyper_networks=self.hyper_networks, 
+                multi_value_rewards=self.multi_value_rewards
+            ))
+
+        # Copy parameters to old networks
+        self.policy_discrete_old.load_state_dict(self.policy_discrete.state_dict())
+        self.policy_continuous_old.load_state_dict(self.policy_continuous.state_dict())
+        self.value_old.load_state_dict(self.value.state_dict())
+
     def _setup_optimizers(self, optimiser, lr_discrete_policy, lr_continuous_policy, lr_value):
         """Setup optimizers for networks."""
         self.lr_value = lr_value
@@ -287,30 +378,42 @@ class PCHPPO:
             self.optimiser_value, T_0=lr_step_value, T_mult=T_mult_value, eta_min=lr_min
         )
 
-    def get_returns(self, rewards: List[float]) -> np.ndarray:
+    def get_returns(self, rewards: List[float], multiobjective_rewards: List[List[float]] = None) -> np.ndarray:
         """
         Calculate discounted returns from rewards.
         
         Args:
-            rewards: List of rewards
+            rewards: List of scalar rewards (for backward compatibility)
+            multiobjective_rewards: List of multi-objective reward vectors
             
         Returns:
-            Array of discounted returns
+            Array of discounted returns (scalar or multi-objective)
         """
-        temp_r = deque()
-        R = 0
-        for r in rewards[::-1]:
-            R = r + self.gamma * R
-            temp_r.appendleft(R)
-        return np.array(temp_r)
+        if multiobjective_rewards is not None:
+            # Multi-objective returns computation
+            temp_r = deque()
+            R = np.zeros(len(multiobjective_rewards[0]))  # Initialize with correct dimensions
+            for r in multiobjective_rewards[::-1]:
+                R = np.array(r) + self.gamma * R
+                temp_r.appendleft(R.copy())
+            return np.array(temp_r)
+        else:
+            # Original scalar returns computation
+            temp_r = deque()
+            R = 0
+            for r in rewards[::-1]:
+                R = r + self.gamma * R
+                temp_r.appendleft(R)
+            return np.array(temp_r)
 
-    def scheduler_step(self, step: int = 0, make_step: bool = True) -> Tuple[List[float], List[float], List[float], float, float]:
+    def scheduler_step(self, step: int = 0, make_step: bool = True, scheduler_active: bool = True) -> Tuple[List[float], List[float], List[float], float, float]:
         """
         Step learning rate schedulers and calculate entropy coefficients.
         
         Args:
             step: Current step number
             make_step: Whether to actually step the schedulers
+            scheduler_active: Whether scheduler should be active (respects scheduler_start/end bounds)
             
         Returns:
             Tuple of (discrete_lr, continuous_lr, value_lr, discrete_entropy_coeff, continuous_entropy_coeff)
@@ -320,20 +423,42 @@ class PCHPPO:
             self.scheduler_continuous.step(step)
             self.scheduler_value.step(step)
 
-        # Calculate entropy coefficients using cosine annealing
+        # Calculate entropy coefficients using cosine annealing with optional warm restarts
         def calculate_entropy_coefficient(start_val, end_val):
-            if step < self.entropy_beta_decay_start:
-                # Before decay starts, use start value
-                return start_val
-            elif step >= self.entropy_beta_decay_start + self.entropy_beta_decay_length:
-                # After decay ends, use end value
+            # If scheduler not active, use end value (stay at minimum)
+            if not scheduler_active:
                 return end_val
-            else:
-                # During decay period, use cosine annealing
-                progress = (step - self.entropy_beta_decay_start) / self.entropy_beta_decay_length
+            # If before decay starts, use start value
+            elif step < self.entropy_beta_decay_start:
+                return start_val
+            elif self.entropy_beta_use_restarts and hasattr(self, 'lr_step'):
+                # Use warm restarts similar to learning rate scheduler
+                # Calculate progress within current cycle
+                adjusted_step = step - self.entropy_beta_decay_start
+                cycle_length = self.lr_step  # Use same cycle length as LR scheduler
+                
+                # Find which cycle we're in and position within that cycle
+                cycle_position = adjusted_step % cycle_length
+                progress = cycle_position / cycle_length
+                
+                # Cosine annealing within current cycle
                 return end_val + (start_val - end_val) * (
                     1 + np.cos(np.pi * progress)
                 ) / 2
+            else:
+                # Original single-decay behavior
+                if self.entropy_beta_decay_length is None:
+                    # If no decay length specified, use end value
+                    return end_val
+                elif step >= self.entropy_beta_decay_start + self.entropy_beta_decay_length:
+                    # After decay ends, use end value
+                    return end_val
+                else:
+                    # During decay period, use cosine annealing
+                    progress = (step - self.entropy_beta_decay_start) / self.entropy_beta_decay_length
+                    return end_val + (start_val - end_val) * (
+                        1 + np.cos(np.pi * progress)
+                    ) / 2
         
         discrete_entropy_val = calculate_entropy_coefficient(
             self.entropy_beta_discrete_start, self.entropy_beta_discrete_end
@@ -361,9 +486,10 @@ class PCHPPO:
         actionc: Optional[torch.Tensor] = None,
         actiond: Optional[torch.Tensor] = None,
         packed: bool = False,
-        objective_weights: Optional[torch.Tensor] = None
+        objective_weights: Optional[torch.Tensor] = None,
+        original_states: Optional[List] = None  # Original CoatingState objects for constraints
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, 
-               torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+               torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, dict]:
         """
         Select action based on current state and layer number.
         
@@ -376,18 +502,45 @@ class PCHPPO:
             objective_weights: Multi-objective optimisation weights
             
         Returns:
-            Tuple containing action components, probabilities, and values
+            Tuple containing action components, probabilities, values, and MoE auxiliary losses
         """
-        # Prepare inputs
-        state_tensor = prepare_state_input(state, self.pre_type)
+        # Prepare inputs - keep original state for constraints, get observation for networks
+        original_state = state  # Keep reference to original CoatingState
+        
+        # Get observation tensor for networks - handles all formatting including pre_type
+        if hasattr(state, 'get_observation_tensor'):
+            # CoatingState - use its comprehensive observation method with pre_type formatting
+            obs_tensor = state.get_observation_tensor(pre_type=self.pre_type)
+            # Add batch dimension if missing
+            if obs_tensor.dim() == 1:  # [features] -> [1, features] 
+                obs_tensor = obs_tensor.unsqueeze(0)
+            elif obs_tensor.dim() == 2 and self.pre_type != "linear":  # [layers, features] -> [1, layers, features]
+                obs_tensor = obs_tensor.unsqueeze(0)
+        else:
+            # Fallback for raw tensors (shouldn't happen with current flow but just in case)
+            obs_tensor = state
+            if self.pre_type == "linear" and obs_tensor.dim() > 1:
+                obs_tensor = obs_tensor.flatten(1)
+                
         layer_number, layer_numbers_validated = prepare_layer_number(layer_number)
+        
+        # Ensure objective_weights is properly formatted as float tensor
+        if objective_weights is not None:
+            if not isinstance(objective_weights, torch.Tensor):
+                objective_weights = torch.FloatTensor(objective_weights)
+            else:
+                objective_weights = objective_weights.float()  # Ensure float dtype
+            
+            # Ensure correct batch dimension
+            if objective_weights.dim() == 1:
+                objective_weights = objective_weights.unsqueeze(0)
         
         # Pack state sequence only for LSTM processing
         if self.pre_type == "lstm":
-            state_input = pack_state_sequence(state_tensor, layer_numbers_validated)
+            state_input = pack_state_sequence(obs_tensor, layer_numbers_validated)
             use_packed = True
         else:
-            state_input = state_tensor
+            state_input = obs_tensor
             use_packed = False
         
         # Get pre-network outputs (optimized based on gradient needs)
@@ -397,13 +550,25 @@ class PCHPPO:
         )
         
         # Get discrete action probabilities
-        discrete_probs = self.policy_discrete(pre_output_d, layer_number, objective_weights=objective_weights)
+        if self.use_mixture_of_experts:
+            discrete_probs, discrete_aux = self.policy_discrete(pre_output_d, objective_weights, layer_number)
+        else:
+            discrete_probs = self.policy_discrete(pre_output_d, layer_number, objective_weights=objective_weights)
+            discrete_aux = None
+            
         validate_probabilities(discrete_probs, "discrete_probs")
         
-        # Apply material constraints
-        masked_discrete_probs = self._apply_material_constraints(
-            discrete_probs, state_tensor, layer_number
-        )
+        # Apply material constraints 
+        if original_states is not None:
+            # Batch case: we have a list of original CoatingState objects
+            masked_discrete_probs = self._apply_material_constraints_batch(
+                discrete_probs, original_states, layer_number
+            )
+        else:
+            # Single state case: use original_state (which is a CoatingState)
+            masked_discrete_probs = self._apply_material_constraints(
+                discrete_probs, original_state, layer_number
+            )
         
         # Sample discrete action
         discrete_dist = torch.distributions.Categorical(masked_discrete_probs)
@@ -411,9 +576,15 @@ class PCHPPO:
             actiond = discrete_dist.sample()
         
         # Get continuous action parameters and sample
-        continuous_means, continuous_log_std = self.policy_continuous(
-            pre_output_c, layer_number, actiond.unsqueeze(1), objective_weights=objective_weights
-        )
+        if self.use_mixture_of_experts:
+            continuous_means, continuous_log_std, continuous_aux = self.policy_continuous(
+                pre_output_c, objective_weights, layer_number, actiond.unsqueeze(1)
+            )
+        else:
+            continuous_means, continuous_log_std = self.policy_continuous(
+                pre_output_c, layer_number, actiond.unsqueeze(1), objective_weights=objective_weights
+            )
+            continuous_aux = None
         
         continuous_std = torch.exp(continuous_log_std)
         
@@ -432,21 +603,45 @@ class PCHPPO:
         entropy_discrete = discrete_dist.entropy()
         entropy_continuous = torch.sum(continuous_dist._entropy, dim=-1)
         
-        # Get state value
-        state_value = self.value(pre_output_v, layer_number, objective_weights=objective_weights)
+        # Get state value (now always returns raw multi-objective values)
+        if self.use_mixture_of_experts:
+            # With shared value network, we get raw N-dimensional values (no weighting in network)
+            state_value = self.value(pre_output_v, layer_number, objective_weights=objective_weights)
+            value_aux = None  # No auxiliary info from shared value network
+        else:
+            state_value = self.value(pre_output_v, layer_number, objective_weights=objective_weights)
+            value_aux = None
         
         # Format output action
         action = format_action_output(actiond, actionc)
         
+        # Collect auxiliary losses from MoE networks
+        moe_aux_losses = {}
+        if self.use_mixture_of_experts:
+            if discrete_aux is not None:
+                moe_aux_losses['discrete_specialization_loss'] = discrete_aux['specialization_loss']
+                moe_aux_losses['discrete_load_balance_loss'] = discrete_aux['load_balance_loss']
+                moe_aux_losses['discrete_total_aux_loss'] = discrete_aux['total_aux_loss']
+                
+            if continuous_aux is not None:
+                moe_aux_losses['continuous_specialization_loss'] = continuous_aux['specialization_loss']
+                moe_aux_losses['continuous_load_balance_loss'] = continuous_aux['load_balance_loss']
+                moe_aux_losses['continuous_total_aux_loss'] = continuous_aux['total_aux_loss']
+                
+            if value_aux is not None:
+                moe_aux_losses['value_specialization_loss'] = value_aux['specialization_loss']
+                moe_aux_losses['value_load_balance_loss'] = value_aux['load_balance_loss']
+                moe_aux_losses['value_total_aux_loss'] = value_aux['total_aux_loss']
+        
         return (
             action, actiond, actionc, log_prob_discrete, log_prob_continuous,
             discrete_probs, continuous_means, continuous_std, state_value,
-            entropy_discrete, entropy_continuous
+            entropy_discrete, entropy_continuous, moe_aux_losses
         )
 
     def _get_pre_network_outputs(self, state_input, layer_number, objective_weights, needs_gradients=True, packed=False):
         """
-        Get pre-network outputs for different network heads.
+        Get pre-network outputs for different network heads with optimized caching.
         
         Args:
             state_input: State input (packed sequence for LSTM, regular tensor for others)
@@ -458,8 +653,22 @@ class PCHPPO:
         Returns:
             Tuple of (discrete_output, continuous_output, value_output)
         """
-        if needs_gradients:
-            # During training: separate forward passes for gradient computation
+        # Optimization: Use single forward pass during inference
+        if not needs_gradients:
+            # During inference: single forward pass with no_grad for efficiency
+            with torch.no_grad():
+                if self.pre_type == "lstm":
+                    pre_output = self.pre_network(state_input, layer_number, packed=packed, weights=objective_weights)
+                else:
+                    # For non-LSTM networks, don't pass packed or weights parameters
+                    pre_output = self.pre_network(state_input, layer_number)
+                
+                # Return detached copies for each head
+                pre_output_detached = pre_output.detach()
+                return pre_output_detached, pre_output_detached, pre_output_detached
+        else:
+            # During training: separate forward passes required for gradient computation
+            # Note: Cannot optimize this due to computational graph constraints
             if self.pre_type == "lstm":
                 pre_output_d = self.pre_network(state_input, layer_number, packed=packed, weights=objective_weights)
                 pre_output_c = self.pre_network(state_input, layer_number, packed=packed, weights=objective_weights)
@@ -470,83 +679,67 @@ class PCHPPO:
                 pre_output_c = self.pre_network(state_input, layer_number)
                 pre_output_v = self.pre_network(state_input, layer_number)
             return pre_output_d, pre_output_c, pre_output_v
-        else:
-            # During inference: single forward pass, detach for efficiency
-            with torch.no_grad():
-                if self.pre_type == "lstm":
-                    pre_output = self.pre_network(state_input, layer_number, packed=packed, weights=objective_weights)
-                else:
-                    # For non-LSTM networks, don't pass packed or weights parameters
-                    pre_output = self.pre_network(state_input, layer_number)
-                return pre_output.detach(), pre_output.detach(), pre_output.detach()
 
-    def _apply_material_constraints(self, discrete_probs, state_tensor, layer_number):
-        """Apply material selection constraints with caching for better performance."""
+    def _apply_material_constraints(self, discrete_probs, coating_state, layer_number):
+        """Apply material selection constraints using CoatingState."""
         if layer_number is None:
             return discrete_probs
-            
-        # Try to use cached mask for common layer configurations
-        cache_key = self._get_material_mask_cache_key(state_tensor, layer_number)
         
-        if cache_key in self._material_mask_cache:
-            cached_mask = self._material_mask_cache[cache_key]
-            # Verify cached mask has same shape as current discrete_probs
-            if cached_mask.shape == discrete_probs.shape:
-                self._cache_hits += 1
-                return discrete_probs * cached_mask
-            else:
-                # Remove invalid cached entry
-                del self._material_mask_cache[cache_key]
-        
-        # If no valid cache entry, compute mask
-        if cache_key not in self._material_mask_cache:
-            self._cache_misses += 1
-        masked_probs = create_material_mask(
-            discrete_probs, state_tensor, layer_number,
-            self.substrate_material_index, self.air_material_index,
+        # Use CoatingState-specific material mask function
+        masked_probs = create_material_mask_from_coating_state(
+            discrete_probs, coating_state, layer_number,
             self.ignore_air_option, self.ignore_substrate_option
         )
         
-        # Cache the mask for future use (limit cache size to prevent memory growth)
-        if cache_key is not None and len(self._material_mask_cache) < 1000:
-            mask = masked_probs / (discrete_probs + 1e-8)  # Extract mask
-            self._material_mask_cache[cache_key] = mask.detach()
-        
         return masked_probs
 
-    def _get_material_mask_cache_key(self, state_tensor, layer_number):
-        """Create cache key for material mask based on previous materials used."""
-        if isinstance(layer_number, torch.Tensor):
-            layer_num = layer_number.item() if layer_number.numel() == 1 else tuple(layer_number.cpu().numpy())
-        else:
-            layer_num = layer_number
+    def _apply_material_constraints_batch(self, discrete_probs, coating_states, layer_numbers):
+        """Apply material selection constraints for batch of CoatingState objects."""
+        if layer_numbers is None or len(coating_states) == 0:
+            return discrete_probs
+        
+        batch_size = discrete_probs.shape[0]
+        masked_probs_list = []
+        
+        for i in range(batch_size):
+            # Get the corresponding state and layer number for this batch item
+            state_i = coating_states[i] if i < len(coating_states) else coating_states[0]
+            layer_num_i = layer_numbers[i:i+1] if isinstance(layer_numbers, torch.Tensor) else layer_numbers
+            discrete_prob_i = discrete_probs[i:i+1]
             
-        # Create key based on layer number and previous material (simplified for common cases)
-        if hasattr(layer_num, '__iter__'):
-            # Batch case - don't cache for now to keep it simple
-            return None
-        else:
-            # Single layer case
-            if layer_num > 0 and layer_num < state_tensor.size(1):
-                prev_material = torch.argmax(state_tensor[0, layer_num - 1, 1:]).item()
-                return (layer_num, prev_material)
-            else:
-                return (layer_num, self.substrate_material_index)
+            # Apply constraints for this individual item
+            masked_prob_i = create_material_mask_from_coating_state(
+                discrete_prob_i, state_i, layer_num_i,
+                self.ignore_air_option, self.ignore_substrate_option
+            )
+            masked_probs_list.append(masked_prob_i)
+        
+        # Concatenate all masked probabilities
+        return torch.cat(masked_probs_list, dim=0)
 
-    def get_cache_stats(self):
-        """Get cache performance statistics."""
-        total_requests = self._cache_hits + self._cache_misses
-        hit_rate = self._cache_hits / total_requests if total_requests > 0 else 0
-        return {
-            'cache_hits': self._cache_hits,
-            'cache_misses': self._cache_misses,
-            'hit_rate': hit_rate,
-            'cache_size': len(self._material_mask_cache)
-        }
+    def _create_mini_batches(self, total_size: int) -> List[slice]:
+        """
+        Create mini-batch indices for processing replay buffer data.
+        
+        Args:
+            total_size: Total number of samples in replay buffer
+            
+        Returns:
+            List of slice objects for mini-batches
+        """
+        indices = torch.randperm(total_size)  # Shuffle indices for better training
+        mini_batches = []
+        
+        for start_idx in range(0, total_size, self.batch_size):
+            end_idx = min(start_idx + self.batch_size, total_size)
+            batch_indices = indices[start_idx:end_idx]
+            mini_batches.append(batch_indices)
+        
+        return mini_batches
 
     def update(self, update_policy: bool = True, update_value: bool = True) -> Tuple[float, float, float]:
         """
-        Update policy and value networks using PPO algorithm.
+        Update policy and value networks using PPO algorithm with mini-batches.
         
         Args:
             update_policy: Whether to update policy networks
@@ -559,9 +752,18 @@ class PCHPPO:
             return 0.0, 0.0, 0.0
 
         # Prepare training data
-        returns = torch.from_numpy(np.array(self.replay_buffer.returns))
-        returns = (returns - returns.mean()) / (returns.std() + HPPOConstants.EPSILON)
-
+        returns_array = np.array(self.replay_buffer.returns)
+        returns = torch.from_numpy(returns_array)
+        
+        # Handle normalization for both scalar and multi-objective returns
+        if returns.dim() > 1 and self.multi_value_rewards:  # Multi-objective returns
+            # Normalize each objective separately
+            mean_returns = returns.mean(dim=0, keepdim=True)
+            std_returns = returns.std(dim=0, keepdim=True) + HPPOConstants.EPSILON
+            returns = (returns - mean_returns) / std_returns
+        else:  # Scalar returns
+            returns = (returns - returns.mean()) / (returns.std() + HPPOConstants.EPSILON)
+        
         state_vals = torch.cat(list(self.replay_buffer.state_values)).to(torch.float32)
         old_lprobs_discrete = torch.cat(list(self.replay_buffer.logprobs_discrete)).to(torch.float32).detach()
         old_lprobs_continuous = torch.cat(list(self.replay_buffer.logprobs_continuous)).to(torch.float32).detach()
@@ -570,40 +772,140 @@ class PCHPPO:
         actionsc = torch.cat(list(self.replay_buffer.continuous_actions), dim=0).detach()
         actionsd = torch.cat(list(self.replay_buffer.discrete_actions), dim=-1).detach()
 
+        # Prepare states and layer numbers (full batch for creating mini-batches)
+        raw_states = list(self.replay_buffer.states)
+        
+        # Use pre-computed observations from replay buffer - much more efficient
+        if len(self.replay_buffer.observations) > 0:
+            states = torch.cat(list(self.replay_buffer.observations), dim=0).to(torch.float32)
+        else:
+            states = torch.empty(0, 0, 0).to(torch.float32)
+            
+        layer_numbers = (
+            torch.tensor(list(self.replay_buffer.layer_number)).to(torch.float32)
+            if self.include_layer_number else False
+        )
+
+        # Get total buffer size and create mini-batches
+        total_size = len(self.replay_buffer)
+        mini_batch_indices = self._create_mini_batches(total_size)
+
+        # Accumulate losses across mini-batches
+        total_discrete_loss = 0.0
+        total_continuous_loss = 0.0
+        total_value_loss = 0.0
+        num_batches = len(mini_batch_indices)
+
         # Perform multiple update epochs
-        for _ in range(self.n_updates):
-            # Prepare states and layer numbers
-            states = torch.tensor(np.array(list(self.replay_buffer.states))).to(torch.float32)
-            layer_numbers = (
-                torch.tensor(list(self.replay_buffer.layer_number)).to(torch.float32)
-                if self.include_layer_number else False
-            )
-
-            # Get current policy outputs
-            _, _, _, log_prob_discrete, log_prob_continuous, _, _, _, state_value, entropy_discrete, entropy_continuous = self.select_action(
-                states, layer_numbers, actionsc, actionsd, packed=True, objective_weights=objective_weights
-            )
-
-            # Calculate advantages
-            advantage = returns.detach() - state_value.detach()
-
-            # Calculate policy losses
-            discrete_policy_loss = self._calculate_discrete_policy_loss(
-                log_prob_discrete, old_lprobs_discrete, advantage, entropy_discrete, self.beta_discrete
-            )
-            continuous_policy_loss = self._calculate_continuous_policy_loss(
-                log_prob_continuous, old_lprobs_continuous, advantage, entropy_continuous, self.beta_continuous
-            )
-            value_loss = self.mse_loss(returns.to(torch.float32).squeeze(), state_value.squeeze())
-
-            # Update networks
-            if update_policy:
-                self._update_discrete_policy(discrete_policy_loss)
+        for epoch_idx in range(self.n_updates):
+            epoch_discrete_loss = 0.0
+            epoch_continuous_loss = 0.0
+            epoch_value_loss = 0.0
             
-            self._update_continuous_policy(continuous_policy_loss)
-            
-            if update_value:
-                self._update_value_network(value_loss)
+            # Process each mini-batch
+            for batch_idx, batch_indices in enumerate(mini_batch_indices):
+                # Extract mini-batch data
+                batch_returns = returns[batch_indices]
+                batch_state_vals = state_vals[batch_indices]
+                batch_old_lprobs_discrete = old_lprobs_discrete[batch_indices]
+                batch_old_lprobs_continuous = old_lprobs_continuous[batch_indices]
+                batch_objective_weights = objective_weights[batch_indices]
+                batch_actionsc = actionsc[batch_indices]
+                batch_actionsd = actionsd[batch_indices]
+                batch_states = states[batch_indices]
+                batch_raw_states = [raw_states[i] for i in batch_indices]
+                
+                batch_layer_numbers = (
+                    layer_numbers[batch_indices] if self.include_layer_number else False
+                )
+
+                # Get current policy outputs for this mini-batch
+                (_, _, _, log_prob_discrete, log_prob_continuous, _, _, _, state_value, 
+                 entropy_discrete, entropy_continuous, moe_aux_losses) = self.select_action(
+                    batch_states, batch_layer_numbers, batch_actionsc, batch_actionsd, packed=True, 
+                    objective_weights=batch_objective_weights, original_states=batch_raw_states
+                )
+
+                # Calculate advantages for this mini-batch
+                if batch_returns.ndim > 1 and self.multi_value_rewards:  # Multi-objective returns
+                    # Compute multi-objective advantages
+                    multiobjective_advantages = batch_returns.detach() - state_value.detach()
+                    
+                    # Weight the advantages using objective weights
+                    if batch_objective_weights is not None:
+                        # Ensure objective_weights has the right shape for broadcasting
+                        if batch_objective_weights.size(-1) != multiobjective_advantages.size(-1):
+                            raise ValueError(f"Objective weights dimension ({batch_objective_weights.size(-1)}) "
+                                           f"must match advantage dimension ({multiobjective_advantages.size(-1)})")
+                        # Compute weighted scalar advantage
+                        advantage = torch.sum(multiobjective_advantages * batch_objective_weights, dim=-1, keepdim=True)
+                        
+                        # Also compute weighted returns for value loss
+                        weighted_returns = torch.sum(batch_returns * batch_objective_weights, dim=-1, keepdim=True)
+                        weighted_state_value = torch.sum(state_value * batch_objective_weights, dim=-1, keepdim=True)
+                    else:
+                        # Fallback: use mean of advantages if no weights provided
+                        print("Warning: No objective weights provided for multi-objective advantages. Using mean advantage.")
+                        advantage = torch.mean(multiobjective_advantages, dim=-1, keepdim=True)
+                        weighted_returns = torch.mean(batch_returns, dim=-1, keepdim=True)
+                        weighted_state_value = torch.mean(state_value, dim=-1, keepdim=True)
+                else:
+                    # Original scalar advantage computation
+                    advantage = batch_returns.detach() - state_value.detach().squeeze(1)
+                    weighted_returns = batch_returns
+                    weighted_state_value = state_value
+
+                # Calculate policy losses (including MoE auxiliary losses)
+                discrete_policy_loss = self._calculate_discrete_policy_loss(
+                    log_prob_discrete, batch_old_lprobs_discrete, advantage, entropy_discrete, self.beta_discrete
+                )
+                
+                # Add MoE auxiliary losses to discrete policy loss
+                if self.use_mixture_of_experts and 'discrete_total_aux_loss' in moe_aux_losses:
+                    discrete_policy_loss += moe_aux_losses['discrete_total_aux_loss']
+                
+                continuous_policy_loss = self._calculate_continuous_policy_loss(
+                    log_prob_continuous, batch_old_lprobs_continuous, advantage, entropy_continuous, self.beta_continuous
+                )
+                
+                # Add MoE auxiliary losses to continuous policy loss
+                if self.use_mixture_of_experts and 'continuous_total_aux_loss' in moe_aux_losses:
+                    continuous_policy_loss += moe_aux_losses['continuous_total_aux_loss']
+                
+                if batch_returns.ndim > 1 and self.multi_value_rewards:  # Multi-objective returns
+                    # For multi-objective case, compute value loss using weighted returns and values
+                    value_loss = self.mse_loss(weighted_returns.to(torch.float32).squeeze(), weighted_state_value.squeeze())
+                else:
+                    # Original scalar value loss
+                    value_loss = self.mse_loss(weighted_returns.to(torch.float32).squeeze(), weighted_state_value.squeeze())
+                
+                # Add MoE auxiliary losses to value loss
+                if self.use_mixture_of_experts and 'value_total_aux_loss' in moe_aux_losses:
+                    value_loss += moe_aux_losses['value_total_aux_loss']
+
+                # Update networks for this mini-batch
+                if update_policy:
+                    self._update_discrete_policy(discrete_policy_loss)
+                
+                self._update_continuous_policy(continuous_policy_loss)
+                
+                if update_value:
+                    self._update_value_network(value_loss)
+
+                # Accumulate losses for this epoch
+                epoch_discrete_loss += discrete_policy_loss.item()
+                epoch_continuous_loss += continuous_policy_loss.item()
+                epoch_value_loss += value_loss.item()
+
+            # Average losses across mini-batches for this epoch
+            total_discrete_loss += epoch_discrete_loss / num_batches
+            total_continuous_loss += epoch_continuous_loss / num_batches
+            total_value_loss += epoch_value_loss / num_batches
+
+        # Average losses across epochs
+        avg_discrete_loss = total_discrete_loss / self.n_updates
+        avg_continuous_loss = total_continuous_loss / self.n_updates
+        avg_value_loss = total_value_loss / self.n_updates
 
         # Update old networks
         self.policy_discrete_old.load_state_dict(self.policy_discrete.state_dict())
@@ -613,7 +915,7 @@ class PCHPPO:
         # Clear replay buffer
         self.replay_buffer.clear()
 
-        return discrete_policy_loss.item(), continuous_policy_loss.item(), value_loss.item()
+        return avg_discrete_loss, avg_continuous_loss, avg_value_loss
 
     def _calculate_discrete_policy_loss(self, log_prob, old_log_prob, advantage, entropy, entropy_coeff):
         """Calculate PPO clipped discrete policy loss."""

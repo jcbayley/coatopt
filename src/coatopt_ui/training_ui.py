@@ -392,7 +392,7 @@ class TrainingMonitorUI:
                 entropy_beta_end=self.config.training.entropy_beta_end,
                 entropy_beta_decay_length=self.config.training.entropy_beta_decay_length,
                 entropy_beta_decay_start=self.config.training.entropy_beta_decay_start,
-                n_epochs_per_update=self.config.training.n_epochs_per_update,
+                n_episodes_per_epoch=self.config.training.n_episodes_per_epoch,
                 use_obs=self.config.data.use_observation,
                 scheduler_start=self.config.training.scheduler_start,
                 scheduler_end=self.config.training.scheduler_end,
@@ -443,12 +443,13 @@ class TrainingMonitorUI:
         
         try:
             # Get figures from plot manager
-            rewards_fig, values_fig, pareto_fig = self.plot_manager.get_figures()
+            rewards_fig, values_fig, pareto_fig, pareto_rewards_fig = self.plot_manager.get_figures()
             
             # Replace UI figure references with plot manager figures
             self.rewards_fig = rewards_fig
             self.values_fig = values_fig 
             self.pareto_fig = pareto_fig
+            self.pareto_rewards_fig = pareto_rewards_fig
             
             # Update canvases
             self.rewards_canvas.figure = rewards_fig
@@ -1146,13 +1147,23 @@ class TrainingMonitorUI:
 
     def plot_single_2d_pair(self, ax, pareto_front, best_points, i, j, obj_labels, obj_scales, episode, enable_click=False):
         """Plot a single 2D pair of objectives."""
-        # Plot all best points in background
+        # Plot all best points in background with training progression gradient
         if best_points is not None and len(best_points) > 0:
             try:
                 best_points_array = np.array(best_points)
                 if len(best_points_array.shape) == 2 and best_points_array.shape[1] > max(i, j):
-                    ax.scatter(best_points_array[:, i], best_points_array[:, j],
-                             c='lightblue', alpha=0.3, s=10, label='All Solutions')
+                    # Create color gradient based on order (training progression)
+                    n_points = len(best_points_array)
+                    if n_points > 1:
+                        # Create colormap from blue (early) to red (late)
+                        colors = plt.cm.coolwarm(np.linspace(0, 1, n_points))
+                        ax.scatter(best_points_array[:, i], best_points_array[:, j],
+                                 c=colors, alpha=0.6, s=8, 
+                                 label='All Solutions (Blue→Red: Training Progression)')
+                    else:
+                        # Single point case
+                        ax.scatter(best_points_array[:, i], best_points_array[:, j],
+                                 c='lightblue', alpha=0.3, s=10, label='All Solutions')
             except Exception as e:
                 print(f"Error plotting background points: {e}")
         
@@ -1257,9 +1268,18 @@ class TrainingMonitorUI:
                         else:
                             best_normalized[:, i] = 0.5
                     
-                    # Plot background lines
-                    for idx in range(len(best_normalized)):
-                        ax.plot(range(n_objectives), best_normalized[idx], 'b-', alpha=0.1, linewidth=0.5)
+                    # Plot background lines with training progression gradient
+                    n_points = len(best_normalized)
+                    if n_points > 1:
+                        # Create colormap from blue (early) to red (late)
+                        colors = plt.cm.coolwarm(np.linspace(0, 1, n_points))
+                        for idx in range(len(best_normalized)):
+                            ax.plot(range(n_objectives), best_normalized[idx], 
+                                   color=colors[idx], alpha=0.3, linewidth=0.5)
+                    else:
+                        # Single point case
+                        for idx in range(len(best_normalized)):
+                            ax.plot(range(n_objectives), best_normalized[idx], 'b-', alpha=0.1, linewidth=0.5)
             except Exception as e:
                 print(f"Error plotting background parallel coords: {e}")
         
@@ -1287,13 +1307,23 @@ class TrainingMonitorUI:
         
         # Use first 3 dimensions
         if pareto_front.shape[1] >= 3:
-            # Plot background points
+            # Plot background points with training progression gradient
             if best_points is not None and len(best_points) > 0:
                 try:
                     best_points_array = np.array(best_points)
                     if best_points_array.shape[1] >= 3:
-                        ax.scatter(best_points_array[:, 0], best_points_array[:, 1], best_points_array[:, 2],
-                                 c='lightblue', alpha=0.3, s=10, label='All Solutions')
+                        # Create color gradient based on order (training progression)
+                        n_points = len(best_points_array)
+                        if n_points > 1:
+                            # Create colormap from blue (early) to red (late)
+                            colors = plt.cm.coolwarm(np.linspace(0, 1, n_points))
+                            ax.scatter(best_points_array[:, 0], best_points_array[:, 1], best_points_array[:, 2],
+                                     c=colors, alpha=0.6, s=8, 
+                                     label='All Solutions (Blue→Red: Training Progression)')
+                        else:
+                            # Single point case
+                            ax.scatter(best_points_array[:, 0], best_points_array[:, 1], best_points_array[:, 2],
+                                     c='lightblue', alpha=0.3, s=10, label='All Solutions')
                 except Exception as e:
                     print(f"Error plotting 3D background: {e}")
             

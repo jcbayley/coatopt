@@ -54,6 +54,9 @@ class TrainingPlotManager:
         self.last_plot_update = 0
         self.plot_update_interval = 40
         
+        # Preference constraints tracking
+        self.constraint_data = []
+        
         # Initialize figures
         self._init_figures()
     
@@ -67,6 +70,8 @@ class TrainingPlotManager:
         self.rewards_fig = Figure(figsize=self.figure_size, dpi=100)
         self.values_fig = Figure(figsize=self.figure_size, dpi=100)
         self.pareto_fig = Figure(figsize=(14, 10), dpi=100)
+        self.pareto_rewards_fig = Figure(figsize=(14, 10), dpi=100)
+        self.constraints_fig = Figure(figsize=(14, 8), dpi=100)
         
         self._init_subplot_layout()
     
@@ -103,8 +108,9 @@ class TrainingPlotManager:
         
         self.values_fig.tight_layout()
         
-        # Pareto front plot - will be dynamically created
+        # Pareto front plots - will be dynamically created
         self._init_pareto_plot()
+        self._init_pareto_rewards_plot()
     
     def _init_pareto_plot(self):
         """Initialize Pareto front plot."""
@@ -114,6 +120,15 @@ class TrainingPlotManager:
                 transform=ax.transAxes, ha='center', va='center', fontsize=12)
         ax.set_title("Pareto Front Visualization")
         self.pareto_fig.tight_layout()
+    
+    def _init_pareto_rewards_plot(self):
+        """Initialize Pareto rewards plot."""
+        self.pareto_rewards_fig.clear()
+        ax = self.pareto_rewards_fig.add_subplot(1, 1, 1)
+        ax.text(0.5, 0.5, 'Load configuration to see Pareto rewards visualization', 
+                transform=ax.transAxes, ha='center', va='center', fontsize=12)
+        ax.set_title("Pareto Front - Objective Rewards")
+        self.pareto_rewards_fig.tight_layout()
     
     def set_objective_info(self, optimisation_parameters: List[str], objective_targets: Optional[List[float]] = None, design_criteria: Optional[List[float]] = None):
         """Set objective information for consistent labeling."""
@@ -169,8 +184,7 @@ class TrainingPlotManager:
             pareto_states = pareto_data['pareto_states']
             self.coating_states[episode] = pareto_states
         else:
-            print(f"[DEBUG] No pareto_states in pareto_data for episode {episode}")
-            print(f"[DEBUG] Available keys: {list(pareto_data.keys())}")
+            print(f"Warning: No pareto_states in pareto_data for episode {episode}")
     
     def add_eval_pareto_data(self, eval_data: Dict[str, Any]):
         """Add evaluation Pareto data for plotting."""        
@@ -193,12 +207,38 @@ class TrainingPlotManager:
         self.update_rewards_plot()
         self.update_values_plot()
         self.update_pareto_plot()
+        self.update_pareto_rewards_plot()
+        self.update_constraints_plot()
         
         if current_episode:
             self.last_plot_update = current_episode
         
         if self.save_plots and self.output_dir:
             self.save_plots_to_disk()
+    
+    def add_constraint_data(self, episode: int, phase: int, target_objective: str = None, 
+                           constraints: Dict = None, reward_bounds: Dict = None, 
+                           constraint_step: int = 0):
+        """
+        Add constraint tracking data for preference-constrained training.
+        
+        Args:
+            episode: Current training episode
+            phase: Training phase (1 or 2)
+            target_objective: Currently optimized objective (Phase 2 only)
+            constraints: Active constraint thresholds (Phase 2 only)
+            reward_bounds: Current reward min/max bounds
+            constraint_step: Current constraint step (Phase 2 only)
+        """
+        constraint_entry = {
+            'episode': episode,
+            'phase': phase,
+            'target_objective': target_objective,
+            'constraints': constraints.copy() if constraints else {},
+            'reward_bounds': reward_bounds.copy() if reward_bounds else {},
+            'constraint_step': constraint_step
+        }
+        self.constraint_data.append(constraint_entry)
     
     def update_rewards_plot(self):
         """Update the comprehensive rewards plot."""
@@ -403,13 +443,137 @@ class TrainingPlotManager:
         except Exception as e:
             print(f"Error updating values plot: {e}")
     
-    def update_pareto_plot(self, episode: int = None):
-        """Update the Pareto front plot."""
-        if not self.pareto_data:
-            return None
+    def update_constraints_plot(self):
+        """Update the preference constraints tracking plot."""
+        if not self.constraint_data:
+            return
         
         try:
-            # Clear the figure
+            self.constraints_fig.clear()
+            
+            # Convert constraint data to more workable format
+            episodes = [entry['episode'] for entry in self.constraint_data]
+            phases = [entry['phase'] for entry in self.constraint_data]
+            
+            # Get all objective parameters
+            all_objectives = set()
+            for entry in self.constraint_data:
+                all_objectives.update(entry['reward_bounds'].keys())
+                all_objectives.update(entry['constraints'].keys())
+            all_objectives = sorted(list(all_objectives))
+            
+            if not all_objectives:
+                return
+            
+            # Create subplots: 2x2 layout
+            # Top row: Phase tracking and constraint steps
+            # Bottom row: Reward bounds evolution and active constraints
+            axes = self.constraints_fig.subplots(2, 2)
+            
+            # Plot 1: Training phases
+            axes[0, 0].plot(episodes, phases, 'b-', linewidth=2, marker='o', markersize=3)
+            axes[0, 0].set_title('Training Phases')
+            axes[0, 0].set_ylabel('Phase')
+            axes[0, 0].set_ylim(0.5, 2.5)
+            axes[0, 0].set_yticks([1, 2])
+            axes[0, 0].set_yticklabels(['Phase 1\n(Exploration)', 'Phase 2\n(Constrained)'])
+            axes[0, 0].grid(True, alpha=0.3)
+            
+            # Plot 2: Constraint steps (Phase 2 only)
+            constraint_steps = [entry['constraint_step'] for entry in self.constraint_data]
+            phase2_episodes = [ep for ep, phase in zip(episodes, phases) if phase == 2]
+            phase2_steps = [step for step, phase in zip(constraint_steps, phases) if phase == 2]
+            
+            if phase2_episodes:
+                axes[0, 1].plot(phase2_episodes, phase2_steps, 'r-', linewidth=2, marker='s', markersize=3)
+                axes[0, 1].set_title('Constraint Steps (Phase 2)')
+                axes[0, 1].set_ylabel('Constraint Step')
+                axes[0, 1].grid(True, alpha=0.3)
+            else:
+                axes[0, 1].text(0.5, 0.5, 'Phase 2 not started', 
+                               transform=axes[0, 1].transAxes, ha='center', va='center')
+                axes[0, 1].set_title('Constraint Steps (Phase 2)')
+            
+            # Plot 3: Reward bounds evolution
+            colors = plt.cm.Set1(np.linspace(0, 1, len(all_objectives)))
+            for i, obj in enumerate(all_objectives):
+                obj_mins = []
+                obj_maxs = []
+                obj_episodes = []
+                
+                for entry in self.constraint_data:
+                    if obj in entry['reward_bounds']:
+                        bounds = entry['reward_bounds'][obj]
+                        if 'min' in bounds and 'max' in bounds:
+                            obj_episodes.append(entry['episode'])
+                            obj_mins.append(bounds['min'])
+                            obj_maxs.append(bounds['max'])
+                
+                if obj_episodes:
+                    # Plot min and max bounds
+                    axes[1, 0].plot(obj_episodes, obj_mins, '--', color=colors[i], 
+                                   alpha=0.7, label=f'{obj} min')
+                    axes[1, 0].plot(obj_episodes, obj_maxs, '-', color=colors[i], 
+                                   alpha=0.9, label=f'{obj} max')
+            
+            axes[1, 0].set_title('Reward Bounds Evolution')
+            axes[1, 0].set_ylabel('Reward Value')
+            axes[1, 0].legend(fontsize=8, bbox_to_anchor=(1.05, 1), loc='upper left')
+            axes[1, 0].grid(True, alpha=0.3)
+            
+            # Plot 4: Active constraints (Phase 2)
+            for i, obj in enumerate(all_objectives):
+                constraint_values = []
+                constraint_episodes = []
+                
+                for entry in self.constraint_data:
+                    if entry['phase'] == 2 and obj in entry['constraints']:
+                        constraint_episodes.append(entry['episode'])
+                        constraint_values.append(entry['constraints'][obj])
+                
+                if constraint_episodes:
+                    axes[1, 1].plot(constraint_episodes, constraint_values, 'o-', 
+                                   color=colors[i], alpha=0.8, label=f'{obj} threshold', 
+                                   linewidth=2, markersize=4)
+            
+            axes[1, 1].set_title('Active Constraint Thresholds (Phase 2)')
+            axes[1, 1].set_ylabel('Constraint Threshold')
+            if len(all_objectives) <= 5:  # Only show legend if not too many objectives
+                axes[1, 1].legend(fontsize=8)
+            axes[1, 1].grid(True, alpha=0.3)
+            
+            # Set x-labels for bottom plots
+            axes[1, 0].set_xlabel('Episode')
+            axes[1, 1].set_xlabel('Episode')
+            
+            # Add phase transition annotations
+            phase_transitions = []
+            current_phase = None
+            for episode, phase in zip(episodes, phases):
+                if phase != current_phase:
+                    phase_transitions.append((episode, phase))
+                    current_phase = phase
+            
+            # Annotate phase transitions on all plots
+            for ax in axes.flatten():
+                for transition_ep, new_phase in phase_transitions:
+                    if new_phase == 2:  # Transition to Phase 2
+                        ax.axvline(x=transition_ep, color='red', linestyle='--', 
+                                 alpha=0.5, linewidth=1)
+            
+            self.constraints_fig.tight_layout()
+            
+        except Exception as e:
+            print(f"Error updating constraints plot: {e}")
+            traceback.print_exc()
+    
+    def update_pareto_plot(self, episode: int = None):
+        """Update the Pareto front plot using unified Pareto tracking data."""
+        if not self.pareto_data:
+            print("Warning: No pareto_data available")
+            return None
+            
+        try:
             self.pareto_fig.clear()
             
             # Get the latest data or specific episode data
@@ -417,30 +581,89 @@ class TrainingPlotManager:
                 latest_data = self.historical_pareto_data[episode]
             else:
                 latest_data = self.pareto_data[-1]
-
-            # Check if data contains actual pareto front
-            if 'pareto_front' not in latest_data:
-                ax = self.pareto_fig.add_subplot(1, 1, 1)
-                size = latest_data.get('pareto_front_size', 0)
-                ax.text(0.5, 0.5, f'Pareto front size: {size}\nDetailed data not yet available', 
-                       transform=ax.transAxes, ha='center', va='center')
-                return None
-                
-            pareto_front = latest_data['pareto_front'] 
-            best_points = latest_data.get('best_points', None)
+            
+            
+            # Use unified keys - handle both numpy arrays and lists
+            pareto_front_values_raw = latest_data.get('pareto_front_values', [])
+            all_values_raw = latest_data.get('all_values', [])
+            pareto_states = latest_data.get('pareto_states', [])
             current_episode = latest_data.get('episode', 'unknown')
             eval_points = self.eval_data.get('eval_points', None)
             
-            if pareto_front is None or len(pareto_front) == 0:
+ 
+            # Convert to numpy arrays if needed
+            if isinstance(pareto_front_values_raw, list) and len(pareto_front_values_raw) > 0:
+                pareto_front_values = np.array(pareto_front_values_raw)
+            elif isinstance(pareto_front_values_raw, np.ndarray) and pareto_front_values_raw.size > 0:
+                pareto_front_values = pareto_front_values_raw
+            else:
+                pareto_front_values = np.array([])
+                
+            if isinstance(all_values_raw, list) and len(all_values_raw) > 0:
+                all_values = np.array(all_values_raw)
+            elif isinstance(all_values_raw, np.ndarray) and all_values_raw.size > 0:
+                all_values = all_values_raw
+            else:
+                all_values = np.array([])
+
+            # Check if we have any data to plot
+            if pareto_front_values.size == 0 and all_values.size == 0:
                 ax = self.pareto_fig.add_subplot(1, 1, 1)
-                ax.text(0.5, 0.5, 'No Pareto front data available yet', 
-                       transform=ax.transAxes, ha='center', va='center')
+                ax.text(0.5, 0.5, f'No Pareto data available for episode {current_episode}', 
+                       transform=ax.transAxes, ha='center', va='center', fontsize=12)
+                ax.set_title("Pareto Front Visualization")
+                self.pareto_fig.tight_layout()
                 return None
             
+            # Transform for plotting (reflectivity -> 1-reflectivity)
+            def transform_points(values):
+                if values.size == 0:
+                    return np.array([])
+                    
+                # Ensure 2D array
+                if values.ndim == 1:
+                    values = values.reshape(1, -1)
+                    
+                points = []
+                for vals in values:
+                    point = []
+                    for j, param in enumerate(self.optimisation_parameters):
+                        if j < len(vals):
+                            if param == 'reflectivity':
+                                point.append(1 - vals[j])
+                            else:
+                                point.append(vals[j])
+                    if len(point) > 0:
+                        points.append(point)
+                return np.array(points) if points else np.array([])
+            
+            pareto_front = transform_points(pareto_front_values)
+            best_points = transform_points(all_values)
+            
+  
+            # Set optimization parameters if not set
+            if not self.optimisation_parameters:
+                if pareto_front.size > 0:
+                    n_objectives = pareto_front.shape[1]
+                elif best_points.size > 0:
+                    n_objectives = best_points.shape[1]
+                else:
+                    n_objectives = 2  # Default
+                    
+                self.optimisation_parameters = [f'objective_{i}' for i in range(n_objectives)]
+                self.objective_labels = self._get_objective_labels()
+                self.objective_scales = self._get_objective_scales()
+            
             # Ensure objective labels match data
-            if (not self.objective_labels or 
-                len(self.objective_labels) != pareto_front.shape[1]):
-                self._update_objective_labels_from_data(pareto_front.shape[1])
+            if pareto_front.size > 0:
+                data_objectives = pareto_front.shape[1]
+            elif best_points.size > 0:
+                data_objectives = best_points.shape[1]
+            else:
+                data_objectives = len(self.optimisation_parameters)
+                
+            if (not self.objective_labels or len(self.objective_labels) != data_objectives):
+                self._update_objective_labels_from_data(data_objectives)
             
             n_objectives = len(self.objective_labels)
             
@@ -462,7 +685,212 @@ class TrainingPlotManager:
             
         except Exception as e:
             print(f"Error updating Pareto plot: {e}")
+            import traceback
+            print(f"Traceback: {traceback.format_exc()}")
             return None
+    
+    def update_pareto_rewards_plot(self, episode: int = None):
+        """Update the Pareto rewards plot using objective rewards data."""
+        if not self.pareto_data:
+            print("Warning: No pareto_data available for rewards plot")
+            return None
+            
+        try:
+            self.pareto_rewards_fig.clear()
+            
+            # Get the latest data or specific episode data
+            if episode and episode in self.historical_pareto_data:
+                latest_data = self.historical_pareto_data[episode]
+            else:
+                latest_data = self.pareto_data[-1]
+            
+            # Use reward keys instead of value keys
+            pareto_front_rewards_raw = latest_data.get('pareto_front_rewards', [])
+            all_rewards_raw = latest_data.get('all_rewards', [])
+            pareto_states = latest_data.get('pareto_states', [])
+            current_episode = latest_data.get('episode', 'unknown')
+            eval_points = self.eval_data.get('eval_rewards', None)
+            
+            # Convert to numpy arrays if needed
+            if isinstance(pareto_front_rewards_raw, list) and len(pareto_front_rewards_raw) > 0:
+                pareto_front_rewards = np.array(pareto_front_rewards_raw)
+            elif isinstance(pareto_front_rewards_raw, np.ndarray) and pareto_front_rewards_raw.size > 0:
+                pareto_front_rewards = pareto_front_rewards_raw
+            else:
+                pareto_front_rewards = np.array([])
+                
+            if isinstance(all_rewards_raw, list) and len(all_rewards_raw) > 0:
+                all_rewards = np.array(all_rewards_raw)
+            elif isinstance(all_rewards_raw, np.ndarray) and all_rewards_raw.size > 0:
+                all_rewards = all_rewards_raw
+            else:
+                all_rewards = np.array([])
+
+            # Check if we have any data to plot
+            if pareto_front_rewards.size == 0 and all_rewards.size == 0:
+                ax = self.pareto_rewards_fig.add_subplot(1, 1, 1)
+                ax.text(0.5, 0.5, f'No Pareto rewards data available for episode {current_episode}', 
+                       transform=ax.transAxes, ha='center', va='center', fontsize=12)
+                ax.set_title("Pareto Front - Objective Rewards")
+                self.pareto_rewards_fig.tight_layout()
+                return None
+            
+            # No transformation needed for rewards - they're already in the correct space
+            pareto_front = pareto_front_rewards
+            best_points = all_rewards
+            
+            # Set optimization parameters if not set
+            if not self.optimisation_parameters:
+                if pareto_front.size > 0:
+                    n_objectives = pareto_front.shape[1] if pareto_front.ndim > 1 else 1
+                elif best_points.size > 0:
+                    n_objectives = best_points.shape[1] if best_points.ndim > 1 else 1
+                else:
+                    n_objectives = 2  # Default
+                    
+                self.optimisation_parameters = [f'objective_{i}' for i in range(n_objectives)]
+            
+            # Create reward-specific labels
+            reward_labels = [f'{param.replace("_", " ").title()} Reward' for param in self.optimisation_parameters]
+            
+            # Ensure we have at least 2 objectives for plotting
+            if len(reward_labels) < 2:
+                ax = self.pareto_rewards_fig.add_subplot(1, 1, 1)
+                ax.text(0.5, 0.5, 'Need at least 2 objectives for Pareto rewards visualization', 
+                       transform=ax.transAxes, ha='center', va='center')
+                return None
+            
+            # Plot based on number of objectives
+            if len(reward_labels) == 2:
+                self._plot_2d_pareto_rewards(pareto_front, best_points, current_episode, eval_points, reward_labels)
+            else:
+                self._plot_multi_objective_pareto_rewards(pareto_front, best_points, current_episode, reward_labels)
+            
+            self.pareto_rewards_fig.tight_layout()
+            return None
+            
+        except Exception as e:
+            print(f"Error updating Pareto rewards plot: {e}")
+            import traceback
+            print(f"Traceback: {traceback.format_exc()}")
+            return None
+    
+    def _plot_2d_pareto_rewards(self, pareto_front, best_points, episode, eval_points, reward_labels):
+        """Plot 2D Pareto front for rewards."""
+        ax = self.pareto_rewards_fig.add_subplot(1, 1, 1)
+        
+        # Plot background points with training progression gradient
+        if best_points is not None and len(best_points) > 0:
+            try:
+                best_points_array = np.array(best_points)
+                if len(best_points_array.shape) == 2 and best_points_array.shape[1] >= 2:
+                    # Create color gradient based on order (training progression)
+                    n_points = len(best_points_array)
+                    if n_points > 1:
+                        # Create colormap from blue (early) to red (late)
+                        colors = plt.cm.coolwarm(np.linspace(0, 1, n_points))
+                        ax.scatter(best_points_array[:, 0], best_points_array[:, 1],
+                                 c=colors, alpha=0.6, s=8, 
+                                 label='All Solutions (Blue→Red: Training Progression)')
+                    else:
+                        # Single point case
+                        ax.scatter(best_points_array[:, 0], best_points_array[:, 1],
+                                 c='lightblue', alpha=0.3, s=10, label='All Solutions')
+            except Exception as e:
+                print(f"Error plotting background reward points: {e}")
+        
+        # Plot Pareto front
+        if pareto_front.size > 0:
+            # Ensure 2D array
+            if pareto_front.ndim == 1:
+                pareto_front = pareto_front.reshape(1, -1)
+            
+            ax.scatter(pareto_front[:, 0], pareto_front[:, 1],
+                      c='red', s=40, alpha=0.8, label='Pareto Front',
+                      edgecolors='black', linewidths=1)
+            
+            # Connect Pareto points if not too many
+            if len(pareto_front) < 20:
+                try:
+                    sorted_indices = np.argsort(pareto_front[:, 0])
+                    sorted_front_x = pareto_front[sorted_indices, 0]
+                    sorted_front_y = pareto_front[sorted_indices, 1]
+                    ax.plot(sorted_front_x, sorted_front_y, 'r-', alpha=0.5, linewidth=1)
+                except:
+                    pass
+        
+        # Add evaluation points if available
+        if eval_points is not None and len(eval_points) > 0:
+            eval_points_array = np.array(eval_points)
+            if eval_points_array.shape[1] >= 2:
+                ax.scatter(eval_points_array[:, 0], eval_points_array[:, 1],
+                           c='orange', s=10, alpha=0.5, label='Evaluation Points')
+        
+        # Configure axes
+        ax.set_xlabel(reward_labels[0])
+        ax.set_ylabel(reward_labels[1])
+        ax.set_title(f'Pareto Front - Objective Rewards - Episode {episode}')
+        ax.grid(True, alpha=0.3)
+        ax.legend(fontsize=8)
+    
+    def _plot_multi_objective_pareto_rewards(self, pareto_front, best_points, episode, reward_labels):
+        """Plot multi-objective Pareto front for rewards using 2D pairs."""
+        n_objectives = len(reward_labels)
+        n_pairs = min(4, n_objectives * (n_objectives - 1) // 2)  # Limit to 4 pairs for readability
+        
+        n_cols = 2
+        n_rows = (n_pairs + n_cols - 1) // n_cols
+        
+        pair_idx = 0
+        for i in range(n_objectives):
+            for j in range(i + 1, n_objectives):
+                if pair_idx >= n_pairs:
+                    break
+                    
+                ax = self.pareto_rewards_fig.add_subplot(n_rows, n_cols, pair_idx + 1)
+                
+                # Plot background points with training progression gradient
+                if best_points is not None and len(best_points) > 0:
+                    try:
+                        best_points_array = np.array(best_points)
+                        if best_points_array.shape[1] > max(i, j):
+                            # Create color gradient based on order (training progression)
+                            n_points = len(best_points_array)
+                            if n_points > 1:
+                                # Create colormap from blue (early) to red (late)
+                                colors = plt.cm.coolwarm(np.linspace(0, 1, n_points))
+                                ax.scatter(best_points_array[:, i], best_points_array[:, j],
+                                         c=colors, alpha=0.6, s=4, 
+                                         label='All Solutions (Blue→Red: Training)')
+                            else:
+                                # Single point case
+                                ax.scatter(best_points_array[:, i], best_points_array[:, j],
+                                         c='lightblue', alpha=0.3, s=5, label='All Solutions')
+                    except:
+                        pass
+                
+                # Plot Pareto front
+                if pareto_front.size > 0:
+                    # Ensure 2D array
+                    if pareto_front.ndim == 1:
+                        pareto_front = pareto_front.reshape(1, -1)
+                    
+                    ax.scatter(pareto_front[:, i], pareto_front[:, j],
+                              c='red', s=20, alpha=0.8, label='Pareto Front',
+                              edgecolors='black', linewidths=0.5)
+                
+                # Set labels
+                ax.set_xlabel(reward_labels[i])
+                ax.set_ylabel(reward_labels[j])
+                
+                ax.grid(True, alpha=0.3)
+                if pair_idx == 0:  # Only show legend on first subplot
+                    ax.legend(fontsize=6)
+                
+                pair_idx += 1
+        
+        # Add overall title
+        self.pareto_rewards_fig.suptitle(f'Multi-Objective Pareto Front - Objective Rewards - Episode {episode}')
     
     def _update_objective_labels_from_data(self, n_objectives: int):
         """Update objective labels based on data dimensions."""
@@ -487,13 +915,23 @@ class TrainingPlotManager:
         """Plot standard 2D Pareto front for CLI mode."""
         ax = self.pareto_fig.add_subplot(1, 1, 1)
         
-        # Plot background points
+        # Plot background points with training progression gradient
         if best_points is not None and len(best_points) > 0:
             try:
                 best_points_array = np.array(best_points)
                 if len(best_points_array.shape) == 2 and best_points_array.shape[1] >= 2:
-                    ax.scatter(best_points_array[:, 0], best_points_array[:, 1],
-                             c='lightblue', alpha=0.3, s=10, label='All Solutions')
+                    # Create color gradient based on order (training progression)
+                    n_points = len(best_points_array)
+                    if n_points > 1:
+                        # Create colormap from blue (early) to red (late)
+                        colors = plt.cm.coolwarm(np.linspace(0, 1, n_points))
+                        ax.scatter(best_points_array[:, 0], best_points_array[:, 1],
+                                 c=colors, alpha=0.6, s=8, 
+                                 label='All Solutions (Blue→Red: Training Progression)')
+                    else:
+                        # Single point case
+                        ax.scatter(best_points_array[:, 0], best_points_array[:, 1],
+                                 c='lightblue', alpha=0.3, s=10, label='All Solutions')
             except Exception as e:
                 print(f"Error plotting background points: {e}")
         
@@ -537,13 +975,23 @@ class TrainingPlotManager:
         self.pareto_ax = pareto_ax
         self.coating_ax = coating_ax
         
-        # Plot background points
+        # Plot background points with training progression gradient
         if best_points is not None and len(best_points) > 0:
             try:
                 best_points_array = np.array(best_points)
                 if len(best_points_array.shape) == 2 and best_points_array.shape[1] >= 2:
-                    pareto_ax.scatter(best_points_array[:, 0], best_points_array[:, 1],
-                                    c='lightblue', alpha=0.3, s=10, label='All Solutions')
+                    # Create color gradient based on order (training progression)
+                    n_points = len(best_points_array)
+                    if n_points > 1:
+                        # Create colormap from blue (early) to red (late)
+                        colors = plt.cm.coolwarm(np.linspace(0, 1, n_points))
+                        pareto_ax.scatter(best_points_array[:, 0], best_points_array[:, 1],
+                                        c=colors, alpha=0.6, s=8, 
+                                        label='All Solutions (Blue→Red: Training Progression)')
+                    else:
+                        # Single point case
+                        pareto_ax.scatter(best_points_array[:, 0], best_points_array[:, 1],
+                                        c='lightblue', alpha=0.3, s=10, label='All Solutions')
             except Exception as e:
                 print(f"Error plotting background points: {e}")
         
@@ -813,13 +1261,23 @@ class TrainingPlotManager:
                     
                 ax = self.pareto_fig.add_subplot(n_rows, n_cols, pair_idx + 1)
                 
-                # Plot background points
+                # Plot background points with training progression gradient
                 if best_points is not None and len(best_points) > 0:
                     try:
                         best_points_array = np.array(best_points)
                         if best_points_array.shape[1] > max(i, j):
-                            ax.scatter(best_points_array[:, i], best_points_array[:, j],
-                                     c='lightblue', alpha=0.3, s=5, label='All Solutions')
+                            # Create color gradient based on order (training progression)
+                            n_points = len(best_points_array)
+                            if n_points > 1:
+                                # Create colormap from blue (early) to red (late)
+                                colors = plt.cm.coolwarm(np.linspace(0, 1, n_points))
+                                ax.scatter(best_points_array[:, i], best_points_array[:, j],
+                                         c=colors, alpha=0.6, s=4, 
+                                         label='All Solutions (Blue→Red: Training)')
+                            else:
+                                # Single point case
+                                ax.scatter(best_points_array[:, i], best_points_array[:, j],
+                                         c='lightblue', alpha=0.3, s=5, label='All Solutions')
                     except:
                         pass
                 
@@ -882,13 +1340,17 @@ class TrainingPlotManager:
                                   dpi=150, bbox_inches='tight')
             self.pareto_fig.savefig(os.path.join(self.output_dir, "pareto_plot.png"), 
                                   dpi=150, bbox_inches='tight')
+            self.pareto_rewards_fig.savefig(os.path.join(self.output_dir, "pareto_rewards_plot.png"), 
+                                           dpi=150, bbox_inches='tight')
+            self.constraints_fig.savefig(os.path.join(self.output_dir, "constraints_plot.png"), 
+                                        dpi=150, bbox_inches='tight')
             
         except Exception as e:
             print(f"Warning: Failed to save plots to disk: {e}")
     
     def get_figures(self):
         """Get matplotlib figures for UI display."""
-        return self.rewards_fig, self.values_fig, self.pareto_fig
+        return self.rewards_fig, self.values_fig, self.pareto_fig, self.pareto_rewards_fig
     
     def clear_data(self):
         """Clear all stored data."""

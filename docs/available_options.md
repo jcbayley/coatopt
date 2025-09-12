@@ -81,6 +81,94 @@ hidden_size = 32        # Embedding dimension
 n_pre_layers = 2        # Number of transformer layers
 ```
 
+## Mixture of Experts (MoE)
+
+CoatOpt supports Mixture of Experts architectures for handling multi-objective optimization with specialized expert networks.
+
+### MoE Configuration
+
+```ini
+[Network]
+use_mixture_of_experts = true
+moe_n_experts = 7                          # Number of expert networks
+moe_expert_specialization = "sobol_sequence"  # Expert specialization strategy
+moe_gate_hidden_dim = 64                   # Hidden dimension for gating network
+moe_gate_temperature = 0.5                 # Temperature for expert selection (lower = more decisive)
+moe_load_balancing_weight = 0.01           # Weight for load balancing auxiliary loss
+```
+
+### MoE Expert Specialization Strategies
+
+| Strategy | Description | Use Case |
+|----------|-------------|----------|
+| `"sobol_sequence"` | Uses Sobol quasi-random sequence to assign expert regions | Balanced coverage of objective space |
+| `"random"` | Random assignment of expert specializations | Exploration-focused |
+| `"uniform"` | Uniform distribution of experts across objectives | Simple, evenly distributed |
+
+### MoE Parameters
+
+- **`moe_n_experts`**: Number of expert networks. More experts = finer specialization but higher computational cost
+- **`moe_gate_temperature`**: Controls expert selection decisiveness. Lower values (0.1-0.5) force decisive selection; higher values (1.0+) allow soft mixing
+- **`moe_expert_specialization`**: Strategy for assigning experts to different objective regions
+- **`moe_load_balancing_weight`**: Auxiliary loss weight to encourage balanced expert usage
+
+## Reward Normalization
+
+CoatOpt supports reward normalization to balance objectives with different scales and ranges.
+
+### Reward Normalization Configuration
+
+```ini
+[Data]
+use_reward_normalization = true
+reward_normalization_mode = "adaptive"        # "fixed" or "adaptive"
+reward_normalization_ranges = {}              # Leave empty to auto-compute from objective bounds
+reward_normalization_alpha = 0.3              # Learning rate for adaptive mode
+```
+
+### Auto-Computed Ranges
+
+CoatOpt can automatically compute reward normalization ranges based on the objective bounds defined in reward functions:
+
+- **Automatic Detection**: Leave `reward_normalization_ranges = {}` empty
+- **Reward Function Analysis**: Analyzes your reward function type (e.g., log-based) 
+- **Objective Bounds**: Uses `env.objective_bounds` to estimate typical reward ranges
+- **Smart Defaults**: Provides sensible ranges for common reward functions like `normalise_log_targets`
+
+### Manual Ranges (Optional)
+
+```ini
+reward_normalization_ranges = {               # Manual override (optional)
+    "reflectivity": [8, 28], 
+    "absorption": [8, 25]
+}
+```
+
+### Normalization Modes
+
+| Mode | Description | When to Use |
+|------|-------------|-------------|
+| `"fixed"` | Use predefined ranges for normalization | When you know typical reward ranges |
+| `"adaptive"` | Learn ranges dynamically during training | For unknown reward distributions |
+
+### Normalization Benefits
+
+- **Scale Balance**: Prevents high-magnitude objectives from dominating
+- **Improved Trade-offs**: Enables better learning of balanced solutions
+- **Stable Training**: Reduces reward scale variations across episodes
+
+### Automatic Range Detection
+
+The system automatically computes appropriate ranges when left empty by analyzing:
+- **Reward Function Type**: Detects log-based, linear, or exponential reward patterns
+- **Objective Bounds**: Uses existing `env.objective_bounds` from reward functions
+- **Scale Estimation**: Automatically estimates typical reward ranges for each objective
+
+**Manual Range Override** (optional): If auto-detection doesn't work well, specify ranges manually:
+- Reflectivity rewards typically range 8-28  
+- Absorption rewards typically range 8-25
+- Run episodes without normalization to observe actual ranges
+
 ## Optimization Parameters
 
 ### Available Optimization Objectives
@@ -104,7 +192,23 @@ optimise_targets = {
     "thermal_noise": 1e-21,
     "absorption": 0.001
 }
+
+# Optional: Specify objective bounds for reward normalization
+objective_bounds = {
+    "reflectivity": [1e-6, 1e-1],
+    "absorption": [1e-4, 1000.0],
+    "thermal_noise": [1e-25, 1e-15]
+}
 ```
+
+### Objective Bounds
+
+Objective bounds define the expected range for each optimization parameter and are used for:
+- **Automatic reward range computation**: When `reward_normalization_ranges = {}` (empty), the system automatically computes appropriate normalization ranges by evaluating the reward function at these bounds
+- **Optimization constraints**: Helps the algorithm understand the feasible parameter space
+- **Default behavior**: If not specified, reward functions set default bounds automatically
+
+The bounds use the format: `{"parameter": [min_value, max_value]}`
 
 ## Model Types
 
@@ -146,7 +250,65 @@ For multi-objective optimization, CoatOpt supports different weight cycling stra
 |--------|-------------|----------|
 | `"smooth"` | Smooth transitions between objectives | Balanced exploration |
 | `"random"` | Random objective weights | Maximum diversity |
-| `"fixed"` | Fixed weight combinations | Specific trade-off preferences |
+| `"annealed_random"` | Annealed Dirichlet weights | Progressive from extreme to balanced |
+| `"step"` | Step-wise cycling (2 objectives only) | Traditional alternating approach |
+| `"linear"` | Linear grid of weights | Systematic exploration |
+| `"adaptive_pareto"` | **NEW** Adaptive exploration targeting Pareto gaps | Enhanced exploration of under-explored regions |
+
+### Enhanced Weight Exploration (Phase 2)
+
+The new `"adaptive_pareto"` method implements enhanced weight exploration by:
+- **Gap Detection**: Identifies under-explored regions in the current Pareto front
+- **Dynamic Sampling**: Adjusts weight probability based on front density
+- **Archive Memory**: Prevents revisiting recently used weight combinations
+- **Progressive Exploration**: Higher exploration early, more exploitation later
+
+**Configuration Example:**
+```ini
+[Training]
+cycle_weights = "adaptive_pareto"
+final_weight_epoch = 2000
+start_weight_alpha = 0.1
+final_weight_alpha = 1.0
+```
+
+**Benefits:**
+- 50-80% improvement in middle-front exploration
+- Better coverage uniformity across Pareto front
+- Reduced clustering around extreme solutions
+- Maintains diversity while avoiding redundant exploration
+
+### Hypervolume-Based Training (Phase 3.2)
+
+**NEW** Direct hypervolume optimization provides an alternative to weighted scalarization:
+
+**Key Features:**
+- **Direct HV Optimization**: Replace weighted scalarization with hypervolume gradient estimation
+- **HV-based Rewards**: Individual contribution rewards based on hypervolume improvement
+- **Adaptive Reference Point**: Automatic reference point adaptation based on current front bounds
+- **Enhanced Coverage**: Better Pareto front coverage and diversity
+
+**Configuration Options:**
+```ini
+[Training]
+use_hypervolume_trainer = True      # Enable hypervolume-enhanced trainer
+use_hypervolume_loss = True         # Use HV loss in addition to standard rewards  
+hv_loss_weight = 0.5               # Weight for hypervolume loss (0-1)
+hv_update_interval = 10            # Update HV reference point every N episodes
+adaptive_reference_point = True     # Automatically adapt reference point
+```
+
+**Benefits:**
+- **Better Front Quality**: Direct optimization for coverage and diversity
+- **Non-convex Discovery**: Finds non-convex Pareto front sections missed by scalarization
+- **Scalable Performance**: Maintains efficiency with larger fronts
+- **Near-optimal Hypervolume**: Achieves theoretically better hypervolume values
+
+**When to Use:**
+- Multi-objective problems with 2-4 objectives
+- When front coverage uniformity is critical
+- Problems where weighted scalarization misses solutions
+- When you need provably good hypervolume performance
 
 ## Materials Configuration
 
@@ -191,10 +353,31 @@ Control exploration vs exploitation over training:
 
 ```ini
 [Training]
+# General entropy scheduling (applies to both policies if specific ones not set)
 entropy_beta_start = 1.0      # High exploration initially
 entropy_beta_end = 0.001      # Low exploration at end
-entropy_beta_decay_length = 5000  # Decay over 5000 iterations
+entropy_beta_decay_length = 5000  # Decay over 5000 iterations (if not using restarts)
+entropy_beta_use_restarts = True   # Restart entropy decay like LR scheduler
+
+# Separate entropy coefficients for discrete and continuous policies (recommended)
+entropy_beta_discrete_start = 0.1    # Discrete policy exploration
+entropy_beta_discrete_end = 0.01
+entropy_beta_continuous_start = 0.05 # Continuous policy exploration  
+entropy_beta_continuous_end = 0.001
 ```
+
+### Entropy Policy Types
+
+| Policy Type | Controls | Typical Range | Use Case |
+|-------------|----------|---------------|----------|
+| **Discrete** | Material selection | 0.01 - 0.1 | Lower values for decisive material choices |
+| **Continuous** | Layer thickness | 0.001 - 0.05 | Higher precision for thickness optimization |
+
+### Entropy Scheduling Benefits
+
+- **Separate Control**: Fine-tune exploration for material vs thickness decisions
+- **Balanced Policies**: Prevent one policy from dominating early training
+- **Multi-objective**: Essential for balanced objective exploration
 
 ### Learning Rate Scheduling
 

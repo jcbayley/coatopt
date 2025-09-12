@@ -6,6 +6,7 @@ utilities moved to coating_utils_env.
 import numpy as np
 from typing import Optional, TYPE_CHECKING
 from .core.base_environment import BaseCoatingEnvironment
+from .core.state import CoatingState
 
 from ..config.structured_config import CoatingOptimisationConfig
 
@@ -65,31 +66,6 @@ class HPPOEnvironment(BaseCoatingEnvironment):
         
         return action
 
-    def update_state(self, current_state, thickness, material_idx):
-        """
-        Update state with new layer.
-        
-        Args:
-            current_state: Current state array
-            thickness: Thickness of new layer
-            material_idx: Material index for new layer
-            
-        Returns:
-            Updated state array
-        """
-        new_state = current_state.copy()
-        
-        if self.current_index < self.max_layers:
-            new_state[self.current_index, 0] = thickness
-            # Clear previous material selection
-            new_state[self.current_index, 1:] = 0
-            # Set new material
-            new_state[self.current_index, material_idx + 1] = 1
-        
-        return new_state
-
-
-
     def step(self, action, objective_weights=None, always_return_value=False):
         """
         Take a step in the environment.
@@ -107,12 +83,24 @@ class HPPOEnvironment(BaseCoatingEnvironment):
         material_one_hot = action[1:]
         material_idx = np.argmax(material_one_hot)
         
-        # Update state
-        self.current_state = self.update_state(self.current_state, thickness, material_idx)
+        # Ensure current_state is CoatingState
+        if not isinstance(self.current_state, CoatingState):
+            self.current_state = self.tensor_to_coating_state(self.current_state)
+        
+        # Update state using CoatingState.set_layer()
+        self.current_state.set_layer(self.current_index, thickness, material_idx)
+        
+        # Add state validation call for debugging
+        if hasattr(self, 'debug_enabled') and self.debug_enabled:
+            issues = self.current_state.validate()
+            if issues:
+                print(f"DEBUG: State validation issues: {issues}")
+        
         self.current_index += 1
         self.length += 1
         
-        # Check if episode is done
+        # Check if episode is done using state.get_num_active_layers()
+        active_layers = self.current_state.get_num_active_layers()
         done = (self.current_index >= self.max_layers) or (material_idx == self.air_material_index and self.current_index > 1)
         
         # Calculate reward
@@ -136,7 +124,8 @@ class HPPOEnvironment(BaseCoatingEnvironment):
             'length': self.length,
             'values': vals,
             'individual_rewards': rewards,
-            'done_reason': 'max_layers' if self.current_index >= self.max_layers else 'air_layer'
+            'done_reason': 'max_layers' if self.current_index >= self.max_layers else 'air_layer',
+            'active_layers': active_layers
         }
         
         return observation, total_reward, done, info

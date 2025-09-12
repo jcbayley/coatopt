@@ -4,14 +4,39 @@ from scipy.optimize import curve_fit, leastsq, least_squares
 from scipy import integrate as TG
 import datetime as dt
 import pandas as pd
-import tmm
+#import tmm
 import numpy as np  
 import matplotlib.pyplot as plt 
 import os 
 import warnings
 import logging
 from tmm_fast import coh_tmm as coh_tmm_fast
+import tmm_fast as tmm_fast_module
+import tmm  # Keep original tmm for position_resolved and find_in_structure_with_inf
 import numpy as np
+
+def coh_tmm_fast_wrapper(pol, n_list, d_list, th_0, lam_vac):
+    """
+    Wrapper to make tmm_fast.coh_tmm compatible with original tmm.coh_tmm interface
+    """
+    # Convert inputs to tmm_fast format
+    n_array = np.array(n_list, dtype=complex)
+    d_array = np.array(d_list, dtype=float)
+    
+    # Reshape for tmm_fast: (batch=1, layers, wavelengths=1)
+    n_array_3d = n_array[None, :, None]  # shape: (1, len(n_list), 1)
+    d_array_2d = d_array[None, :]         # shape: (1, len(d_list))
+    theta_array = np.array([th_0], dtype=float)  # shape: (1,)
+    lambda_array = np.array([lam_vac], dtype=float)  # shape: (1,)
+    
+    # Call tmm_fast
+    result = coh_tmm_fast(pol, n_array_3d, d_array_2d, theta_array, lambda_array)
+    
+    # Convert back to original tmm format
+    return {
+        'R': result['R'][0, 0, 0],  # Extract scalar from (1,1,1) array
+        'T': result['T'][0, 0, 0] if 'T' in result else None
+    }
 
 
 
@@ -85,12 +110,12 @@ def CalculateEFI_tmm(dOpt ,materialLayer, materialParams,lambda_ =1064 ,t_air = 
     
     #t_listsub  = np.insert(t_listsub,[0,len(t_listsub)],np.inf )  # EFI requires values are wrapped in inf for some reason 
     coh_tmm_data = tmm.coh_tmm(polarisation,n_list,t_list,th_0=angle,lam_vac=wavelength) #theta set to 0 (this is for the pump remember)
-    coh_tmm_data_sub = tmm.coh_tmm(polarisation,n_list,t_list,th_0=angle,lam_vac=wavelength)
+    #coh_tmm_data_sub = coh_tmm_data  # No need to recalculate the same thing
     
     reflectivity = coh_tmm_data['R']
     #####
     
-    num_points = 1000# , 5000, 10000, 30000]:
+    num_points = 500 
     ds = np.linspace(-t_air, sum(t_coat) + t_sub, num=num_points)
 
 # ds = np.linspace(-t_air,sum(t_coat)+t_sub,num=30000) #position in structure
@@ -107,12 +132,12 @@ def CalculateEFI_tmm(dOpt ,materialLayer, materialParams,lambda_ =1064 ,t_air = 
     for d in ds:
         layer, d_in_layer = tmm.find_in_structure_with_inf(t_list,d)
         data        = tmm.position_resolved(layer,d_in_layer,coh_tmm_data)
-        data_sub    = tmm.position_resolved(layer,d_in_layer,coh_tmm_data_sub)
+        #data_sub    = tmm.position_resolved(layer,d_in_layer,coh_tmm_data_sub)
 
         poyn.append(data['poyn'])
         absor.append(data['absor'])
         E.append(np.abs(data['Ex'])**2) # Ex is for p-polarisation
-        E_sub.append(np.abs(data_sub['Ex'])**2)
+        #E_sub.append(np.abs(data_sub['Ex'])**2)
         layer_idx.append(layer) 
     
     E     = np.array(E)
@@ -268,7 +293,8 @@ def CalculateEFI_tmm(dOpt ,materialLayer, materialParams,lambda_ =1064 ,t_air = 
         plt.show()
 
     return E_sub, layer_idx,  ds,E, poyn, total_absorption, reflectivity
-    
+
+
 
 def CalculateAbsorption_tmm(dOpt, materialLayer, materialParams, lambda_=1064, t_air=500, polarisation='p'):
     """
