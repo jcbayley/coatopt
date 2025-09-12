@@ -231,6 +231,7 @@ class TrainingConfig(BaseConfig):
     pc_constraint_steps: int = 8
     pc_constraint_penalty_weight: float = 50.0
     pc_constraint_margin: float = 0.05
+    pc_cycle_objective_per_constraint_steps: bool = False
 
 @dataclass
 class GeneticConfig(BaseConfig):

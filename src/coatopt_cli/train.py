@@ -183,20 +183,9 @@ class CommandLineTrainer:
         
         # Load historical data for plotting if continuing training
         if self.continue_training and self.plot_manager:
-            self.trainer.load_historical_data_to_plot_manager(self.plot_manager)
+            self.plot_manager.load_context_data(self.trainer.checkpoint_manager)
             
-            # Load constraint history into plot manager for preference-constrained training
-            if hasattr(self.trainer, 'constraint_history') and self.trainer.constraint_history:
-                for entry in self.trainer.constraint_history:
-                    self.plot_manager.add_constraint_data(
-                        episode=entry['episode'],
-                        phase=entry['phase'],
-                        target_objective=entry.get('target_objective'),
-                        constraints=entry.get('constraints', {}),
-                        reward_bounds=entry.get('reward_bounds', {}),
-                        constraint_step=entry.get('constraint_step', 0)
-                    )
-                print(f"Loaded {len(self.trainer.constraint_history)} constraint history entries into plot manager")
+            # Additional constraint history loading is now handled within load_context_data
         
         # Check if we have existing data
         if self.continue_training:

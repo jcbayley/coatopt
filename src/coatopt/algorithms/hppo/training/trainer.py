@@ -203,7 +203,8 @@ class HPPOTrainer:
                 phase2_epochs_per_step=getattr(self.env, 'pc_phase2_epochs_per_step', 300),
                 constraint_steps=getattr(self.env, 'pc_constraint_steps', 8),
                 constraint_penalty_weight=getattr(self.env, 'pc_constraint_penalty_weight', 50.0),
-                constraint_margin=getattr(self.env, 'pc_constraint_margin', 0.05)
+                constraint_margin=getattr(self.env, 'pc_constraint_margin', 0.05),
+                cycle_objective_per_constraint_steps=getattr(self.env, 'pc_cycle_objective_per_constraint_steps', False)
             )
         
         # Initialize Pareto tracker for the trainer (centralized)
@@ -1298,10 +1299,10 @@ class HPPOTrainer:
 
     def load_historical_data_to_plot_manager(self, plot_manager) -> bool:
         """
-        Load historical training data into plot manager.
+        Load historical training data into plot manager using context.
         
-        This is a shared utility function used by both CLI and UI to load
-        historical training data and pareto states from checkpoints.
+        This is a simplified wrapper that delegates to the plot manager's
+        context loading functionality.
         
         Args:
             plot_manager: TrainingPlotManager instance to load data into
@@ -1312,125 +1313,8 @@ class HPPOTrainer:
         if not plot_manager:
             return False
             
-        try:
-            if hasattr(self, 'checkpoint_manager'):
-                # Load from unified checkpoint
-                if os.path.exists(self.checkpoint_manager.checkpoint_path):
-                    checkpoint_data = self.checkpoint_manager.load_complete_checkpoint()
-                    
-                    if not checkpoint_data:
-                        return False
-                        
-                    # Load training metrics
-                    training_data = checkpoint_data.get('training_data', {})
-                    
-                    # Check for metrics_df (the correct key from checkpoint manager)
-                    metrics_df = None
-                    if 'metrics_df' in training_data:
-                        metrics_df = training_data['metrics_df']
-                    elif 'metrics' in training_data:
-                        metrics_df = training_data['metrics']
-                    
-                    if metrics_df is not None:
-                        
-                        # Check if it's a pandas DataFrame
-                        if hasattr(metrics_df, 'iterrows'):
-                            # Convert to list of episode data for plot manager
-                            for _, row in metrics_df.iterrows():
-                                episode_data = {
-                                    'episode': int(row.get('episode', 0)),
-                                    'reward': float(row.get('reward', 0.0)),
-                                    'metrics': {key: float(val) for key, val in row.items() 
-                                              if key not in ['episode', 'reward'] and pd.notna(val)}
-                                }
-                                plot_manager.add_training_data(episode_data)
-                        else:
-                            print(f"Debug: metrics_df is not a DataFrame, it's: {type(metrics_df)}")
-                            # Try to convert to DataFrame if it's a numpy array or similar
-                            if hasattr(metrics_df, '__len__') and len(metrics_df) > 0:
-                                print(f"Debug: metrics_df has {len(metrics_df)} entries")
-                    else:
-                        print("Debug: No 'metrics' or 'metrics_df' key found in training_data")
-                    
-                    # Load pareto data with states
-                    pareto_data = checkpoint_data.get('pareto_data', {})
-                    best_states = checkpoint_data.get('best_states', [])
-                    
-                    if 'fronts_history' in pareto_data and best_states:
-                        fronts_history = pareto_data['fronts_history']
-                        
-                        # Process each episode's front data
-                        for episode_num, front_data in fronts_history.items():
-                            if isinstance(episode_num, str) and episode_num.startswith('episode_'):
-                                episode = int(episode_num.split('_')[1])
-                            else:
-                                episode = int(episode_num)
-                            
-                            # Generate pareto states for this episode
-                            pareto_states = self._generate_pareto_states_from_checkpoint(
-                                front_data, best_states, episode)
-                            
-                            if pareto_states:
-                                pareto_update = {
-                                    'episode': episode,
-                                    'pareto_front': front_data,
-                                    'pareto_states': pareto_states,
-                                    'best_state_data': pareto_states,
-                                    'pareto_indices': list(range(len(pareto_states)))
-                                }
-                                plot_manager.add_pareto_data(pareto_update)
-                    
-                    print(f"Loaded historical data from unified checkpoint: {len(plot_manager.training_data)} episodes")
-                    return True
-                    
-            else:
-                # No legacy support
-                print("No unified checkpoint found for historical data loading")
-                return False
-                
-        except Exception as e:
-            print(f"Warning: Failed to load historical data: {e}")
-            return False
-        
-        return False
-    
-    def _generate_pareto_states_from_checkpoint(self, front_data, best_states, episode):
-        """Generate pareto states from checkpoint data."""
-        if not front_data.size or not best_states:
-            return []
-            
-        pareto_states = []
-        
-        # Try to match front points with best states based on proximity
-        for front_point in front_data:
-            closest_state = None
-            min_distance = float('inf')
-            
-            for state_data in best_states:
-                if len(state_data) >= 5:  # tot_reward, epoch, state, rewards, vals
-                    _, _, state, rewards, vals = state_data[:5]
-                    
-                    # Calculate expected front point from this state
-                    if hasattr(self.env, 'get_parameter_names'):
-                        expected_point = []
-                        for param in self.env.get_parameter_names():
-                            if param in vals:
-                                val = vals[param]
-                                if param == 'reflectivity':
-                                    expected_point.append(1 - val)  # Convert to 1-R
-                                else:
-                                    expected_point.append(val)
-                        
-                        if len(expected_point) == len(front_point):
-                            distance = np.linalg.norm(np.array(expected_point) - np.array(front_point))
-                            if distance < min_distance:
-                                min_distance = distance
-                                closest_state = state
-            
-            if closest_state is not None:
-                pareto_states.append(closest_state)
-        
-        return pareto_states
+        # Use plot manager's context loading method
+        return plot_manager.load_context_data(self.checkpoint_manager)
 
 
 
@@ -1472,11 +1356,11 @@ def create_cli_callbacks(verbose: bool = True, plot_manager=None, trainer=None) 
                 plot_manager.add_pareto_data(info['pareto_update'])
             
             # Add constraint data if available (for preference-constrained training)
-            if (trainer and hasattr(trainer, 'constraint_history') and 
-                trainer.constraint_history and 
-                len(trainer.constraint_history) > 0):
+            if (trainer and hasattr(trainer, 'context') and 
+                trainer.context.constraint_history and 
+                len(trainer.context.constraint_history) > 0):
                 # Add the latest constraint entry
-                latest_entry = trainer.constraint_history[-1]
+                latest_entry = trainer.context.constraint_history[-1]
                 if latest_entry['episode'] == episode:  # Make sure it's for this episode
                     plot_manager.add_constraint_data(
                         episode=latest_entry['episode'],

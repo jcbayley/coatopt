@@ -22,7 +22,8 @@ class PreferenceConstrainedTracker:
                  phase2_epochs_per_step: int = 300,
                  constraint_steps: int = 8,
                  constraint_penalty_weight: float = 50.0,
-                 constraint_margin: float = 0.05):
+                 constraint_margin: float = 0.05,
+                 cycle_objective_per_constraint_steps: bool = False):
         """
         Initialize preference-constrained tracker.
         
@@ -33,6 +34,7 @@ class PreferenceConstrainedTracker:
             constraint_steps: Number of progressive constraint levels
             constraint_penalty_weight: Weight for constraint violation penalties
             constraint_margin: Safety margin above minimum values (fraction of range)
+            cycle_objective_per_constraint_steps: If True, change target objective after all constraint steps
         """
         self.optimise_parameters = optimise_parameters
         self.n_objectives = len(optimise_parameters)
@@ -43,6 +45,7 @@ class PreferenceConstrainedTracker:
         self.constraint_steps = constraint_steps
         self.constraint_penalty_weight = constraint_penalty_weight
         self.constraint_margin = constraint_margin
+        self.cycle_objective_per_constraint_steps = cycle_objective_per_constraint_steps
         
         # Phase 1 duration
         self.phase1_total_epochs = self.n_objectives * phase1_epochs_per_objective
@@ -108,17 +111,23 @@ class PreferenceConstrainedTracker:
         
         # Adjust epoch for Phase 2
         phase2_epoch = epoch - self.phase1_total_epochs
-        
-        # Determine constraint step (increases over time)
-        constraint_step = min(
-            (phase2_epoch // self.phase2_cycle_epochs) % self.constraint_steps,
-            self.constraint_steps - 1
-        )
-        
-        # Which objective cycle within this constraint step?
-        epoch_in_step = phase2_epoch % self.phase2_cycle_epochs
-        objective_index = (epoch_in_step // self.phase2_epochs_per_step) % self.n_objectives
-        target_objective = self.optimise_parameters[objective_index]
+
+        if self.cycle_objective_per_constraint_steps:
+            # Each objective gets all constraint steps before switching
+            total_epochs_per_objective = self.constraint_steps * self.phase2_epochs_per_step
+            objective_index = (phase2_epoch // total_epochs_per_objective) % self.n_objectives
+            target_objective = self.optimise_parameters[objective_index]
+            epoch_in_objective = phase2_epoch % total_epochs_per_objective
+            constraint_step = min((epoch_in_objective // self.phase2_epochs_per_step), self.constraint_steps - 1)
+        else:
+            # Default: change objective every constraint step
+            constraint_step = min(
+                (phase2_epoch // self.phase2_cycle_epochs) % self.constraint_steps,
+                self.constraint_steps - 1
+            )
+            epoch_in_step = phase2_epoch % self.phase2_cycle_epochs
+            objective_index = (epoch_in_step // self.phase2_epochs_per_step) % self.n_objectives
+            target_objective = self.optimise_parameters[objective_index]
         
         # Create one-hot weights for target objective
         weights = {param: 0.0 for param in self.optimise_parameters}
@@ -207,7 +216,8 @@ class PreferenceConstrainedTracker:
             "reward_bounds": self.reward_bounds,
             "phase1_completed": self.phase1_completed,
             "current_epoch": self.current_epoch,
-            "current_phase": self.current_phase
+            "current_phase": self.current_phase,
+            "cycle_objective_per_constraint_steps": self.cycle_objective_per_constraint_steps
         }
     
     def load_from_checkpoint_data(self, data: Dict[str, Any]) -> bool:
@@ -223,6 +233,7 @@ class PreferenceConstrainedTracker:
             self.phase1_completed = data["phase1_completed"]
             self.current_epoch = data["current_epoch"]
             self.current_phase = data["current_phase"]
+            self.cycle_objective_per_constraint_steps = data.get("cycle_objective_per_constraint_steps", False)
             
             # Recalculate derived values
             self.n_objectives = len(self.optimise_parameters)

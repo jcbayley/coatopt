@@ -297,6 +297,7 @@ def create_trainer(config: CoatingOptimisationConfig, agent: hppo.PCHPPO, env: U
         env.pc_constraint_steps = getattr(config.training, 'pc_constraint_steps', 8)
         env.pc_constraint_penalty_weight = getattr(config.training, 'pc_constraint_penalty_weight', 50.0)
         env.pc_constraint_margin = getattr(config.training, 'pc_constraint_margin', 0.05)
+        env.pc_cycle_objective_per_constraint_steps = getattr(config.training, 'pc_cycle_objective_per_constraint_steps', False)
         
         # Enable preference constraints addon in reward system
         if hasattr(env, 'reward_calculator'):
