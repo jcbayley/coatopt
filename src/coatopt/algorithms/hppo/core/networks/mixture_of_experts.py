@@ -167,41 +167,6 @@ class MixtureOfExpertsBase(nn.Module):
             
         return regions
     
-    def _generate_adaptive_constraint_regions(self) -> List[torch.Tensor]:
-        """
-        Generate expert regions for adaptive constraint-based specialization.
-        
-        Phase 1 (initial): Pure objective experts + balanced expert
-        Phase 2 (adaptive): After reward history analysis, adds constraint experts
-        
-        Expert allocation:
-        - First n_objectives experts: Pure specialists (one per objective)
-        - Middle experts: Constraint specialists (fixed reward targets)
-        - Last expert: Balanced multi-objective
-        """
-        regions = []
-        
-        # Phase 1: Pure objective experts
-        for i in range(self.n_objectives):
-            weights = np.zeros(self.n_objectives)
-            weights[i] = 1.0  # Pure specialist for objective i
-            regions.append(torch.tensor(weights, dtype=torch.float32))
-        
-        # Calculate remaining experts after pure specialists and balanced expert
-        remaining_experts = self.n_experts - self.n_objectives - 1
-        
-        if remaining_experts > 0:
-            # Phase 1: Fill with equal weight regions (will be updated in Phase 2)
-            # Each constraint expert gets equal weights initially
-            for _ in range(remaining_experts):
-                weights = np.ones(self.n_objectives) / self.n_objectives
-                regions.append(torch.tensor(weights, dtype=torch.float32))
-        
-        # Last expert: Balanced multi-objective
-        balanced_weights = np.ones(self.n_objectives) / self.n_objectives
-        regions.append(torch.tensor(balanced_weights, dtype=torch.float32))
-        
-        return regions
     
     def update_constraint_expert_regions(self, reward_histories: Dict[str, List[float]], n_constraint_experts_per_objective: int = 2):
         """
