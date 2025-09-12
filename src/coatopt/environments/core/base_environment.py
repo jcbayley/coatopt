@@ -84,7 +84,7 @@ class BaseCoatingEnvironment:
         self.optimise_weight_ranges = config.data.optimise_weight_ranges
         self.design_criteria = config.data.design_criteria
         
-        # Objective bounds for reward normalization (if provided in config)
+        # Objective bounds for reward normalisation (if provided in config)
         if hasattr(config.data, 'objective_bounds') and config.data.objective_bounds:
             self.objective_bounds = config.data.objective_bounds
         
@@ -93,14 +93,14 @@ class BaseCoatingEnvironment:
         self.use_intermediate_reward = config.data.use_intermediate_reward
         self.combine = config.data.combine
         
-        # Reward normalization parameters from DataConfig
-        self.use_reward_normalization = getattr(config.data, 'use_reward_normalization', False)
-        self.reward_normalization_mode = getattr(config.data, 'reward_normalization_mode', 'fixed')
-        self.reward_normalization_ranges = getattr(config.data, 'reward_normalization_ranges', {})
-        self.reward_normalization_alpha = getattr(config.data, 'reward_normalization_alpha', 0.1)
+        # Reward normalisation parameters from DataConfig
+        self.use_reward_normalisation = getattr(config.data, 'use_reward_normalisation', False)
+        self.reward_normalisation_mode = getattr(config.data, 'reward_normalisation_mode', 'fixed')
+        self.reward_normalisation_ranges = getattr(config.data, 'reward_normalisation_ranges', {})
+        self.reward_normalisation_alpha = getattr(config.data, 'reward_normalisation_alpha', 0.1)
         
         # Reward addon system configuration from DataConfig
-        self.apply_normalization = getattr(config.data, 'apply_normalization', False)
+        self.apply_normalisation = getattr(config.data, 'apply_normalisation', False)
         self.apply_boundary_penalties = getattr(config.data, 'apply_boundary_penalties', False)
         self.apply_divergence_penalty = getattr(config.data, 'apply_divergence_penalty', False)
         self.apply_air_penalty = getattr(config.data, 'apply_air_penalty', False)
@@ -188,13 +188,13 @@ class BaseCoatingEnvironment:
                                  objective_bounds=None,
                                  include_electric_field=False,
                                  electric_field_points=50,
-                                 # Reward normalization parameters
-                                 use_reward_normalization=False,
-                                 reward_normalization_mode="fixed",
-                                 reward_normalization_ranges=None,
-                                 reward_normalization_alpha=0.1,
+                                 # Reward normalisation parameters
+                                 use_reward_normalisation=False,
+                                 reward_normalisation_mode="fixed",
+                                 reward_normalisation_ranges=None,
+                                 reward_normalisation_alpha=0.1,
                                  # Reward addon system configuration
-                                 apply_normalization=False,
+                                 apply_normalisation=False,
                                  apply_boundary_penalties=False,
                                  apply_divergence_penalty=False,
                                  apply_air_penalty=False,
@@ -237,18 +237,12 @@ class BaseCoatingEnvironment:
         self.include_electric_field = include_electric_field
         self.electric_field_points = electric_field_points
         
-        # Objective bounds for reward normalization (if provided)
+        # Objective bounds for reward normalisation (if provided)
         if objective_bounds is not None:
             self.objective_bounds = objective_bounds
         
-        # Reward normalization parameters
-        self.use_reward_normalization = use_reward_normalization
-        self.reward_normalization_mode = reward_normalization_mode
-        self.reward_normalization_ranges = reward_normalization_ranges or {}
-        self.reward_normalization_alpha = reward_normalization_alpha
-        
         # Reward addon system configuration
-        self.apply_normalization = apply_normalization
+        self.apply_normalisation = apply_normalisation
         self.apply_boundary_penalties = apply_boundary_penalties
         self.apply_divergence_penalty = apply_divergence_penalty
         self.apply_air_penalty = apply_air_penalty
@@ -287,12 +281,12 @@ class BaseCoatingEnvironment:
             'optimise_parameters': self.get_parameter_names(),  # Use clean parameter names
             'optimise_targets': self.optimise_targets,
             'combine': self.combine,
-            'use_reward_normalization': getattr(self, 'use_reward_normalization', False),
-            'reward_normalization_mode': getattr(self, 'reward_normalization_mode', 'fixed'),
-            'reward_normalization_ranges': getattr(self, 'reward_normalization_ranges', {}),
-            'reward_normalization_alpha': getattr(self, 'reward_normalization_alpha', 0.1),
+            'use_reward_normalisation': getattr(self, 'use_reward_normalisation', False),
+            'reward_normalisation_mode': getattr(self, 'reward_normalisation_mode', 'fixed'),
+            'reward_normalisation_ranges': getattr(self, 'reward_normalisation_ranges', {}),
+            'reward_normalisation_alpha': getattr(self, 'reward_normalisation_alpha', 0.1),
             # Addon configuration
-            'apply_normalization': getattr(self, 'apply_normalization', False),
+            'apply_normalisation': getattr(self, 'apply_normalisation', False),
             'apply_boundary_penalties': getattr(self, 'apply_boundary_penalties', False),
             'apply_divergence_penalty': getattr(self, 'apply_divergence_penalty', False),
             'apply_air_penalty': getattr(self, 'apply_air_penalty', False),
@@ -786,12 +780,12 @@ class BaseCoatingEnvironment:
             'optimise_parameters': self.get_parameter_names(),  # Use clean parameter names
             'optimise_targets': self.optimise_targets,
             'combine': self.combine,
-            'use_reward_normalization': getattr(self, 'use_reward_normalization', False),
-            'reward_normalization_mode': getattr(self, 'reward_normalization_mode', 'fixed'),
-            'reward_normalization_ranges': getattr(self, 'reward_normalization_ranges', {}),
-            'reward_normalization_alpha': getattr(self, 'reward_normalization_alpha', 0.1),
+            'use_reward_normalisation': getattr(self, 'use_reward_normalisation', False),
+            'reward_normalisation_mode': getattr(self, 'reward_normalisation_mode', 'fixed'),
+            'reward_normalisation_ranges': getattr(self, 'reward_normalisation_ranges', {}),
+            'reward_normalisation_alpha': getattr(self, 'reward_normalisation_alpha', 0.1),
             # Addon configuration
-            'apply_normalization': getattr(self, 'apply_normalization', False),
+            'apply_normalisation': getattr(self, 'apply_normalisation', False),
             'apply_boundary_penalties': getattr(self, 'apply_boundary_penalties', False),
             'apply_divergence_penalty': getattr(self, 'apply_divergence_penalty', False),
             'apply_air_penalty': getattr(self, 'apply_air_penalty', False),

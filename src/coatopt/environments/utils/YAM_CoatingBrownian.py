@@ -31,7 +31,7 @@ def generate_coating_stack(lambda_):
         # Using 1 and num_materials as material numbers
         dOpt.extend([1, num_materials])
 
-    # Normalize dOpt
+    # normalise dOpt
     unique_dOpt = np.unique(dOpt)
     mapping = {val: i+1 for i, val in enumerate(unique_dOpt)}
     dOpt = [mapping[val] for val in dOpt]
@@ -128,7 +128,7 @@ def thin_film_stack(n_input, dOpt, lambda_):
     plt.grid(False)
     plt.legend(legend_str)
 
-    # Additional code for plotting the normalized electric field intensity squared can be added here
+    # Additional code for plotting the normalised electric field intensity squared can be added here
 
     plt.show()
 

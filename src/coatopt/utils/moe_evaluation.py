@@ -205,7 +205,7 @@ def _generate_expert_focused_weights(agent, optimise_parameters: List[str], n_so
             perturbed = expert_region.numpy() + np.random.normal(0, 0.1, n_objectives)
             # Project back to simplex
             perturbed = np.maximum(perturbed, 0)  # Ensure non-negative
-            perturbed = perturbed / perturbed.sum()  # Normalize
+            perturbed = perturbed / perturbed.sum()  # normalise
             weights.append(perturbed)
     
     return weights

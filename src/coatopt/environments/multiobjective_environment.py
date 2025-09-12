@@ -22,9 +22,7 @@ class MultiObjectiveEnvironment(HPPOEnvironment):
     Coating environment with Pareto multi-objective optimization.
     This extends the base functionality to support multi-objective optimization.
     """
-    def __init__(self, config: Optional[CoatingOptimisationConfig] = None, 
-                 use_reward_normalization=False, reward_normalization_mode="fixed",
-                 reward_normalization_ranges=None, reward_normalization_alpha=0.1, **kwargs):
+    def __init__(self, config: Optional[CoatingOptimisationConfig] = None, **kwargs):
         """Initialize Pareto environment."""
         super().__init__(config, **kwargs)
         
@@ -35,25 +33,17 @@ class MultiObjectiveEnvironment(HPPOEnvironment):
         self.multi_objective = True
         self.pareto_objectives = ["reflectivity", "thermal_noise", "absorption"]
         
-        # Store normalization parameters
-        self.use_reward_normalization = use_reward_normalization
-        self.reward_normalization_mode = reward_normalization_mode
-        self.reward_normalization_ranges = reward_normalization_ranges or {}
-        self.reward_normalization_alpha = reward_normalization_alpha
         
-        # Override reward calculator with normalization support
+        # Override reward calculator with normalisation support
         reward_type = "default" if self.reward_function is None else str(self.reward_function)
+
         self.reward_calculator = RewardCalculator(
             reward_type=reward_type,
             optimise_parameters=self.get_parameter_names(),  # Use clean parameter names
             optimise_targets=self.optimise_targets,
             combine=self.combine, 
             env=self,
-            use_reward_normalization=use_reward_normalization,
-            reward_normalization_mode=reward_normalization_mode,
-            reward_normalization_ranges=reward_normalization_ranges,
-            reward_normalization_alpha=reward_normalization_alpha,
-            apply_normalization=self.apply_normalization,
+            apply_normalisation=self.apply_normalisation,
             apply_boundary_penalties=self.apply_boundary_penalties,
             apply_divergence_penalty=self.apply_divergence_penalty,
             apply_air_penalty=self.apply_air_penalty,
@@ -138,7 +128,6 @@ class MultiObjectiveEnvironment(HPPOEnvironment):
         else:
             weights = None
 
-        # RewardCalculator now handles normalization internally
         total_reward, vals, rewards = self.reward_calculator.calculate(
                 reflectivity=new_reflectivity,
                 thermal_noise=new_thermal_noise,
@@ -150,9 +139,6 @@ class MultiObjectiveEnvironment(HPPOEnvironment):
                 pc_tracker=pc_tracker,
                 phase_info=phase_info
             )
-        
-        # Pareto front updates are now handled by the trainer
-        # Remove all Pareto-related calculations and return flags
         
         return total_reward, vals, rewards
     

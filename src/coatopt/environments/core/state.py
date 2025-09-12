@@ -594,7 +594,7 @@ class CoatingState:
             )
             if field_info:
                 observation.update({
-                    'electric_field': field_info['field_normalized'],
+                    'electric_field': field_info['field_normalised'],
                     'field_gradients': field_info['field_gradients'],
                     'cumulative_metrics': field_info['cumulative_metrics'],
                     'field_positions': field_info['field_positions'],
@@ -715,7 +715,7 @@ class CoatingState:
                 r, thermal_noise, e_integrated, total_thickness, field_data = result
                 
                 return {
-                    'field_normalized': field_data.get('field_normalized', []),
+                    'field_normalised': field_data.get('field_normalised', []),
                     'field_gradients': field_data.get('field_gradients', []),
                     'cumulative_metrics': [r, e_integrated, thermal_noise],
                     'field_positions': field_data.get('field_positions', []),

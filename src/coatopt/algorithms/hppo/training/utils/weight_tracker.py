@@ -50,21 +50,21 @@ def analyze_objective_space_coverage(all_rewards: Optional[List[np.ndarray]], n_
     
     rewards_array = np.array(all_rewards)
     
-    # Calculate objective ranges and normalize
+    # Calculate objective ranges and normalise
     obj_mins = np.min(rewards_array, axis=0)
     obj_maxs = np.max(rewards_array, axis=0)
     obj_ranges = obj_maxs - obj_mins
     
     # Avoid division by zero
     obj_ranges = np.where(obj_ranges == 0, 1, obj_ranges)
-    normalized_rewards = (rewards_array - obj_mins) / obj_ranges
+    normalised_rewards = (rewards_array - obj_mins) / obj_ranges
     
     # Analyze density in different regions for each objective
     n_bins = 5  # Divide each objective into 5 regions
     objective_densities = np.zeros((n_objectives, n_bins))
     
     for obj_idx in range(n_objectives):
-        obj_values = normalized_rewards[:, obj_idx]
+        obj_values = normalised_rewards[:, obj_idx]
         hist, _ = np.histogram(obj_values, bins=n_bins, range=(0, 1))
         objective_densities[obj_idx] = hist
     
@@ -81,14 +81,14 @@ def analyze_objective_space_coverage(all_rewards: Optional[List[np.ndarray]], n_
         # Weight this objective based on exploration deficit
         under_explored_weights[obj_idx] = 1 + exploration_deficit / expected_per_bin
     
-    # Normalize weights
+    # normalise weights
     under_explored_weights = under_explored_weights / np.sum(under_explored_weights)
     
     return {
         'objective_ranges': np.column_stack([obj_mins, obj_maxs]),
         'objective_densities': objective_densities,
         'under_explored_regions': under_explored_weights,
-        'normalized_rewards': normalized_rewards
+        'normalised_rewards': normalised_rewards
     }
 
 
@@ -188,7 +188,7 @@ def _generate_targeted_weights(under_explored_regions: np.ndarray, n_objectives:
     # Ensure positive weights
     weight = np.maximum(weight, 0.01)  # Minimum weight to avoid zeros
     
-    # Normalize
+    # normalise
     weight = weight / np.sum(weight)
     
     return weight
@@ -212,7 +212,7 @@ def _apply_archive_diversity(weight: np.ndarray, archive_memory: List[np.ndarray
         noise = np.random.normal(0, noise_strength, n_objectives)
         weight = weight + noise
         
-        # Ensure positive and normalize
+        # Ensure positive and normalise
         weight = np.maximum(weight, 0.01)
         weight = weight / np.sum(weight)
     
