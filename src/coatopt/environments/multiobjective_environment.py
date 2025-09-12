@@ -6,12 +6,10 @@ from typing import Optional, TYPE_CHECKING
 from .hppo_environment import HPPOEnvironment
 from .core.state import CoatingState
 import numpy as np
-import copy
 import torch
 
 from ..config.structured_config import CoatingOptimisationConfig
 from pymoo.util.nds.non_dominated_sorting import NonDominatedSorting
-from .utils.pareto_utils import incremental_pareto_update, EfficientParetoTracker
 from .core.base_environment import BaseCoatingEnvironment
 from .reward_functions.reward_system import RewardCalculator
 from .utils import coating_utils, state_utils
@@ -60,28 +58,21 @@ class MultiObjectiveEnvironment(HPPOEnvironment):
             apply_divergence_penalty=self.apply_divergence_penalty,
             apply_air_penalty=self.apply_air_penalty,
             apply_pareto_improvement=self.apply_pareto_improvement,
-            apply_preference_constraints=self.apply_preference_constraints,
             air_penalty_weight=self.air_penalty_weight,
             divergence_penalty_weight=self.divergence_penalty_weight,
             pareto_improvement_weight=self.pareto_improvement_weight,
-            preference_constraint_weight=self.preference_constraint_weight,
         )
         
-        # Enhanced Pareto tracking with efficient algorithms
-        self.pareto_update_interval = kwargs.get('pareto_update_interval', 10)  # Update every N steps
-        self.use_efficient_pareto = kwargs.get('use_efficient_pareto', True)  # Use optimized algorithms
-        
-        self.pareto_tracker = EfficientParetoTracker(
-                update_interval=self.pareto_update_interval,
-                max_pending=50
-            )
-
+        # Pareto tracking is now handled by the trainer - remove local tracking
+        # Keep pareto_front attribute for backward compatibility (will be synced from trainer)
+        self.pareto_front = []
 
     def setup_multiobjective_specific_attributes(self, **kwargs):
         """Setup multi-objective specific attributes."""
         # Enable multi-objective optimization
         self.multi_objective = True
         self.pareto_objectives = ["reflectivity", "thermal_noise", "absorption"]
+        # pareto_front is maintained for compatibility but updated by trainer
         self.pareto_front = []
         self.all_points = []
         self.all_vals = []
@@ -123,81 +114,20 @@ class MultiObjectiveEnvironment(HPPOEnvironment):
                     
         return optimization_directions
     
-    
-    def update_pareto_front(self, pareto_front, new_point, new_value, new_state):
-        """Use efficient Pareto tracker for updates."""
-        # Initialize tracker if needed
-        if not hasattr(self, 'pareto_tracker') or self.pareto_tracker is None:
-            self.pareto_tracker = EfficientParetoTracker(
-                update_interval=self.pareto_update_interval,
-                max_pending=50
-            )
-        # Add new point using efficient tracker (only rewards for environment)
-        updated_front, was_updated = self.pareto_tracker.add_point(new_point, new_value, new_state)
-        return updated_front, was_updated
-    
-    def _perform_batch_pareto_update(self, pareto_front):
-        """Perform batch Pareto front update with all pending points."""
-        if not self.pending_pareto_points:
-            return pareto_front, False
-        
-        if isinstance(pareto_front, list):
-            pareto_front = np.array(pareto_front)
-        
-        # Use efficient incremental update
-        all_pending = np.vstack(self.pending_pareto_points)
-        updated_pareto_front, pareto_updated = incremental_pareto_update(pareto_front, all_pending)
-        
-        # Reset tracking
-        self._reset_pareto_update_tracking()
-        return updated_pareto_front, pareto_updated
-    
-    def _reset_pareto_update_tracking(self):
-        """Reset lazy Pareto update tracking variables."""
-        if hasattr(self, 'pending_pareto_points'):
-            self.pending_pareto_points = []
-        if hasattr(self, 'steps_since_pareto_update'):
-            self.steps_since_pareto_update = 0
-        if hasattr(self, 'force_pareto_update'):
-            self.force_pareto_update = False
-    
-    def force_pareto_front_update(self):
-        """Force immediate Pareto front update on next call."""
-        if self.use_efficient_pareto and hasattr(self, 'pareto_tracker'):
-            self.pareto_tracker._perform_update()
-        else:
-            self.force_pareto_update = True
-    
-    def get_pareto_stats(self):
-        """Get Pareto front management statistics."""
-        if self.use_efficient_pareto and hasattr(self, 'pareto_tracker'):
-            stats = self.pareto_tracker.get_stats()
-            stats['algorithm'] = 'efficient'
-            return stats
-        else:
-            raise Exception("Legacy Pareto tracking not supported in this version.")
-            return {
-                'algorithm': 'legacy',
-                'front_size': len(self.pareto_front) if hasattr(self, 'pareto_front') else 0,
-                'pending_points': len(getattr(self, 'pending_pareto_points', [])),
-                'steps_since_update': getattr(self, 'steps_since_pareto_update', 0)
-            }
-    
-    def compute_reward(self, new_state, max_value=0.0, target_reflectivity=1.0, objective_weights=None, 
-                      pc_tracker=None, phase_info=None):
-        """reward is the improvement of the state over the previous one
+    def compute_reward(self, new_state, max_value=0.0, target_reflectivity=1.0, objective_weights=None, pc_tracker=None, phase_info=None):
+        """Compute reward for the given state.
 
         Args:
-            state (_type_): _description_
-            action (_type_): _description_
-            pc_tracker: PreferenceConstrainedTracker instance for preference-constrained optimization
-            phase_info: Phase information from preference-constrained training
+            new_state: The coating state to evaluate
+            max_value: Maximum value (unused, kept for compatibility)
+            target_reflectivity: Target reflectivity (unused, kept for compatibility)
+            objective_weights: Weights for multi-objective optimization
+            pc_tracker: Preference constrained tracker (passed through)
+            phase_info: Phase information for preference constrained optimization (passed through)
+            
+        Returns:
+            tuple: (total_reward, vals_dict, rewards_dict)
         """
-        if isinstance(new_state, CoatingState):
-            # Use state.get_tensor() for calculations
-            state_array = new_state.get_array()
-        else:
-            state_array = new_state  # Assume numpy array for backward compatibility
 
         new_reflectivity, new_thermal_noise, new_E_integrated, new_total_thickness = self.compute_state_value(new_state, return_separate=True)
         
@@ -215,29 +145,18 @@ class MultiObjectiveEnvironment(HPPOEnvironment):
                 thickness=new_total_thickness,
                 absorption=new_E_integrated,
                 weights=weights,  # Pass weights directly to calculator
-                expert_constraints=self.current_expert_constraints,
+                expert_constraints=getattr(self, 'current_expert_constraints', None),
                 env=self,
                 pc_tracker=pc_tracker,
                 phase_info=phase_info
             )
         
-        new_point = np.zeros((len(self.optimise_parameters),))
-        new_values = np.zeros((len(self.optimise_parameters),))
-
-        i = 0
-        for key in self.get_parameter_names():
-            new_point[i] = rewards[key]
-            new_values[i] = vals[key]
-            i += 1
-
-        updated_pareto_front, front_updated = self.update_pareto_front(copy.copy(self.pareto_front), copy.copy(new_point), copy.copy(new_values), state_array)
-
-        rewards["updated_pareto_front"] = updated_pareto_front
-        rewards["front_updated"] = front_updated
-
+        # Pareto front updates are now handled by the trainer
+        # Remove all Pareto-related calculations and return flags
+        
         return total_reward, vals, rewards
     
-    def step(self, action, max_state=0, verbose=False, state=None, layer_index=None, always_return_value=False, objective_weights=None, pc_tracker=None, phase_info=None):
+    def step(self, action, max_state=0, verbose=False, state=None, layer_index=None, always_return_value=False, objective_weights=None, pc_tracker=None, phase_info=None, **kwargs):
         """Step function simplified to work directly with CoatingState objects."""
         
         # Use current state if none provided
@@ -280,21 +199,24 @@ class MultiObjectiveEnvironment(HPPOEnvironment):
         elif self.current_index == self.max_layers-1 or material == self.air_material_index:
             # Episode finished
             finished = True
-            reward, vals, rewards = self.compute_reward(self.current_state, max_state, objective_weights=objective_weights, pc_tracker=pc_tracker, phase_info=phase_info)
+            reward, vals, rewards = self.compute_reward(
+                self.current_state, max_state, objective_weights=objective_weights,
+                pc_tracker=pc_tracker, phase_info=phase_info
+            )
         elif self.use_intermediate_reward:
             # Intermediate reward calculation
-            reward, vals, rewards = self.compute_reward(self.current_state, max_state, objective_weights=objective_weights, pc_tracker=pc_tracker, phase_info=phase_info)
+            reward, vals, rewards = self.compute_reward(
+                self.current_state, max_state, objective_weights=objective_weights,
+                pc_tracker=pc_tracker, phase_info=phase_info
+            )
 
         # Check for invalid states using CoatingState validation
         if not self.current_state.is_valid() or np.isnan(reward) or np.isinf(reward):
             reward = neg_reward
             terminated = True
 
-        # Update Pareto front if episode finished and front was updated
-        if finished and rewards.get("front_updated", False):
-            self.pareto_front = rewards["updated_pareto_front"]
-            # Force final update to ensure we have the most current front
-            self.force_pareto_front_update()
+        # Pareto front updates are now handled by the trainer
+        # Remove all Pareto update logic that was previously here
 
         # Update tracking variables
         self.previous_material = material

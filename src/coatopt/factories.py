@@ -15,7 +15,6 @@ Supported Algorithm Types:
 from typing import Dict, Any, Tuple, Optional, Union
 from coatopt.algorithms import hppo
 from coatopt.algorithms.genetic_algorithms.genetic_moo import GeneticTrainer
-from coatopt.algorithms.hppo.training.hypervolume_trainer import HypervolumeTrainer
 from coatopt.environments.hppo_environment import HPPOEnvironment
 from coatopt.environments.multiobjective_environment import MultiObjectiveEnvironment
 from coatopt.environments.genetic_environment import GeneticCoatingStack
@@ -174,19 +173,6 @@ def create_multiobjective_environment(config: CoatingOptimisationConfig, materia
     return env
 
 
-def create_pareto_environment(config: CoatingOptimisationConfig, materials: Dict[int, Dict[str, Any]]) -> MultiObjectiveEnvironment:
-    """
-    Create MultiObjectiveEnvironment (backward compatibility name).
-    
-    Args:
-        config: Structured configuration object
-        materials: Materials dictionary
-        
-    Returns:
-        Configured MultiObjectiveEnvironment
-    """
-    return create_multiobjective_environment(config, materials)
-
 
 def create_pc_hppo_agent(config: CoatingOptimisationConfig, env: Union[HPPOEnvironment, MultiObjectiveEnvironment]) -> hppo.PCHPPO:
     """
@@ -263,7 +249,7 @@ def create_pc_hppo_agent(config: CoatingOptimisationConfig, env: Union[HPPOEnvir
     return agent
 
 
-def create_trainer(config: CoatingOptimisationConfig, agent: hppo.PCHPPO, env: Union[HPPOEnvironment, MultiObjectiveEnvironment], continue_training: bool = False, callbacks = None) -> Union[hppo.HPPOTrainer, HypervolumeTrainer]:
+def create_trainer(config: CoatingOptimisationConfig, agent: hppo.PCHPPO, env: Union[HPPOEnvironment, MultiObjectiveEnvironment], continue_training: bool = False, callbacks = None) -> hppo.HPPOTrainer:
     """
     Create HPPO trainer from structured configuration.
     
@@ -316,18 +302,7 @@ def create_trainer(config: CoatingOptimisationConfig, agent: hppo.PCHPPO, env: U
         if hasattr(env, 'reward_calculator'):
             env.reward_calculator.apply_preference_constraints = True
     
-    if use_hypervolume:
-        # Add hypervolume-specific parameters
-        trainer_kwargs.update({
-            'use_hypervolume_loss': getattr(config.training, 'use_hypervolume_loss', False),
-            'hv_loss_weight': getattr(config.training, 'hv_loss_weight', 0.5),
-            'hv_update_interval': getattr(config.training, 'hv_update_interval', 10),
-            'adaptive_reference_point': getattr(config.training, 'adaptive_reference_point', True),
-        })
-        print("Creating hypervolume-enhanced trainer...")
-        trainer = HypervolumeTrainer(**trainer_kwargs)
-    else:
-        trainer = hppo.HPPOTrainer(**trainer_kwargs)
+    trainer = hppo.HPPOTrainer(**trainer_kwargs)
     
     return trainer
 
@@ -349,7 +324,7 @@ def load_model_if_needed(agent: hppo.PCHPPO, config: CoatingOptimisationConfig, 
         print(f"Loaded model from: {config.general.load_model_path if config.general.load_model_path != 'root' else config.general.root_dir}")
 
 
-def setup_optimisation_pipeline(config: CoatingOptimisationConfig, materials: Dict[int, Dict[str, Any]], continue_training: bool = False, init_pareto_front: bool = True) -> Tuple[Union[HPPOEnvironment, MultiObjectiveEnvironment], hppo.PCHPPO, Union[hppo.HPPOTrainer, HypervolumeTrainer]]:
+def setup_optimisation_pipeline(config: CoatingOptimisationConfig, materials: Dict[int, Dict[str, Any]], continue_training: bool = False, init_pareto_front: bool = True) -> Tuple[Union[HPPOEnvironment, MultiObjectiveEnvironment], hppo.PCHPPO, hppo.HPPOTrainer]:
     """
     Complete setup of the optimisation pipeline.
     

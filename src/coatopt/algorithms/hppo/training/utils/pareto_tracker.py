@@ -235,7 +235,7 @@ class EfficientParetoTracker:
             self.pending_values.append(None)
             
         if state is not None:
-            self.pending_states.append(state.copy())
+            self.pending_states.append(state.copy()[np.newaxis, ...] )
         else:
             self.pending_states.append(None)
         

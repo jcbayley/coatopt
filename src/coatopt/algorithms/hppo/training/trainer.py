@@ -21,9 +21,8 @@ from coatopt.utils.plotting.training import make_reward_plot, make_val_plot, mak
 from coatopt.utils.plotting.stack import plot_stack
 from coatopt.algorithms.hppo.core.agent import PCHPPO
 from coatopt.algorithms.hppo.training.checkpoint_manager import TrainingCheckpointManager
-from coatopt.algorithms.hppo.training.consolidation import ConsolidationStrategy, ConsolidationConfig
-from coatopt.algorithms.hppo.training.weight_cycling import sample_reward_weights, WeightArchive
-from coatopt.algorithms.hppo.training.preference_constrained_tracker import PreferenceConstrainedTracker
+from coatopt.algorithms.hppo.training.utils.weight_tracker import sample_reward_weights, WeightArchive
+from coatopt.algorithms.hppo.training.utils.preference_constrained_tracker import PreferenceConstrainedTracker
 from .context import TrainingContext
 from .utils.pareto_tracker import EfficientParetoTracker
 import traceback
@@ -51,12 +50,12 @@ class TrainingCallbacks:
     # UI-specific
     ui_queue: Optional[queue.Queue] = None  # For sending data to UI
 
-class UnifiedHPPOTrainer:
+class HPPOTrainer:
     """
     Unified Trainer class for managing HPPO training process.
     
     Handles training loop, metric tracking, plotting, and model persistence.
-    Consolidates HPPOTrainer and EnhancedHPPOTrainer functionality.
+
     """
 
     def __init__(
@@ -84,7 +83,6 @@ class UnifiedHPPOTrainer:
         weight_network_save: bool = False,
         save_plots: bool = False,
         save_episode_visualizations: bool = False,
-        consolidation_config: Optional[ConsolidationConfig] = None,
         callbacks: Optional[TrainingCallbacks] = None,
         context: Optional[TrainingContext] = None
     ):
@@ -193,27 +191,7 @@ class UnifiedHPPOTrainer:
             context=self.context
         )
 
-        # Initialize consolidation if config provided
-        self.use_consolidation = consolidation_config is not None
-        if self.use_consolidation:
-            self.consolidation = ConsolidationStrategy(consolidation_config, agent)
-        else:
-            self.consolidation = None
-
-        # Setup scheduler
-        self.scheduler_start = scheduler_start
-        self.scheduler_end = n_iterations if scheduler_end == -1 else scheduler_end
-
-        # Initialize or load training state
-        if continue_training:
-            self._load_training_state()
-        else:
-            self._initialize_training_state()
-        
-        # Initialize adaptive MoE tracking (if using adaptive_constraints)
-        self._setup_adaptive_moe_tracking()
-        
-        # Phase 2 Enhancement: Initialize weight archive for adaptive exploration
+         # Phase 2 Enhancement: Initialize weight archive for adaptive exploration
         self.weight_archive = WeightArchive(max_size=50)  # Track last 50 weight vectors
         
         # Initialize preference constrained tracker if using preference_constrained cycling
@@ -235,6 +213,22 @@ class UnifiedHPPOTrainer:
         self.checkpoint_manager.register_weight_archive(self.weight_archive)
         if self.pc_tracker:
             self.checkpoint_manager.register_pc_tracker(self.pc_tracker)
+
+
+        # Setup scheduler
+        self.scheduler_start = scheduler_start
+        self.scheduler_end = n_iterations if scheduler_end == -1 else scheduler_end
+
+        # Initialize or load training state
+        if continue_training:
+            self._load_training_state()
+        else:
+            self._initialize_training_state()
+        
+        # Initialize adaptive MoE tracking (if using adaptive_constraints)
+        self._setup_adaptive_moe_tracking()
+        
+       
 
     def _setup_directories(self) -> None:
         """Create necessary directories for training outputs."""
@@ -498,35 +492,6 @@ class UnifiedHPPOTrainer:
             # Run training episode
             episode_metrics, episode_data, episode_reward, final_state = self._run_training_episode(episode)
             
-            # Process consolidation if enabled
-            if self.use_consolidation and self.consolidation:
-                # Prepare episode data for consolidation
-                consolidation_episode_data = {
-                    'episode': episode,
-                    'total_reward': episode_reward,
-                    'objectives': {},  # Will be populated from final_state
-                    'episode_data': episode_data
-                }
-                
-                # Extract objectives from final state if available
-                try:
-                    _, vals, rewards = self.env.compute_reward(final_state, pc_tracker=self.pc_tracker, phase_info=self.current_phase_info)
-                    if hasattr(rewards, 'keys'):
-                        consolidation_episode_data['objectives'] = rewards
-                    elif hasattr(self.env, 'optimise_parameters'):
-                        # Map values to parameter names
-                        consolidation_episode_data['objectives'] = {
-                            param: vals[i] for i, param in enumerate(self.env.get_parameter_names())
-                        }
-                except:
-                    pass  # Skip consolidation for this episode if objectives can't be extracted
-                
-                self.consolidation.process_episode(episode, consolidation_episode_data)
-                
-                # Perform consolidation update if interval reached
-                consolidation_loss = self.consolidation.update_consolidation(episode)
-                if consolidation_loss is not None:
-                    print(f"Episode {episode}: Consolidation loss = {consolidation_loss:.6f}")
             
             # Update best states and reward tracking
             self._update_episode_tracking(episode_data, all_means, all_stds, all_materials)
