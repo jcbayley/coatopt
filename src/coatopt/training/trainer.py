@@ -25,6 +25,7 @@ from coatopt.algorithms.hppo.training.consolidation import ConsolidationStrategy
 from coatopt.algorithms.hppo.training.weight_cycling import sample_reward_weights, WeightArchive
 from coatopt.algorithms.hppo.training.preference_constrained_tracker import PreferenceConstrainedTracker
 from .context import TrainingContext
+from .utils.pareto_tracker import EfficientParetoTracker
 import traceback
 
 
@@ -227,6 +228,9 @@ class UnifiedHPPOTrainer:
                 constraint_margin=getattr(self.env, 'pc_constraint_margin', 0.05)
             )
         
+        # Initialize Pareto tracker for the trainer (centralized)
+        self.pareto_tracker = EfficientParetoTracker(update_interval=5, max_pending=20)
+        
         # Register trackers with checkpoint manager
         self.checkpoint_manager.register_weight_archive(self.weight_archive)
         if self.pc_tracker:
@@ -297,16 +301,7 @@ class UnifiedHPPOTrainer:
         self.continue_training = False
         self.best_states = []
         
-        # Pareto tracking is handled by the context initialization
-            
-        # Initialize environment's efficient tracker if available
-        if hasattr(self.env, 'pareto_tracker') and self.env.use_efficient_pareto:
-            # Clear the tracker for fresh training
-            self.env.pareto_tracker.set_current_data(
-                front=np.array([]),
-                values=np.array([]),
-                states=np.array([])
-            )
+        # Pareto tracking is handled by the context initialization and centralized tracker
 
     def _load_training_state(self) -> None:
         """Load training state from unified checkpoint."""
@@ -334,28 +329,20 @@ class UnifiedHPPOTrainer:
             # Set trainer state from context
             self.start_episode = self.context.current_episode
             
-            # Sync to environment for compatibility and load into efficient tracker
+            # Load data into centralized Pareto tracker
             if len(self.context.pareto_front_rewards) > 0:
-                self.env.pareto_front = self.context.pareto_front_rewards
+                self.pareto_tracker.set_current_data(
+                    front=self.context.pareto_front_rewards,
+                    values=self.context.pareto_front_values,
+                    states=self.context.pareto_states
+                )
+                print(f"Loaded Pareto front with {len(self.context.pareto_front_rewards)} points into centralized tracker")
                 
-                # Load data into environment's efficient tracker if available
-                if hasattr(self.env, 'pareto_tracker') and self.env.use_efficient_pareto:
-                    # Prepare states for tracker (flatten if needed)
-                    states_for_tracker = None
-                    if len(self.context.pareto_states) > 0:
-                        states_for_tracker = self.context.pareto_states.reshape(len(self.context.pareto_states), self.env.max_layers, -1)
-                    
-                    self.env.pareto_tracker.set_current_data(
-                        front=self.context.pareto_front_rewards,
-                        values=self.context.pareto_front_values,
-                        states=states_for_tracker
-                    )
-                    print(f"Loaded Pareto front with {len(self.context.pareto_front_rewards)} points into efficient tracker")
-                else:
-                    print(f"Loaded Pareto front with {len(self.context.pareto_front_rewards)} points")
-            
-            if len(self.context.reference_point) > 0:
-                self.env.reference_point = self.context.reference_point
+                # Sync to environment for compatibility
+                if hasattr(self.env, 'pareto_front'):
+                    self.env.pareto_front = self.context.pareto_front_rewards
+                if hasattr(self.env, 'reference_point'):
+                    self.env.reference_point = self.context.reference_point
             
             # Load best states from context
             self.best_states = self.context.best_states
@@ -370,8 +357,7 @@ class UnifiedHPPOTrainer:
 
     def _update_pareto_tracking(self, state: np.ndarray, rewards_dict: Dict, vals_dict: Dict) -> None:
         """
-        Update Pareto tracking attributes during training using the environment's efficient tracker.
-        This is called for each episode to update the Pareto front incrementally.
+        Update Pareto tracking using the trainer's centralized tracker.
         
         Args:
             state: Episode state
@@ -382,57 +368,32 @@ class UnifiedHPPOTrainer:
         reward_point = np.array([rewards_dict.get(param, 0.0) for param in self.env.get_parameter_names()])
         value_point = np.array([vals_dict.get(param, 0.0) for param in self.env.get_parameter_names()])
         
-        # Track all explored points for analysis (but don't track states for memory efficiency)
+        # Track all explored points for analysis
         self.context.all_rewards.append(reward_point.tolist())
         self.context.all_values.append(value_point.tolist())
         
-        try:
-            # Use environment's efficient Pareto tracker if available
-            if hasattr(self.env, 'pareto_tracker'):
-                # Initialize tracker with current data if needed
-                if self.env.pareto_tracker.current_front.size == 0 and len(self.context.pareto_front_rewards) > 0:
-                    # Load existing Pareto data into tracker
-                    self.env.pareto_tracker.set_current_data(
-                        front=self.context.pareto_front_rewards,
-                        values=self.context.pareto_front_values,
-                        states=self.context.pareto_states.reshape(len(self.context.pareto_states), -1) if len(self.context.pareto_states) > 0 else None
-                    )
-                
-                # Add new point to tracker
-                updated_front, was_updated = self.env.pareto_tracker.add_point(
-                    point=reward_point,
-                    values=value_point,
-                    state=state
-                )
-                
-                if was_updated:
-                    # Update context data from the efficient tracker
-                    self.context.pareto_front_rewards = self.env.pareto_tracker.get_front(force_update=True)
-                    self.context.pareto_front_values = self.env.pareto_tracker.get_values(force_update=True)
-                    tracker_states = self.env.pareto_tracker.get_states(force_update=True)
-                    # Reshape states back to original format if available
-                    if tracker_states.size > 0:
-                        self.context.pareto_states = tracker_states.reshape(len(tracker_states), self.env.max_layers, -1)
-                    else:
-                        self.context.pareto_states = np.array([])
-                    
-                    # Update reference point
-                    if len(self.context.pareto_front_rewards) > 0:
-                        self.context.reference_point = np.max(self.context.pareto_front_rewards, axis=0) * 1.1
-                    
-                    # Sync to environment for compatibility
-                    self.env.pareto_front = self.context.pareto_front_rewards
-                    self.env.reference_point = self.context.reference_point
-                    
-            else:
-                # Fallback to original incremental computation
-                raise Exception("Environment does not have efficient Pareto tracker")
-                self._update_pareto_tracking_legacy(state, reward_point, value_point)
-                
-        except Exception as e:
-            raise Exception(f"Warning: Failed to update Pareto front using efficient tracker: {e}")
-            # Fallback to legacy method
-            self._update_pareto_tracking_legacy(state, reward_point, value_point)
+        # Add point to centralized Pareto tracker
+        updated_front, was_updated = self.pareto_tracker.add_point(
+            point=reward_point,
+            values=value_point,
+            state=state
+        )
+        
+        if was_updated:
+            # Update context from tracker
+            self.context.pareto_front_rewards = self.pareto_tracker.get_front(force_update=True)
+            self.context.pareto_front_values = self.pareto_tracker.get_values(force_update=True)
+            self.context.pareto_states = self.pareto_tracker.get_states(force_update=True)
+            
+            # Update reference point
+            if len(self.context.pareto_front_rewards) > 0:
+                self.context.reference_point = np.max(self.context.pareto_front_rewards, axis=0) * 1.1
+            
+            # Sync to environment periodically for compatibility (if it needs it)
+            if hasattr(self.env, 'pareto_front'):
+                self.env.pareto_front = self.context.pareto_front_rewards
+            if hasattr(self.env, 'reference_point'):
+                self.env.reference_point = self.context.reference_point
 
     def write_metrics_to_file(self) -> None:
         """Save training metrics to CSV file."""
@@ -1147,7 +1108,17 @@ class UnifiedHPPOTrainer:
             sol_rewards[i] = rewards
             sol_states[i] = state.get_array()
 
-        self.env.pareto_tracker.set_current_data(sol_rewards, sol_vals, sol_states)
+        # Set initial Pareto front data in centralized tracker
+        self.pareto_tracker.set_current_data(
+            front=np.array(sol_rewards),
+            values=np.array(sol_vals),
+            states=np.array(sol_states)
+        )
+        
+        # Update context from tracker
+        self.context.pareto_front_rewards = np.array(sol_rewards)
+        self.context.pareto_front_values = np.array(sol_vals)
+        self.context.pareto_states = np.array(sol_states)
         
         print(f"Initialized Pareto front with {n_solutions} solutions")
 
