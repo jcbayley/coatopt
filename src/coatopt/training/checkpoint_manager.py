@@ -78,20 +78,39 @@ class TrainingCheckpointManager:
     PNG files (plots, visualizations) remain as separate files for easy viewing.
     """
     
-    def __init__(self, root_dir: str, checkpoint_name: str = "training_checkpoint.h5"):
+    def __init__(self, root_dir: str, checkpoint_name: str = "training_checkpoint.h5", 
+                 context: Optional[TrainingContext] = None):
         """
-        Initialize checkpoint manager.
+        Initialize checkpoint manager with optional context and trackers.
         
         Args:
             root_dir: Root directory for training outputs
             checkpoint_name: Name of the HDF5 checkpoint file
+            context: Optional TrainingContext to manage
         """
         self.root_dir = root_dir
         self.checkpoint_path = os.path.join(root_dir, checkpoint_name)
         self.backup_path = os.path.join(root_dir, f"backup_{checkpoint_name}")
         
+        # Context and trackers
+        self.context = context
+        self.pc_tracker = None
+        self.weight_archive = None
+        
         # Ensure root directory exists
         os.makedirs(root_dir, exist_ok=True)
+    
+    def register_pc_tracker(self, pc_tracker):
+        """Register a preference-constrained tracker."""
+        self.pc_tracker = pc_tracker
+    
+    def register_weight_archive(self, weight_archive):
+        """Register a weight archive."""
+        self.weight_archive = weight_archive
+    
+    def set_context(self, context: TrainingContext):
+        """Set or update the training context."""
+        self.context = context
     
     def save_complete_checkpoint(self, trainer_data: Dict[str, Any]) -> None:
         """
@@ -421,6 +440,60 @@ class TrainingCheckpointManager:
             pass
         
         return info
+    
+    def save_checkpoint(self, episode: int = None) -> None:
+        """
+        Save checkpoint using the registered context and trackers.
+        
+        Args:
+            episode: Optional current episode number
+        """
+        if not self.context:
+            raise ValueError("No context registered. Use set_context() first.")
+        
+        # Update episode if provided
+        if episode is not None:
+            self.context.current_episode = episode
+        
+        # Add tracker data to context metadata
+        if self.pc_tracker:
+            self.context.metadata['pc_tracker_data'] = self.pc_tracker.get_checkpoint_data()
+        
+        if self.weight_archive:
+            # Serialize weight archive if needed
+            self.context.metadata['weight_archive_data'] = {
+                'weights': getattr(self.weight_archive, 'weights', []),
+                'max_size': getattr(self.weight_archive, 'max_size', 50)
+            }
+        
+        # Use the existing save_context method
+        self.save_context(self.context)
+    
+    def load_checkpoint(self) -> TrainingContext:
+        """
+        Load checkpoint and restore context and trackers.
+        
+        Returns:
+            Loaded TrainingContext
+        """
+        # Load context
+        context = self.load_context()
+        
+        # Restore tracker data
+        if 'pc_tracker_data' in context.metadata and self.pc_tracker:
+            self.pc_tracker.load_from_checkpoint_data(context.metadata['pc_tracker_data'])
+        
+        if 'weight_archive_data' in context.metadata and self.weight_archive:
+            archive_data = context.metadata['weight_archive_data']
+            # Restore weight archive state
+            if hasattr(self.weight_archive, 'weights'):
+                self.weight_archive.weights = archive_data.get('weights', [])
+            if hasattr(self.weight_archive, 'max_size'):
+                self.weight_archive.max_size = archive_data.get('max_size', 50)
+        
+        # Update our context reference
+        self.context = context
+        return context
     
     def save_context(self, context: TrainingContext) -> None:
         """

@@ -169,6 +169,7 @@ class UnifiedHPPOTrainer:
         
         # Initialize or use provided context
         self.context = context or TrainingContext()
+        
         self.context.training_config.update({
             'n_iterations': n_iterations,
             'n_layers': n_layers,
@@ -184,10 +185,11 @@ class UnifiedHPPOTrainer:
         # Setup directories
         self._setup_directories()
 
-        # Setup unified checkpoint manager
+        # Setup unified checkpoint manager with context
         self.checkpoint_manager = TrainingCheckpointManager(
             root_dir=self.root_dir,
-            checkpoint_name="training_checkpoint.h5"
+            checkpoint_name="training_checkpoint.h5",
+            context=self.context
         )
 
         # Initialize consolidation if config provided
@@ -224,6 +226,11 @@ class UnifiedHPPOTrainer:
                 constraint_penalty_weight=getattr(self.env, 'pc_constraint_penalty_weight', 50.0),
                 constraint_margin=getattr(self.env, 'pc_constraint_margin', 0.05)
             )
+        
+        # Register trackers with checkpoint manager
+        self.checkpoint_manager.register_weight_archive(self.weight_archive)
+        if self.pc_tracker:
+            self.checkpoint_manager.register_pc_tracker(self.pc_tracker)
 
     def _setup_directories(self) -> None:
         """Create necessary directories for training outputs."""
@@ -317,7 +324,7 @@ class UnifiedHPPOTrainer:
         """Load complete training state from unified checkpoint."""
         try:
             print("Loading from unified checkpoint...")
-            self.context = self.checkpoint_manager.load_context()
+            self.context = self.checkpoint_manager.load_checkpoint()
             
             if self.context.current_episode == 0 and len(self.context.training_metrics) == 0:
                 print("Warning: Empty checkpoint data, initializing new training state")
@@ -352,14 +359,6 @@ class UnifiedHPPOTrainer:
             
             # Load best states from context
             self.best_states = self.context.best_states
-            
-            # Load preference constrained tracker data if available
-            if 'pc_tracker_data' in self.context.metadata and self.pc_tracker:
-                success = self.pc_tracker.load_from_checkpoint_data(self.context.metadata['pc_tracker_data'])
-                if success:
-                    print("Loaded preference-constrained tracker state from checkpoint")
-                else:
-                    print("Warning: Failed to load preference-constrained tracker state")
             
             self.continue_training = True
             print(f"Successfully loaded unified checkpoint from episode {self.start_episode}")
@@ -1064,30 +1063,22 @@ class UnifiedHPPOTrainer:
 
     def _save_unified_checkpoint(self, episode: int, migration: bool = False) -> None:
         """
-        Save complete training state using unified checkpoint system via context.
+        Save complete training state using checkpoint manager.
         
         Args:
             episode: Current episode number
             migration: Whether this is a migration from legacy format
         """
         try:
-            # Update context with current episode
-            self.context.current_episode = episode
-            
-            # Add PC tracker data if available
-            if self.pc_tracker:
-                # This would require extending context or storing in metadata
-                self.context.metadata['pc_tracker_data'] = self.pc_tracker.get_checkpoint_data()
-            
             # Store best states in context (convert to arrays if needed)
             self.context.best_states = [
                 state.get_array() if hasattr(state, 'get_array') else state 
                 for state in getattr(self, 'best_states', [])
             ]
             
-            # Save using checkpoint manager's context method
+            # Save using checkpoint manager
             start_time = time.time()
-            self.checkpoint_manager.save_context(self.context)
+            self.checkpoint_manager.save_checkpoint(episode)
             
             save_time = time.time() - start_time
             checkpoint_info = self.checkpoint_manager.get_checkpoint_info()
