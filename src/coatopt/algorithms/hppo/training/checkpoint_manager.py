@@ -199,7 +199,7 @@ class TrainingCheckpointManager:
         
         # Save other metadata
         for key, value in metadata.items():
-            if key not in ['training_config', 'environment_config']:
+            if key not in ['training_config', 'environment_config', 'creation_time', 'last_updated']:
                 if isinstance(value, (str, int, float)):
                     meta_group.create_dataset(key, data=value)
     
@@ -525,7 +525,6 @@ class TrainingCheckpointManager:
                 'all_rewards': np.array(context.all_rewards) if context.all_rewards else np.array([]),
                 'all_values': np.array(context.all_values) if context.all_values else np.array([]),
             },
-            'best_states': context.best_states,
             'preference_constrained': {
                 'constraint_history': context.constraint_history
             }

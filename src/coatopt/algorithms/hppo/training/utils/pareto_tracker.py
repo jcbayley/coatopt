@@ -173,8 +173,8 @@ def _divide_conquer_pareto_front(points: np.ndarray) -> np.ndarray:
     
     # Divide into two halves
     mid = n_points // 2
-    left_front = _divide_conquer_pareto_front(points[:mid])
-    right_front = _divide_conquer_pareto_front(points[mid:])
+    left_front, left_indices = _divide_conquer_pareto_front(points[:mid])
+    right_front, right_indices = _divide_conquer_pareto_front(points[mid:])
     
     # Combine the two fronts
     combined = np.vstack([left_front, right_front])
