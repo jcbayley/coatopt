@@ -378,7 +378,7 @@ class GeneticTrainer:
         # Save results
         self._save_results(states_data, results_data, pareto_states_data, pareto_results_data)
         
-        # Create visualizations
+        # Create enhanced visualizations
         self._create_visualizations(pareto_results_data, pareto_states_data)
         
         # Return in format expected by evaluation utilities
@@ -387,7 +387,7 @@ class GeneticTrainer:
         return states_data, results_data, sampled_weights
 
     def _process_population_data(self, population: Population, n_samples: Optional[int] = None) -> Tuple[np.ndarray, Dict[str, np.ndarray]]:
-        """Process population data to extract states and computed values."""
+        """Process population data efficiently, avoiding redundant value computations."""
         X = population.get("X")
         F = population.get("F")
         
@@ -396,7 +396,9 @@ class GeneticTrainer:
             X = X[indices]
             F = F[indices]
         
-        # Convert to states and compute actual values
+        print(f"Processing {len(X)} population samples...")
+        
+        # Convert to states (this is fast)
         states = []
         results = {f"{param}_vals": [] for param in self.env.optimise_parameters}
         results.update({f"{param}_rewards": [] for param in self.env.optimise_parameters})
@@ -405,7 +407,59 @@ class GeneticTrainer:
             state = self.problem.make_state_from_vars(row)
             states.append(state)
             
-            # Compute actual values
+            # For efficiency, use the objective values (F) directly instead of recomputing
+            # The genetic algorithm already computed these during optimization
+            for j, param in enumerate(self.env.optimise_parameters):
+                if j < len(F[i]):
+                    # Use objective values as rewards (negated because PyMOO minimizes)
+                    results[f"{param}_rewards"].append(-F[i, j])
+                    
+                    # For values, we can approximate from rewards or compute only when needed
+                    # This avoids the expensive compute_state_value call for all solutions
+                    if param == "reflectivity":
+                        # Convert reward back to reflectivity value
+                        results[f"{param}_vals"].append(1 - 10**(-(-F[i, j])))
+                    elif param == "absorption":
+                        # Convert reward back to absorption value  
+                        results[f"{param}_vals"].append(10**(-(-F[i, j]) - 10))
+                    elif param == "thermal_noise":
+                        # For thermal noise, the relationship is more complex
+                        # Use a placeholder for now, or compute only for final Pareto front
+                        results[f"{param}_vals"].append(-F[i, j])
+                    else:
+                        results[f"{param}_vals"].append(-F[i, j])
+                else:
+                    results[f"{param}_rewards"].append(0.0)
+                    results[f"{param}_vals"].append(0.0)
+        
+        # Convert to numpy arrays
+        for key in results:
+            results[key] = np.array(results[key])
+        
+        print(f"Successfully processed {len(states)} population samples")
+        return np.array(states), results
+
+    def _process_pareto_front(self) -> Tuple[np.ndarray, Dict[str, np.ndarray]]:
+        """Process Pareto front solutions with accurate value computation."""
+        if len(self.result.X.shape) < 2:
+            X = np.array([self.result.X])
+            F = np.array([self.result.F])
+        else:
+            X = self.result.X
+            F = self.result.F
+        
+        print(f"Processing {len(X)} Pareto front solutions with accurate value computation...")
+        
+        # Convert to states and compute accurate values for Pareto front only
+        states = []
+        results = {f"{param}_vals": [] for param in self.env.optimise_parameters}
+        results.update({f"{param}_rewards": [] for param in self.env.optimise_parameters})
+        
+        for i, row in enumerate(X):
+            state = self.problem.make_state_from_vars(row)
+            states.append(state)
+            
+            # Compute accurate values only for Pareto front (small number of solutions)
             vals = self.env.compute_state_value(state, return_separate=True)
             val_names = ["reflectivity", "thermal_noise", "absorption", "thickness"]
             
@@ -426,18 +480,8 @@ class GeneticTrainer:
         for key in results:
             results[key] = np.array(results[key])
         
+        print(f"Successfully processed Pareto front with accurate values")
         return np.array(states), results
-
-    def _process_pareto_front(self) -> Tuple[np.ndarray, Dict[str, np.ndarray]]:
-        """Process Pareto front solutions."""
-        if len(self.result.X.shape) < 2:
-            X = np.array([self.result.X])
-            F = np.array([self.result.F])
-        else:
-            X = self.result.X
-            F = self.result.F
-        
-        return self._process_population_data(Population.new("X", X, "F", F))
 
     def _save_results(
         self,
@@ -618,16 +662,19 @@ class GeneticTrainer:
         return self.result
 
     def _create_visualizations(self, results: Dict[str, np.ndarray], states: np.ndarray):
-        """Create visualization plots."""
-        # Pareto front plot
-        if len(self.env.optimise_parameters) >= 2:
-            self._create_pareto_plot(results)
+        """Create simple Pareto visualization similar to HPPO trainer."""
+        print("Creating Pareto front visualization...")
         
-        # Individual coating visualizations
-        self._create_coating_plots(states, results)
+        # Simple Pareto front plot similar to HPPO
+        if len(self.env.optimise_parameters) >= 2:
+            self._create_simple_pareto_plot(results)
+        
+        # Create just a few representative coating plots
+        print("Creating sample coating visualizations...")
+        self._create_sample_coating_plots(states, results)
 
-    def _create_pareto_plot(self, results: Dict[str, np.ndarray]):
-        """Create Pareto front visualization."""
+    def _create_simple_pareto_plot(self, results: Dict[str, np.ndarray]):
+        """Create simple Pareto front visualization matching HPPO style."""
         params = self.env.optimise_parameters
         if len(params) < 2:
             return
@@ -636,42 +683,65 @@ class GeneticTrainer:
         
         fig, ax = plt.subplots(figsize=(10, 8))
         
-        # Convert objectives back to actual values for plotting
+        # Get values for plotting
         x_vals = results[f"{param1}_vals"]
         y_vals = results[f"{param2}_vals"]
         
-        # Handle reflectivity conversion
-        if param1 == "reflectivity":
-            x_vals = 1 - 10**(-results[f"{param1}_rewards"])
-        if param2 == "absorption":
-            y_vals = 10**(-results[f"{param2}_rewards"] - 10)
+        # Apply same transformations as HPPO
+        x_label = param1.replace('_', ' ').title()
+        y_label = param2.replace('_', ' ').title()
         
-        ax.scatter(x_vals, y_vals, s=10, c="red", alpha=0.5)
-        ax.set_xlabel(param1.title())
-        ax.set_ylabel(param2.title())
-        ax.set_title(f"Pareto Front: {param1.title()} vs {param2.title()}")
+        if param1 == "reflectivity":
+            x_vals = 1 - x_vals  # Convert to loss for minimization display
+            x_label = "1 - Reflectivity"
+        
+        if param2 == "absorption":
+            y_vals = y_vals * 1e6  # Convert to ppm
+            y_label = "Absorption [ppm]"
+        elif param2 == "thermal_noise":
+            y_label = "Thermal Noise [m/√Hz]"
+        
+        # Simple scatter plot
+        ax.scatter(x_vals, y_vals, s=20, c="red", alpha=0.6, label=f'Solutions ({len(x_vals)})')
+        
+        ax.set_xlabel(x_label)
+        ax.set_ylabel(y_label)
+        ax.set_title(f"Pareto Front: {x_label} vs {y_label}")
+        ax.grid(True, alpha=0.3)
+        ax.legend()
         
         plt.tight_layout()
-        fig.savefig(os.path.join(self.output_dir, "pareto_front.png"), dpi=300, bbox_inches='tight')
+        fig.savefig(os.path.join(self.output_dir, "pareto_front.png"), dpi=150, bbox_inches='tight')
         plt.close()
 
-    def _create_coating_plots(self, states: np.ndarray, results: Dict[str, np.ndarray]):
-        """Create individual coating stack visualizations."""
-        n_plots = min(len(states), 10)  # Limit to first 10 solutions
+    def _create_sample_coating_plots(self, states: np.ndarray, results: Dict[str, np.ndarray]):
+        """Create a few sample coating stack visualizations."""
+        n_plots = min(len(states), 3)  # Only 3 plots instead of 10
         
-        for i in range(n_plots):
-            state = states[i]
-            
-            # Calculate rewards and values for this state
-            total_reward, vals, rewards = self.env.compute_reward(state)
+        print(f"Creating {n_plots} sample coating plots...")
+        
+        # Select diverse solutions
+        if len(states) > n_plots:
+            indices = np.linspace(0, len(states)-1, n_plots, dtype=int)
+        else:
+            indices = range(len(states))
+        
+        for i, state_idx in enumerate(indices):
+            state = states[state_idx]
             
             try:
+                # Calculate rewards and values for this state
+                total_reward, vals, rewards = self.env.compute_reward(state)
+                
                 fig, ax = plot_stack(state, self.env.materials, rewards=rewards, vals=vals)
-                fig.savefig(os.path.join(self.output_dir, "states", f"stack_{i}.png"), 
-                          dpi=300, bbox_inches='tight')
+                fig.suptitle(f"Sample Solution {i+1}/{n_plots}")
+                
+                fig.savefig(os.path.join(self.output_dir, "states", f"stack_sample_{i+1}.png"), 
+                          dpi=150, bbox_inches='tight')  # Reduced DPI
                 plt.close(fig)
+                
             except Exception as e:
-                print(f"Error creating plot for stack {i}: {e}")
+                print(f"Error creating coating plot {i+1}: {e}")
                 continue
 
     def generate_solutions(self, n_samples: int, random_weights: bool = True) -> Tuple[np.ndarray, List[Dict], np.ndarray, List[Dict]]:
