@@ -124,6 +124,7 @@ class DataConfig(BaseConfig):
     reward_normalisation_mode: str = "fixed"  # "fixed" or "adaptive"
     reward_normalisation_ranges: Dict[str, List[float]] = field(default_factory=dict)
     reward_normalisation_alpha: float = 0.1
+    reward_normalisation_apply_clipping: bool = True
     
     # Reward addon system configuration
     apply_boundary_penalties: bool = False

@@ -81,6 +81,7 @@ class RewardCalculator:
                  # Reward normalization system
                  use_reward_normalisation=True, reward_normalisation_mode="fixed",
                  reward_normalisation_ranges=None, reward_normalisation_alpha=0.1,
+                 reward_normalisation_apply_clipping=True,
                  reward_history_size=1000, 
                  # Addon configuration
                  apply_boundary_penalties=False,
@@ -135,6 +136,7 @@ class RewardCalculator:
         self.reward_normalisation_mode = reward_normalisation_mode
         self.reward_normalisation_ranges = reward_normalisation_ranges or {}
         self.reward_normalisation_alpha = reward_normalisation_alpha
+        self.reward_normalisation_apply_clipping = reward_normalisation_apply_clipping
         
         # History tracking for adaptive normalisation
         self.reward_history_size = reward_history_size
@@ -290,9 +292,9 @@ class RewardCalculator:
             **self.kwargs
         )
         
-        # Apply old-style reward normalisation (if enabled)
+        # Apply reward normalisation (if enabled)
         normalised_rewards = {}
-        if self.use_reward_normalisation and weights is not None:
+        if self.use_reward_normalisation:
             # Extract individual rewards from the rewards dict
             individual_rewards = {param: rewards.get(param, 0.0) for param in self.optimise_parameters}
             
@@ -573,6 +575,9 @@ class RewardCalculator:
                 normalised_rewards[param] = (reward - min_val) / (max_val - min_val)
             else:
                 normalised_rewards[param] = reward
+
+            if self.reward_normalisation_apply_clipping:
+                normalised_rewards[param] = np.clip(normalised_rewards[param], 0.0, 1.0)
                 
             #print(param, reward, normalised_rewards[param], min_val, max_val)
         return normalised_rewards

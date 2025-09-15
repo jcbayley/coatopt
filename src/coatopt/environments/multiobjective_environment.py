@@ -48,6 +48,7 @@ class MultiObjectiveEnvironment(HPPOEnvironment):
             reward_normalisation_mode=self.reward_normalisation_mode,
             reward_normalisation_ranges=self.reward_normalisation_ranges,
             reward_normalisation_alpha=self.reward_normalisation_alpha,
+            reward_normalisation_apply_clipping=self.reward_normalisation_apply_clipping,
             # Addon system
             apply_boundary_penalties=self.apply_boundary_penalties,
             apply_divergence_penalty=self.apply_divergence_penalty,

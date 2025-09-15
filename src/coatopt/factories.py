@@ -110,6 +110,7 @@ def create_hppo_environment(config: CoatingOptimisationConfig, materials: Dict[i
         reward_normalisation_mode=config.data.reward_normalisation_mode,
         reward_normalisation_ranges=config.data.reward_normalisation_ranges,
         reward_normalisation_alpha=config.data.reward_normalisation_alpha,
+        reward_normalisation_apply_clipping=config.data.reward_normalisation_apply_clipping,
         # Addon parameters
         apply_boundary_penalties=config.data.apply_boundary_penalties,
         apply_divergence_penalty=config.data.apply_divergence_penalty,
@@ -162,6 +163,7 @@ def create_multiobjective_environment(config: CoatingOptimisationConfig, materia
         reward_normalisation_mode=config.data.reward_normalisation_mode,
         reward_normalisation_ranges=config.data.reward_normalisation_ranges,
         reward_normalisation_alpha=config.data.reward_normalisation_alpha,
+        reward_normalisation_apply_clipping=config.data.reward_normalisation_apply_clipping,
         # Addon parameters
         apply_boundary_penalties=config.data.apply_boundary_penalties,
         apply_divergence_penalty=config.data.apply_divergence_penalty,
