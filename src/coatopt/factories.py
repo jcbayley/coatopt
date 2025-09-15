@@ -15,7 +15,6 @@ Supported Algorithm Types:
 from typing import Dict, Any, Tuple, Optional, Union
 from coatopt.algorithms import hppo
 from coatopt.algorithms.genetic_algorithms.genetic_moo import GeneticTrainer
-from coatopt.algorithms.hppo.training.hypervolume_trainer import HypervolumeTrainer
 from coatopt.environments.hppo_environment import HPPOEnvironment
 from coatopt.environments.multiobjective_environment import MultiObjectiveEnvironment
 from coatopt.environments.genetic_environment import GeneticCoatingStack
@@ -106,7 +105,13 @@ def create_hppo_environment(config: CoatingOptimisationConfig, materials: Dict[i
         optimise_weight_ranges=config.data.optimise_weight_ranges,
         reward_function=config.data.reward_function,
         objective_bounds=config.data.objective_bounds if hasattr(config.data, 'objective_bounds') else None,
-        apply_normalization=config.data.apply_normalization,
+        # Reward normalisation parameters
+        use_reward_normalisation=config.data.use_reward_normalisation,
+        reward_normalisation_mode=config.data.reward_normalisation_mode,
+        reward_normalisation_ranges=config.data.reward_normalisation_ranges,
+        reward_normalisation_alpha=config.data.reward_normalisation_alpha,
+        reward_normalisation_apply_clipping=config.data.reward_normalisation_apply_clipping,
+        # Addon parameters
         apply_boundary_penalties=config.data.apply_boundary_penalties,
         apply_divergence_penalty=config.data.apply_divergence_penalty,
         apply_air_penalty=config.data.apply_air_penalty,
@@ -151,14 +156,15 @@ def create_multiobjective_environment(config: CoatingOptimisationConfig, materia
         final_weight_alpha=config.training.final_weight_alpha if config.training else 1.0,
         cycle_weights=config.training.cycle_weights if config.training else False,
         n_weight_cycles=config.training.n_weight_cycles if config.training else 2,
-        # Reward normalization parameters
-        use_reward_normalization=config.data.use_reward_normalization,
-        reward_normalization_mode=config.data.reward_normalization_mode,
-        reward_normalization_ranges=config.data.reward_normalization_ranges,
-        reward_normalization_alpha=config.data.reward_normalization_alpha,
         # Objective bounds
         objective_bounds=config.data.objective_bounds if hasattr(config.data, 'objective_bounds') else None,
-        apply_normalization=config.data.apply_normalization,
+        # Reward normalisation parameters
+        use_reward_normalisation=config.data.use_reward_normalisation,
+        reward_normalisation_mode=config.data.reward_normalisation_mode,
+        reward_normalisation_ranges=config.data.reward_normalisation_ranges,
+        reward_normalisation_alpha=config.data.reward_normalisation_alpha,
+        reward_normalisation_apply_clipping=config.data.reward_normalisation_apply_clipping,
+        # Addon parameters
         apply_boundary_penalties=config.data.apply_boundary_penalties,
         apply_divergence_penalty=config.data.apply_divergence_penalty,
         apply_air_penalty=config.data.apply_air_penalty,
@@ -173,19 +179,6 @@ def create_multiobjective_environment(config: CoatingOptimisationConfig, materia
 
     return env
 
-
-def create_pareto_environment(config: CoatingOptimisationConfig, materials: Dict[int, Dict[str, Any]]) -> MultiObjectiveEnvironment:
-    """
-    Create MultiObjectiveEnvironment (backward compatibility name).
-    
-    Args:
-        config: Structured configuration object
-        materials: Materials dictionary
-        
-    Returns:
-        Configured MultiObjectiveEnvironment
-    """
-    return create_multiobjective_environment(config, materials)
 
 
 def create_pc_hppo_agent(config: CoatingOptimisationConfig, env: Union[HPPOEnvironment, MultiObjectiveEnvironment]) -> hppo.PCHPPO:
@@ -263,7 +256,7 @@ def create_pc_hppo_agent(config: CoatingOptimisationConfig, env: Union[HPPOEnvir
     return agent
 
 
-def create_trainer(config: CoatingOptimisationConfig, agent: hppo.PCHPPO, env: Union[HPPOEnvironment, MultiObjectiveEnvironment], continue_training: bool = False, callbacks = None) -> Union[hppo.HPPOTrainer, HypervolumeTrainer]:
+def create_trainer(config: CoatingOptimisationConfig, agent: hppo.PCHPPO, env: Union[HPPOEnvironment, MultiObjectiveEnvironment], continue_training: bool = False, callbacks = None) -> hppo.HPPOTrainer:
     """
     Create HPPO trainer from structured configuration.
     
@@ -311,23 +304,13 @@ def create_trainer(config: CoatingOptimisationConfig, agent: hppo.PCHPPO, env: U
         env.pc_constraint_steps = getattr(config.training, 'pc_constraint_steps', 8)
         env.pc_constraint_penalty_weight = getattr(config.training, 'pc_constraint_penalty_weight', 50.0)
         env.pc_constraint_margin = getattr(config.training, 'pc_constraint_margin', 0.05)
+        env.pc_cycle_objective_per_constraint_steps = getattr(config.training, 'pc_cycle_objective_per_constraint_steps', False)
         
         # Enable preference constraints addon in reward system
         if hasattr(env, 'reward_calculator'):
             env.reward_calculator.apply_preference_constraints = True
     
-    if use_hypervolume:
-        # Add hypervolume-specific parameters
-        trainer_kwargs.update({
-            'use_hypervolume_loss': getattr(config.training, 'use_hypervolume_loss', False),
-            'hv_loss_weight': getattr(config.training, 'hv_loss_weight', 0.5),
-            'hv_update_interval': getattr(config.training, 'hv_update_interval', 10),
-            'adaptive_reference_point': getattr(config.training, 'adaptive_reference_point', True),
-        })
-        print("Creating hypervolume-enhanced trainer...")
-        trainer = HypervolumeTrainer(**trainer_kwargs)
-    else:
-        trainer = hppo.HPPOTrainer(**trainer_kwargs)
+    trainer = hppo.HPPOTrainer(**trainer_kwargs)
     
     return trainer
 
@@ -349,7 +332,7 @@ def load_model_if_needed(agent: hppo.PCHPPO, config: CoatingOptimisationConfig, 
         print(f"Loaded model from: {config.general.load_model_path if config.general.load_model_path != 'root' else config.general.root_dir}")
 
 
-def setup_optimisation_pipeline(config: CoatingOptimisationConfig, materials: Dict[int, Dict[str, Any]], continue_training: bool = False, init_pareto_front: bool = True) -> Tuple[Union[HPPOEnvironment, MultiObjectiveEnvironment], hppo.PCHPPO, Union[hppo.HPPOTrainer, HypervolumeTrainer]]:
+def setup_optimisation_pipeline(config: CoatingOptimisationConfig, materials: Dict[int, Dict[str, Any]], continue_training: bool = False, init_pareto_front: bool = True) -> Tuple[Union[HPPOEnvironment, MultiObjectiveEnvironment], hppo.PCHPPO, hppo.HPPOTrainer]:
     """
     Complete setup of the optimisation pipeline.
     

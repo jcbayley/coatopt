@@ -755,9 +755,9 @@ class PCHPPO:
         returns_array = np.array(self.replay_buffer.returns)
         returns = torch.from_numpy(returns_array)
         
-        # Handle normalization for both scalar and multi-objective returns
+        # Handle normalisation for both scalar and multi-objective returns
         if returns.dim() > 1 and self.multi_value_rewards:  # Multi-objective returns
-            # Normalize each objective separately
+            # normalise each objective separately
             mean_returns = returns.mean(dim=0, keepdim=True)
             std_returns = returns.std(dim=0, keepdim=True) + HPPOConstants.EPSILON
             returns = (returns - mean_returns) / std_returns

@@ -23,6 +23,7 @@ import pandas as pd
 import torch
 from typing import Dict, List, Any, Optional, Tuple
 from datetime import datetime
+from .context import TrainingContext
 
 
 class TrainingCheckpointManager:
@@ -77,20 +78,39 @@ class TrainingCheckpointManager:
     PNG files (plots, visualizations) remain as separate files for easy viewing.
     """
     
-    def __init__(self, root_dir: str, checkpoint_name: str = "training_checkpoint.h5"):
+    def __init__(self, root_dir: str, checkpoint_name: str = "training_checkpoint.h5", 
+                 context: Optional[TrainingContext] = None):
         """
-        Initialize checkpoint manager.
+        Initialize checkpoint manager with optional context and trackers.
         
         Args:
             root_dir: Root directory for training outputs
             checkpoint_name: Name of the HDF5 checkpoint file
+            context: Optional TrainingContext to manage
         """
         self.root_dir = root_dir
         self.checkpoint_path = os.path.join(root_dir, checkpoint_name)
         self.backup_path = os.path.join(root_dir, f"backup_{checkpoint_name}")
         
+        # Context and trackers
+        self.context = context
+        self.pc_tracker = None
+        self.weight_archive = None
+        
         # Ensure root directory exists
         os.makedirs(root_dir, exist_ok=True)
+    
+    def register_pc_tracker(self, pc_tracker):
+        """Register a preference-constrained tracker."""
+        self.pc_tracker = pc_tracker
+    
+    def register_weight_archive(self, weight_archive):
+        """Register a weight archive."""
+        self.weight_archive = weight_archive
+    
+    def set_context(self, context: TrainingContext):
+        """Set or update the training context."""
+        self.context = context
     
     def save_complete_checkpoint(self, trainer_data: Dict[str, Any]) -> None:
         """
@@ -179,7 +199,7 @@ class TrainingCheckpointManager:
         
         # Save other metadata
         for key, value in metadata.items():
-            if key not in ['training_config', 'environment_config']:
+            if key not in ['training_config', 'environment_config', 'creation_time', 'last_updated']:
                 if isinstance(value, (str, int, float)):
                     meta_group.create_dataset(key, data=value)
     
@@ -420,3 +440,156 @@ class TrainingCheckpointManager:
             pass
         
         return info
+    
+    def save_checkpoint(self, episode: int = None) -> None:
+        """
+        Save checkpoint using the registered context and trackers.
+        
+        Args:
+            episode: Optional current episode number
+        """
+        if not self.context:
+            raise ValueError("No context registered. Use set_context() first.")
+        
+        # Update episode if provided
+        if episode is not None:
+            self.context.current_episode = episode
+        
+        # Add tracker data to context metadata
+        if self.pc_tracker:
+            self.context.metadata['pc_tracker_data'] = self.pc_tracker.get_checkpoint_data()
+        
+        if self.weight_archive:
+            # Serialize weight archive if needed
+            self.context.metadata['weight_archive_data'] = {
+                'weights': getattr(self.weight_archive, 'weights', []),
+                'max_size': getattr(self.weight_archive, 'max_size', 50)
+            }
+        
+        # Use the existing save_context method
+        self.save_context(self.context)
+    
+    def load_checkpoint(self) -> TrainingContext:
+        """
+        Load checkpoint and restore context and trackers.
+        
+        Returns:
+            Loaded TrainingContext
+        """
+        # Load context
+        context = self.load_context()
+        
+        # Restore tracker data
+        if 'pc_tracker_data' in context.metadata and self.pc_tracker:
+            self.pc_tracker.load_from_checkpoint_data(context.metadata['pc_tracker_data'])
+        
+        if 'weight_archive_data' in context.metadata and self.weight_archive:
+            archive_data = context.metadata['weight_archive_data']
+            # Restore weight archive state
+            if hasattr(self.weight_archive, 'weights'):
+                self.weight_archive.weights = archive_data.get('weights', [])
+            if hasattr(self.weight_archive, 'max_size'):
+                self.weight_archive.max_size = archive_data.get('max_size', 50)
+        
+        # Update our context reference
+        self.context = context
+        return context
+    
+    def save_context(self, context: TrainingContext) -> None:
+        """
+        Save TrainingContext to checkpoint file.
+        
+        Args:
+            context: TrainingContext instance to save
+        """
+        # Prepare trainer data from context
+        trainer_data = {
+            'metadata': {
+                'training_config': context.training_config,
+                'environment_config': context.environment_config,
+                'current_episode': context.current_episode,
+                'algorithm_type': 'hppo',
+                **context.metadata
+            },
+            'training_data': {
+                'metrics_df': context.training_metrics,
+                'start_episode': context.start_episode,
+                'episode_rewards': np.array(context.episode_rewards),
+                'episode_times': np.array(context.episode_times),
+            },
+            'pareto_data': {
+                'pareto_front_rewards': context.pareto_front_rewards,
+                'pareto_front_values': context.pareto_front_values,
+                'pareto_states': context.pareto_states,
+                'reference_point': context.reference_point,
+                'all_rewards': np.array(context.all_rewards) if context.all_rewards else np.array([]),
+                'all_values': np.array(context.all_values) if context.all_values else np.array([]),
+            },
+            'preference_constrained': {
+                'constraint_history': context.constraint_history
+            }
+        }
+        
+        self.save_complete_checkpoint(trainer_data)
+    
+    def load_context(self) -> TrainingContext:
+        """
+        Load TrainingContext from checkpoint file.
+        
+        Returns:
+            TrainingContext instance with loaded data
+        """
+        context = TrainingContext()
+        
+        checkpoint_data = self.load_complete_checkpoint()
+        if not checkpoint_data:
+            return context
+        
+        # Load metadata
+        metadata = checkpoint_data.get('metadata', {})
+        context.training_config = metadata.get('training_config', {})
+        context.environment_config = metadata.get('environment_config', {})
+        context.current_episode = metadata.get('current_episode', 0)
+        context.metadata = {k: v for k, v in metadata.items() 
+                          if k not in ['training_config', 'environment_config', 'current_episode']}
+        
+        # Load training data
+        training_data = checkpoint_data.get('training_data', {})
+        context.training_metrics = training_data.get('metrics_df', pd.DataFrame())
+        context.start_episode = training_data.get('start_episode', 0)
+        
+        if 'episode_rewards' in training_data:
+            rewards_data = training_data['episode_rewards']
+            context.episode_rewards = rewards_data.tolist() if hasattr(rewards_data, 'tolist') else list(rewards_data)
+        
+        if 'episode_times' in training_data:
+            times_data = training_data['episode_times']
+            context.episode_times = times_data.tolist() if hasattr(times_data, 'tolist') else list(times_data)
+        
+        # Update best reward and state from metrics
+        if not context.training_metrics.empty and 'reward' in context.training_metrics.columns:
+            max_idx = context.training_metrics['reward'].idxmax()
+            context.best_reward = context.training_metrics.loc[max_idx, 'reward']
+            context.current_episode = context.training_metrics['episode'].max()
+        
+        # Load Pareto data
+        pareto_data = checkpoint_data.get('pareto_data', {})
+        context.pareto_front_rewards = pareto_data.get('pareto_front_rewards', np.array([]))
+        context.pareto_front_values = pareto_data.get('pareto_front_values', np.array([]))
+        context.pareto_states = pareto_data.get('pareto_states', np.array([]))
+        context.reference_point = pareto_data.get('reference_point', np.array([]))
+        
+        # Load all rewards/values if available
+        all_rewards = pareto_data.get('all_rewards', np.array([]))
+        all_values = pareto_data.get('all_values', np.array([]))
+        context.all_rewards = all_rewards.tolist() if len(all_rewards) > 0 else []
+        context.all_values = all_values.tolist() if len(all_values) > 0 else []
+        
+        # Load best states
+        context.best_states = checkpoint_data.get('best_states', [])
+        
+        # Load constraint history
+        pc_data = checkpoint_data.get('preference_constrained', {})
+        context.constraint_history = pc_data.get('constraint_history', [])
+        
+        return context

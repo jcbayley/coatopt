@@ -94,7 +94,7 @@ def create_material_mask_from_coating_state(
             mask[:, previous_material] = 0
         masked_probs = discrete_probs * mask
     
-    # Renormalize probabilities
+    # Renormalise probabilities
     masked_probs = masked_probs / (torch.sum(masked_probs, dim=-1, keepdim=True) + 1e-10)
     
     return masked_probs

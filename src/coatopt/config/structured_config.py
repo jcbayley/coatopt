@@ -116,17 +116,17 @@ class DataConfig(BaseConfig):
     include_electric_field: bool = False
     electric_field_points: int = 50
     
-    # Objective bounds for reward normalization and optimization constraints
+    # Objective bounds for reward normalisation and optimization constraints
     objective_bounds: Dict[str, Dict[str, float]] = field(default_factory=dict)
     
-    # Reward normalization parameters
-    use_reward_normalization: bool = False
-    reward_normalization_mode: str = "fixed"  # "fixed" or "adaptive"
-    reward_normalization_ranges: Dict[str, List[float]] = field(default_factory=dict)
-    reward_normalization_alpha: float = 0.1
+    # Reward normalisation parameters
+    use_reward_normalisation: bool = False
+    reward_normalisation_mode: str = "fixed"  # "fixed" or "adaptive"
+    reward_normalisation_ranges: Dict[str, List[float]] = field(default_factory=dict)
+    reward_normalisation_alpha: float = 0.1
+    reward_normalisation_apply_clipping: bool = True
     
     # Reward addon system configuration
-    apply_normalization: bool = False
     apply_boundary_penalties: bool = False
     apply_divergence_penalty: bool = False
     apply_air_penalty: bool = False
@@ -231,6 +231,7 @@ class TrainingConfig(BaseConfig):
     pc_constraint_steps: int = 8
     pc_constraint_penalty_weight: float = 50.0
     pc_constraint_margin: float = 0.05
+    pc_cycle_objective_per_constraint_steps: bool = False
 
 @dataclass
 class GeneticConfig(BaseConfig):
@@ -268,11 +269,11 @@ class CoatingOptimisationConfig:
             'optimise_weight_ranges': {},
             'use_optical_thickness': True,
             'combine': 'logproduct',
-            # Reward normalization defaults
-            'use_reward_normalization': False,
-            'reward_normalization_mode': 'fixed',
-            'reward_normalization_ranges': {},
-            'reward_normalization_alpha': 0.1
+            # Reward normalisation defaults
+            'use_reward_normalisation': False,
+            'reward_normalisation_mode': 'fixed',
+            'reward_normalisation_ranges': {},
+            'reward_normalisation_alpha': 0.1
         }
         
         network_defaults = {

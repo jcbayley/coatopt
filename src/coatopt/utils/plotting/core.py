@@ -198,6 +198,79 @@ class TrainingPlotManager:
     def should_update_plots(self, current_episode: int) -> bool:
         """Check if plots should be updated based on throttling."""
         return current_episode - self.last_plot_update >= self.plot_update_interval
+
+    def load_context_data(self, checkpoint_manager) -> bool:
+        """
+        Load training context data directly into plot manager.
+        
+        Args:
+            checkpoint_manager: TrainingCheckpointManager instance
+            
+        Returns:
+            bool: True if data was successfully loaded, False otherwise
+        """
+        if not checkpoint_manager:
+            return False
+            
+        try:
+            if not hasattr(checkpoint_manager, 'checkpoint_path') or not os.path.exists(checkpoint_manager.checkpoint_path):
+                print("No checkpoint found for loading context data")
+                return False
+            
+            # Load context directly
+            context = checkpoint_manager.load_context()
+            
+            if not context or context.training_metrics.empty:
+                print("No context data available to load")
+                return False
+            
+            # Load training metrics
+            for _, row in context.training_metrics.iterrows():
+                episode_data = {
+                    'episode': int(row.get('episode', 0)),
+                    'reward': float(row.get('reward', 0.0)),
+                    'metrics': {key: float(val) for key, val in row.items() 
+                              if key not in ['episode', 'reward'] and pd.notna(val)}
+                }
+                self.add_training_data(episode_data)
+            
+            # Load current Pareto front data (only the most recent front, not historical)
+            if len(context.pareto_front_values) > 0:
+                # Create current Pareto data entry with full context data
+                current_pareto_data = {
+                    'episode': context.current_episode,
+                    'pareto_front_values': context.pareto_front_values,
+                    'pareto_front_rewards': context.pareto_front_rewards,
+                    'pareto_states': context.pareto_states,
+                    'all_values': np.array(context.all_values),
+                    'all_rewards': np.array(context.all_rewards)
+                }
+                self.add_pareto_data(current_pareto_data)
+            
+            # Load constraint history for preference-constrained training
+            if context.constraint_history:
+                print(f"[DEBUG] Loading {len(context.constraint_history)} constraint entries from context")
+                for i, entry in enumerate(context.constraint_history):
+                    print(f"[DEBUG] Constraint entry {i}: episode={entry.get('episode')}, phase={entry.get('phase')}")
+                    self.add_constraint_data(
+                        episode=entry['episode'],
+                        phase=entry['phase'],
+                        target_objective=entry.get('target_objective'),
+                        constraints=entry.get('constraints', {}),
+                        reward_bounds=entry.get('reward_bounds', {}),
+                        constraint_step=entry.get('constraint_step', 0)
+                    )
+                print(f"Loaded {len(context.constraint_history)} constraint history entries")
+            else:
+                print("[DEBUG] No constraint history in context")
+            
+            print(f"Loaded context data: {len(self.training_data)} episodes, "
+                  f"Pareto front size: {len(context.pareto_front_values)}")
+            return True
+            
+        except Exception as e:
+            print(f"Warning: Failed to load context data: {e}")
+            return False
     
     def update_all_plots(self, current_episode: int = None):
         """Update all plots."""
@@ -445,7 +518,9 @@ class TrainingPlotManager:
     
     def update_constraints_plot(self):
         """Update the preference constraints tracking plot."""
+        
         if not self.constraint_data:
+            print("[DEBUG] No constraint data available, skipping constraints plot")
             return
         
         try:

@@ -470,11 +470,11 @@ class TrainingMonitorUI:
             print(f"Error connecting plot manager to UI: {e}")
     
     def load_historical_data(self):
-        """Load historical training data using shared trainer function."""
+        """Load historical training data using plot manager's context loading."""
         try:
-            # Use the shared function from trainer
-            if hasattr(self.trainer, 'load_historical_data_to_plot_manager'):
-                success = self.trainer.load_historical_data_to_plot_manager(self.plot_manager)
+            # Use the plot manager's context loading method directly
+            if self.plot_manager and hasattr(self.trainer, 'checkpoint_manager'):
+                success = self.plot_manager.load_context_data(self.trainer.checkpoint_manager)
                 
                 if success:
                     # Generate pareto states for UI-specific features from loaded data
@@ -491,14 +491,16 @@ class TrainingMonitorUI:
                     latest_reward = self.plot_manager.training_data[-1]['reward'] if self.plot_manager.training_data else 0.0
                     
                     pareto_info = ""
-                    if hasattr(self, 'env') and hasattr(self.env, 'pareto_front') and len(self.env.pareto_front) > 0:
-                        pareto_info = f", Pareto front: {len(self.env.pareto_front)} points"
+                    if self.plot_manager.pareto_data:
+                        latest_pareto = self.plot_manager.pareto_data[-1]
+                        pareto_front_size = len(latest_pareto.get('pareto_front_values', []))
+                        pareto_info = f", Pareto front: {pareto_front_size} points"
                     
                     self.status_var.set(f"Historical data loaded: {total_episodes} episodes, latest reward: {latest_reward:.4f}{pareto_info}")
                 else:
                     self.status_var.set("No historical data found")
             else:
-                # Fallback to legacy loading if trainer doesn't have shared function
+                # Fallback to legacy loading if checkpoint manager not available
                 self._load_historical_data_legacy()
                 
         except Exception as e:
@@ -1246,53 +1248,53 @@ class TrainingMonitorUI:
         
         n_objectives = pareto_front.shape[1]
         
-        # Normalize data for parallel coordinates
-        pareto_normalized = np.zeros_like(pareto_front)
+        # normalise data for parallel coordinates
+        pareto_normalised = np.zeros_like(pareto_front)
         for i in range(n_objectives):
             col_min, col_max = pareto_front[:, i].min(), pareto_front[:, i].max()
             if col_max > col_min:
-                pareto_normalized[:, i] = (pareto_front[:, i] - col_min) / (col_max - col_min)
+                pareto_normalised[:, i] = (pareto_front[:, i] - col_min) / (col_max - col_min)
             else:
-                pareto_normalized[:, i] = 0.5
+                pareto_normalised[:, i] = 0.5
         
         # Plot background points if available
         if best_points is not None and len(best_points) > 0:
             try:
                 best_points_array = np.array(best_points)
                 if best_points_array.shape[1] == n_objectives:
-                    best_normalized = np.zeros_like(best_points_array)
+                    best_normalised = np.zeros_like(best_points_array)
                     for i in range(n_objectives):
                         col_min, col_max = best_points_array[:, i].min(), best_points_array[:, i].max()
                         if col_max > col_min:
-                            best_normalized[:, i] = (best_points_array[:, i] - col_min) / (col_max - col_min)
+                            best_normalised[:, i] = (best_points_array[:, i] - col_min) / (col_max - col_min)
                         else:
-                            best_normalized[:, i] = 0.5
+                            best_normalised[:, i] = 0.5
                     
                     # Plot background lines with training progression gradient
-                    n_points = len(best_normalized)
+                    n_points = len(best_normalised)
                     if n_points > 1:
                         # Create colormap from blue (early) to red (late)
                         colors = plt.cm.coolwarm(np.linspace(0, 1, n_points))
-                        for idx in range(len(best_normalized)):
-                            ax.plot(range(n_objectives), best_normalized[idx], 
+                        for idx in range(len(best_normalised)):
+                            ax.plot(range(n_objectives), best_normalised[idx], 
                                    color=colors[idx], alpha=0.3, linewidth=0.5)
                     else:
                         # Single point case
-                        for idx in range(len(best_normalized)):
-                            ax.plot(range(n_objectives), best_normalized[idx], 'b-', alpha=0.1, linewidth=0.5)
+                        for idx in range(len(best_normalised)):
+                            ax.plot(range(n_objectives), best_normalised[idx], 'b-', alpha=0.1, linewidth=0.5)
             except Exception as e:
                 print(f"Error plotting background parallel coords: {e}")
         
         # Plot Pareto front lines
-        for idx in range(len(pareto_normalized)):
-            ax.plot(range(n_objectives), pareto_normalized[idx], 'r-', alpha=0.7, linewidth=2)
+        for idx in range(len(pareto_normalised)):
+            ax.plot(range(n_objectives), pareto_normalised[idx], 'r-', alpha=0.7, linewidth=2)
         
         # Customize plot
         ax.set_xlim(-0.5, n_objectives - 0.5)
         ax.set_ylim(-0.1, 1.1)
         ax.set_xticks(range(n_objectives))
         ax.set_xticklabels([label.replace(' ', '\n') for label in obj_labels], rotation=0, fontsize=10)
-        ax.set_ylabel('Normalized Value')
+        ax.set_ylabel('normalised Value')
         ax.set_title(f'Parallel Coordinates - Episode {episode}\n{len(pareto_front)} Pareto Points')
         ax.grid(True, alpha=0.3)
 
