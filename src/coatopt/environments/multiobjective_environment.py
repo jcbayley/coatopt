@@ -43,6 +43,9 @@ class MultiObjectiveEnvironment(HPPOEnvironment):
             optimise_targets=self.optimise_targets,
             combine=self.combine, 
             env=self,
+            # Old-style reward normalization (main branch compatibility)
+            use_reward_normalization=True,
+            # New addon system (current refactor)
             apply_normalisation=self.apply_normalisation,
             apply_boundary_penalties=self.apply_boundary_penalties,
             apply_divergence_penalty=self.apply_divergence_penalty,
