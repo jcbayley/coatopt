@@ -105,7 +105,12 @@ def create_hppo_environment(config: CoatingOptimisationConfig, materials: Dict[i
         optimise_weight_ranges=config.data.optimise_weight_ranges,
         reward_function=config.data.reward_function,
         objective_bounds=config.data.objective_bounds if hasattr(config.data, 'objective_bounds') else None,
-        apply_normalisation=config.data.apply_normalisation,
+        # Reward normalisation parameters
+        use_reward_normalisation=config.data.use_reward_normalisation,
+        reward_normalisation_mode=config.data.reward_normalisation_mode,
+        reward_normalisation_ranges=config.data.reward_normalisation_ranges,
+        reward_normalisation_alpha=config.data.reward_normalisation_alpha,
+        # Addon parameters
         apply_boundary_penalties=config.data.apply_boundary_penalties,
         apply_divergence_penalty=config.data.apply_divergence_penalty,
         apply_air_penalty=config.data.apply_air_penalty,
@@ -152,7 +157,12 @@ def create_multiobjective_environment(config: CoatingOptimisationConfig, materia
         n_weight_cycles=config.training.n_weight_cycles if config.training else 2,
         # Objective bounds
         objective_bounds=config.data.objective_bounds if hasattr(config.data, 'objective_bounds') else None,
-        apply_normalisation=config.data.apply_normalisation,
+        # Reward normalisation parameters
+        use_reward_normalisation=config.data.use_reward_normalisation,
+        reward_normalisation_mode=config.data.reward_normalisation_mode,
+        reward_normalisation_ranges=config.data.reward_normalisation_ranges,
+        reward_normalisation_alpha=config.data.reward_normalisation_alpha,
+        # Addon parameters
         apply_boundary_penalties=config.data.apply_boundary_penalties,
         apply_divergence_penalty=config.data.apply_divergence_penalty,
         apply_air_penalty=config.data.apply_air_penalty,

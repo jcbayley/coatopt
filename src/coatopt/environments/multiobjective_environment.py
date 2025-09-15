@@ -43,10 +43,12 @@ class MultiObjectiveEnvironment(HPPOEnvironment):
             optimise_targets=self.optimise_targets,
             combine=self.combine, 
             env=self,
-            # Old-style reward normalization (main branch compatibility)
-            use_reward_normalization=True,
-            # New addon system (current refactor)
-            apply_normalisation=self.apply_normalisation,
+            # Reward normalisation system
+            use_reward_normalisation=self.use_reward_normalisation,
+            reward_normalisation_mode=self.reward_normalisation_mode,
+            reward_normalisation_ranges=self.reward_normalisation_ranges,
+            reward_normalisation_alpha=self.reward_normalisation_alpha,
+            # Addon system
             apply_boundary_penalties=self.apply_boundary_penalties,
             apply_divergence_penalty=self.apply_divergence_penalty,
             apply_air_penalty=self.apply_air_penalty,
@@ -142,7 +144,7 @@ class MultiObjectiveEnvironment(HPPOEnvironment):
                 pc_tracker=pc_tracker,
                 phase_info=phase_info
             )
-        
+                
         return total_reward, vals, rewards
     
     def step(self, action, max_state=0, verbose=False, state=None, layer_index=None, always_return_value=False, objective_weights=None, pc_tracker=None, phase_info=None, **kwargs):

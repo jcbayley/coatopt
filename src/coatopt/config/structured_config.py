@@ -126,7 +126,6 @@ class DataConfig(BaseConfig):
     reward_normalisation_alpha: float = 0.1
     
     # Reward addon system configuration
-    apply_normalisation: bool = False
     apply_boundary_penalties: bool = False
     apply_divergence_penalty: bool = False
     apply_air_penalty: bool = False

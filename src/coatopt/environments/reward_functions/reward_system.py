@@ -12,7 +12,6 @@ from collections import deque
 # Import addon functions from separate module
 from .reward_addons import (
     apply_boundary_penalties,
-    apply_normalisation_addon, 
     apply_divergence_penalty,
     apply_air_penalty_addon,
     apply_pareto_improvement_addon,
@@ -79,12 +78,12 @@ class RewardCalculator:
     """
     
     def __init__(self, reward_type="default", optimise_parameters=None, optimise_targets=None,
-                 # OLD NORMALIZATION SYSTEM (from main branch)
-                 use_reward_normalization=True, reward_normalization_mode="fixed",
-                 reward_normalization_ranges=None, reward_normalization_alpha=0.1,
+                 # Reward normalization system
+                 use_reward_normalisation=True, reward_normalisation_mode="fixed",
+                 reward_normalisation_ranges=None, reward_normalisation_alpha=0.1,
                  reward_history_size=1000, 
                  # Addon configuration
-                 apply_normalisation=False, apply_boundary_penalties=False,
+                 apply_boundary_penalties=False,
                  apply_divergence_penalty=False, apply_air_penalty=False,
                  apply_pareto_improvement=False, apply_preference_constraints=False,
                  # Addon weights
@@ -100,15 +99,14 @@ class RewardCalculator:
             optimise_parameters: List of parameters to optimize
             optimise_targets: Dict of target values for each parameter
             
-            # Old-style reward normalization (main branch compatibility)
-            use_reward_normalization: Whether to normalize individual rewards before weighting
-            reward_normalization_mode: "fixed" (use provided ranges) or "adaptive" (learn from history) 
-            reward_normalization_ranges: Dict mapping parameter names to [min, max] ranges for normalization
-            reward_normalization_alpha: Learning rate for adaptive range updates
-            reward_history_size: Number of recent rewards to keep for adaptive normalization
+            # Reward normalisation system
+            use_reward_normalisation: Whether to normalise individual rewards before weighting
+            reward_normalisation_mode: "fixed" (use provided ranges) or "adaptive" (learn from history) 
+            reward_normalisation_ranges: Dict mapping parameter names to [min, max] ranges for normalisation
+            reward_normalisation_alpha: Learning rate for adaptive range updates
+            reward_history_size: Number of recent rewards to keep for adaptive normalisation
             
             # Addons (applied automatically based on these flags)
-            apply_normalisation: Apply normalisation addon (different from reward normalization!)
             apply_boundary_penalties: Apply boundary penalty addon
             apply_divergence_penalty: Apply divergence penalty addon
             apply_air_penalty: Apply air penalty addon
@@ -132,15 +130,15 @@ class RewardCalculator:
         self.reward_function = self.registry.get_function(self.reward_type)
         self.kwargs = kwargs
         
-        # Old-style reward normalization setup (main branch compatibility)
-        self.use_reward_normalization = use_reward_normalization
-        self.reward_normalization_mode = reward_normalization_mode
-        self.reward_normalization_ranges = reward_normalization_ranges or {}
-        self.reward_normalization_alpha = reward_normalization_alpha
+        # Reward normalisation setup
+        self.use_reward_normalisation = use_reward_normalisation
+        self.reward_normalisation_mode = reward_normalisation_mode
+        self.reward_normalisation_ranges = reward_normalisation_ranges or {}
+        self.reward_normalisation_alpha = reward_normalisation_alpha
         
-        # History tracking for adaptive normalization
+        # History tracking for adaptive normalisation
         self.reward_history_size = reward_history_size
-        if use_reward_normalization:
+        if use_reward_normalisation:
             from collections import deque
             self.reward_history = {param: deque(maxlen=reward_history_size) for param in (optimise_parameters or [])}
             self.adaptive_ranges = {param: {"min": float('inf'), "max": float('-inf')} for param in (optimise_parameters or [])}
@@ -150,7 +148,7 @@ class RewardCalculator:
         
         # Addon configuration
         self._setup_addons(
-            apply_normalisation, apply_boundary_penalties, apply_divergence_penalty,
+            apply_boundary_penalties, apply_divergence_penalty,
             apply_air_penalty, apply_pareto_improvement, apply_preference_constraints,
             air_penalty_weight, divergence_penalty_weight, pareto_improvement_weight,
             preference_constraint_weight
@@ -179,11 +177,10 @@ class RewardCalculator:
         }
 
     
-    def _setup_addons(self, norm, boundary, divergence, air, pareto, preference,
+    def _setup_addons(self, boundary, divergence, air, pareto, preference,
                      air_weight, div_weight, pareto_weight, pref_weight):
         """Setup addon configuration."""
         # Addon flags
-        self.apply_normalisation = norm
         self.apply_boundary_penalties = boundary
         self.apply_divergence_penalty = divergence
         self.apply_air_penalty = air
@@ -230,10 +227,11 @@ class RewardCalculator:
             constraint_penalty_weight=constraint_penalty_weight, **extra_kwargs
         )
         
+        #print("Base rewards:", rewards)
+
         # Apply configured addon functions
         final_reward, final_vals, final_rewards = self.apply_addon_functions(
             total_reward, vals, rewards, env=env, weights=weights,
-            use_normalisation=self.apply_normalisation, 
             use_boundary_penalties=self.apply_boundary_penalties,
             use_divergence_penalty=self.apply_divergence_penalty, 
             use_air_penalty=self.apply_air_penalty,
@@ -247,14 +245,200 @@ class RewardCalculator:
             pc_tracker=pc_tracker, phase_info=phase_info,
             **extra_kwargs
         )
+        #print("Final rewards after addons:", final_rewards)
 
         # Combine rewards using configured method
         final_reward = self.combine_rewards(final_rewards, objective_weights=weights, env=env, vals=vals)
         final_rewards["total_reward"] = final_reward
         
         return final_reward, final_vals, final_rewards
+
+    # ===== MAIN CALCULATION METHODS =====
     
-    # ===== OLD-STYLE REWARD NORMALIZATION METHODS (MAIN BRANCH COMPATIBILITY) =====
+
+    def calculate_base(self, reflectivity, thermal_noise, thickness, absorption, env=None, weights=None, 
+                      expert_constraints=None, constraint_penalty_weight=100.0, **extra_kwargs):
+        """
+        Calculate base reward using the selected function, with old-style normalisation if enabled.
+        
+        Args:
+            expert_constraints: Dict mapping parameter names to constraint target reward values
+            constraint_penalty_weight: Weight for constraint violation penalties
+        """
+        # Merge initialization kwargs with call-time kwargs
+        call_kwargs = {**self.kwargs, **extra_kwargs}
+        
+        # Always try to pass env if available - most functions can use it
+        if env is not None:
+            
+            # Auto-compute reward ranges from objective bounds if not provided
+            if self.use_reward_normalisation and not self.reward_normalisation_ranges:
+                computed_ranges = self._compute_reward_ranges_from_objective_bounds(env)
+                if computed_ranges:
+                    self.reward_normalisation_ranges = computed_ranges
+                    print(f"Auto-computed reward normalisation ranges: {computed_ranges}")
+
+        # Get the original reward calculation
+        total_reward, vals, rewards = self.reward_function(
+            reflectivity=reflectivity,
+            thermal_noise=thermal_noise,
+            total_thickness=thickness,
+            absorption=absorption,
+            optimise_parameters=self.optimise_parameters,
+            optimise_targets=self.optimise_targets,
+            weights=weights,
+            **self.kwargs
+        )
+        
+        # Apply old-style reward normalisation (if enabled)
+        normalised_rewards = {}
+        if self.use_reward_normalisation and weights is not None:
+            # Extract individual rewards from the rewards dict
+            individual_rewards = {param: rewards.get(param, 0.0) for param in self.optimise_parameters}
+            
+            # normalise individual rewards
+            normalised_rewards = self._normalise_rewards(individual_rewards)
+            
+            # Update rewards dict with normalised values (for debugging/logging)
+            for param in self.optimise_parameters:
+                rewards[f"{param}_normalised"] = normalised_rewards[param]
+                rewards[f"{param}"] = normalised_rewards[param]
+        else:
+            # No normalisation - use original rewards
+            normalised_rewards = {param: rewards.get(param, 0.0) for param in self.optimise_parameters}
+        
+        # Apply constraints if provided (to normalised rewards)
+        if expert_constraints:
+            total_reward, rewards = self._apply_expert_constraints(
+                total_reward, rewards, expert_constraints, constraint_penalty_weight, normalised_rewards
+            )
+        else:
+            # No constraints - use standard weighted sum of normalised rewards (if weights provided)
+            if weights is not None and self.use_reward_normalisation:
+                total_reward = sum(weights.get(param, 0.0) * normalised_rewards.get(param, 0.0) 
+                                 for param in self.optimise_parameters)
+        
+        return total_reward, vals, rewards
+    
+    # ===== REWARD COMBINATION METHODS =====
+    
+    def combine_rewards(self, rewards: Dict[str, float], objective_weights: Dict[str, float] = None, 
+                       env=None, vals: Dict[str, float] = None) -> float:
+        """
+        Combine individual rewards into a single total reward.
+        
+        Args:
+            rewards: Dict of individual rewards
+            objective_weights: Weights for each objective
+            env: Environment object (needed for hypervolume calculation)
+            vals: Current objective values (needed for hypervolume calculation)
+            
+        Returns:
+            Combined total reward
+        """
+        # Simple sum of all rewards as an example
+        if objective_weights is None:
+            objective_weights = {param: 1.0 for param in self.optimise_parameters}
+        
+        # Combine the rewards 
+        if self.combine == "sum":
+            total_reward = np.sum([rewards[key] * objective_weights[key] for key in self.optimise_parameters])
+        elif self.combine == "product":
+            total_reward = np.prod([rewards[key] * objective_weights[key] for key in self.optimise_parameters])
+        elif self.combine == "logproduct":
+            total_reward = np.log(np.prod([rewards[key] * objective_weights[key] for key in self.optimise_parameters]))
+        elif self.combine == "hypervolume":
+            total_reward = self._calculate_hypervolume_reward(env, vals, rewards)
+        else:
+            raise ValueError(f"combine must be either 'sum', 'product', 'logproduct', or 'hypervolume', not {self.combine}")
+        
+        #apply addons
+        for key in rewards.keys():
+            if "addon" in key:
+                total_reward += rewards[key]
+                rewards["total_reward"] = total_reward
+
+        return total_reward
+    
+        # ===== ADDON APPLICATION METHODS =====
+    
+    def apply_addon_functions(self, total_reward: float, vals: Dict[str, float], 
+                            rewards: Dict[str, float], env=None, weights: Dict[str, float] = None,
+                            use_boundary_penalties: bool = False,
+                            use_divergence_penalty: bool = False, use_air_penalty: bool = False,
+                            use_pareto_improvement: bool = False, use_preference_constraints: bool = False,
+                            air_penalty_weight: float = 1.0, divergence_penalty_weight: float = 1.0,
+                            pareto_improvement_weight: float = 1.0, pc_tracker=None, phase_info=None,
+                            constraint_penalty_weight: float = 1.0,
+                            target_mapping: Dict[str, str] = None, **kwargs) -> Tuple[float, Dict[str, float], Dict[str, float]]:
+        """
+        Apply addon functions to reward calculation results.
+        
+        Args:
+            total_reward: Current total reward
+            vals: Current objective values
+            rewards: Individual rewards dict
+            env: Environment object
+            weights: Parameter weights
+            use_boundary_penalties: Whether to apply boundary penalties
+            use_divergence_penalty: Whether to apply divergence penalty
+            use_air_penalty: Whether to apply air penalty
+            use_pareto_improvement: Whether to apply Pareto improvement reward
+            use_preference_constraints: Whether to apply preference constraints addon
+            air_penalty_weight: Weight for air penalty
+            divergence_penalty_weight: Weight for divergence penalty
+            pareto_improvement_weight: Weight for Pareto improvement reward
+            pc_tracker: PreferenceConstrainedTracker instance
+            phase_info: Phase information from preference-constrained training
+            target_mapping: Mapping of parameter names to scaling types
+            **kwargs: Additional parameters for addon functions
+            
+        Returns:
+            Tuple of (updated_total_reward, updated_vals, updated_rewards)
+        """
+        updated_total_reward = total_reward
+        updated_vals = vals.copy()
+        updated_rewards = rewards.copy()
+
+        
+        # Apply boundary penalties
+        if use_boundary_penalties and env is not None:
+            updated_rewards = apply_boundary_penalties(
+                updated_rewards, vals, self.optimise_parameters, env, target_mapping,
+            )
+        
+        # Apply divergence penalty
+        if use_divergence_penalty:
+            updated_rewards = apply_divergence_penalty(
+                updated_rewards, self.optimise_parameters, weights, divergence_penalty_weight,
+                self.multi_value_rewards
+            )
+        
+        # Apply air penalty addon  
+        if use_air_penalty:
+            updated_rewards = apply_air_penalty_addon(
+                updated_total_reward, updated_rewards, vals, env, 
+                self.optimise_parameters, air_penalty_weight, self.multi_value_rewards, **kwargs
+            )
+        
+        # Apply Pareto improvement addon
+        if use_pareto_improvement:
+            updated_rewards = apply_pareto_improvement_addon(
+                updated_total_reward, updated_rewards, vals, env,
+                self.optimise_parameters, pareto_improvement_weight, self.multi_value_rewards, **kwargs
+            )
+        
+        # Apply preference constraints addon
+        if use_preference_constraints:
+            updated_total_reward, updated_rewards = apply_preference_constraints_addon(
+                updated_total_reward, updated_rewards, vals, env,
+                self.optimise_parameters, pc_tracker, phase_info, constraint_penalty_weight, **kwargs
+            )
+        
+
+        return updated_total_reward, updated_vals, updated_rewards
+    
+        # ===== REWARD NORMALIZATION METHODS =====
     
     def _compute_reward_ranges_from_objective_bounds(self, env) -> Dict[str, List[float]]:
         """
@@ -333,9 +517,9 @@ class RewardCalculator:
         
         return ranges
     
-    def _normalize_rewards(self, individual_rewards: Dict[str, float]) -> Dict[str, float]:
+    def _normalise_rewards(self, individual_rewards: Dict[str, float]) -> Dict[str, float]:
         """
-        Normalize individual rewards to [0, 1] range (old-style normalization).
+        Normalise individual rewards to [0, 1] range.
         
         This preserves relative reward magnitudes while scaling to a standard range.
         
@@ -343,26 +527,25 @@ class RewardCalculator:
             individual_rewards: Dict mapping parameter names to their individual reward values
             
         Returns:
-            Dict mapping parameter names to normalized rewards [0, 1]
+            Dict mapping parameter names to normalised rewards [0, 1]
         """
-        if not self.use_reward_normalization:
+        if not self.use_reward_normalisation:
             return individual_rewards
             
-        normalized_rewards = {}
+        normalised_rewards = {}
         
         for param, reward in individual_rewards.items():
             if param not in self.optimise_parameters:
-                normalized_rewards[param] = reward
+                normalised_rewards[param] = reward
                 continue
                 
             # Update history for adaptive mode
             if hasattr(self, 'reward_history'):
                 self.reward_history[param].append(reward)
-            
-            # Get normalization range
-            if self.reward_normalization_mode == "fixed" and param in self.reward_normalization_ranges:
-                min_val, max_val = self.reward_normalization_ranges[param]
-            elif (self.reward_normalization_mode == "adaptive" and 
+            # Get normalisation range
+            if self.reward_normalisation_mode == "fixed" and param in self.reward_normalisation_ranges:
+                min_val, max_val = self.reward_normalisation_ranges[param]
+            elif (self.reward_normalisation_mode == "adaptive" and 
                   hasattr(self, 'reward_history') and 
                   len(self.reward_history[param]) > 10):
                 # Use moving average for adaptive range
@@ -374,173 +557,26 @@ class RewardCalculator:
                     self.adaptive_ranges[param]["min"] = current_min
                     self.adaptive_ranges[param]["max"] = current_max
                 else:
-                    alpha = self.reward_normalization_alpha
+                    alpha = self.reward_normalisation_alpha
                     self.adaptive_ranges[param]["min"] = (1 - alpha) * self.adaptive_ranges[param]["min"] + alpha * current_min
                     self.adaptive_ranges[param]["max"] = (1 - alpha) * self.adaptive_ranges[param]["max"] + alpha * current_max
                 
                 min_val = self.adaptive_ranges[param]["min"]
                 max_val = self.adaptive_ranges[param]["max"]
             else:
-                # No normalization available yet
-                normalized_rewards[param] = reward
+                # No normalisation available yet
+                normalised_rewards[param] = reward
                 continue
             
-            # Normalize to [0, 1]
+            # normalise to [0, 1]
             if max_val > min_val:
-                normalized_rewards[param] = (reward - min_val) / (max_val - min_val)
+                normalised_rewards[param] = (reward - min_val) / (max_val - min_val)
             else:
-                normalized_rewards[param] = reward
+                normalised_rewards[param] = reward
                 
-        return normalized_rewards
+            #print(param, reward, normalised_rewards[param], min_val, max_val)
+        return normalised_rewards
 
-    def _apply_expert_constraints(self, total_reward: float, rewards: Dict[str, float], 
-                                  expert_constraints: Dict[str, float], 
-                                  constraint_penalty_weight: float = 100.0,
-                                  normalized_rewards: Dict[str, float] = None) -> Tuple[float, Dict[str, float]]:
-        """
-        Apply expert constraints to modify reward calculation.
-        
-        For constrained objectives: Apply large penalty for deviation from target reward
-        For unconstrained objectives: Use normalized reward contribution
-        
-        Args:
-            total_reward: Original total reward
-            rewards: Dict of individual parameter rewards
-            expert_constraints: Dict mapping parameter names to target reward values
-            constraint_penalty_weight: Weight for constraint violation penalties
-            normalized_rewards: Dict of normalized reward values to use for unconstrained params
-            
-        Returns:
-            Tuple of (modified_total_reward, updated_rewards_dict)
-        """
-        if normalized_rewards is None:
-            normalized_rewards = {param: rewards.get(param, 0.0) for param in self.optimise_parameters}
-            
-        constrained_reward = 0.0
-        updated_rewards = rewards.copy()
-        
-        for param in self.optimise_parameters:
-            normalized_reward = normalized_rewards.get(param, 0.0)
-            
-            if param in expert_constraints:
-                # This parameter is constrained - apply penalty for deviation from target
-                target_reward = expert_constraints[param]
-                constraint_penalty = -abs(normalized_reward - target_reward) * constraint_penalty_weight
-                updated_rewards[f"{param}_constraint_penalty"] = constraint_penalty
-                constrained_reward += constraint_penalty
-            else:
-                # This parameter is unconstrained - use normalized reward
-                constrained_reward += normalized_reward
-        
-        updated_rewards["constrained_total_reward"] = constrained_reward
-        return constrained_reward, updated_rewards
-
-    # ===== MAIN CALCULATION METHODS =====
-    
-
-    def calculate_base(self, reflectivity, thermal_noise, thickness, absorption, env=None, weights=None, 
-                      expert_constraints=None, constraint_penalty_weight=100.0, **extra_kwargs):
-        """
-        Calculate base reward using the selected function, with old-style normalization if enabled.
-        
-        Args:
-            expert_constraints: Dict mapping parameter names to constraint target reward values
-            constraint_penalty_weight: Weight for constraint violation penalties
-        """
-        # Merge initialization kwargs with call-time kwargs
-        call_kwargs = {**self.kwargs, **extra_kwargs}
-        
-        # Always try to pass env if available - most functions can use it
-        if env is not None:
-            
-            # Auto-compute reward ranges from objective bounds if not provided
-            if self.use_reward_normalization and not self.reward_normalization_ranges:
-                computed_ranges = self._compute_reward_ranges_from_objective_bounds(env)
-                if computed_ranges:
-                    self.reward_normalization_ranges = computed_ranges
-                    print(f"Auto-computed reward normalization ranges: {computed_ranges}")
-
-        # Get the original reward calculation
-        total_reward, vals, rewards = self.reward_function(
-            reflectivity=reflectivity,
-            thermal_noise=thermal_noise,
-            total_thickness=thickness,
-            absorption=absorption,
-            optimise_parameters=self.optimise_parameters,
-            optimise_targets=self.optimise_targets,
-            weights=weights,
-            **self.kwargs
-        )
-        
-        # Apply old-style reward normalization (if enabled)
-        normalized_rewards = {}
-        if self.use_reward_normalization and weights is not None:
-            # Extract individual rewards from the rewards dict
-            individual_rewards = {param: rewards.get(param, 0.0) for param in self.optimise_parameters}
-            
-            # Normalize individual rewards
-            normalized_rewards = self._normalize_rewards(individual_rewards)
-            
-            # Update rewards dict with normalized values (for debugging/logging)
-            for param in self.optimise_parameters:
-                rewards[f"{param}_normalized"] = normalized_rewards[param]
-        else:
-            # No normalization - use original rewards
-            normalized_rewards = {param: rewards.get(param, 0.0) for param in self.optimise_parameters}
-        
-        # Apply constraints if provided (to normalized rewards)
-        if expert_constraints:
-            total_reward, rewards = self._apply_expert_constraints(
-                total_reward, rewards, expert_constraints, constraint_penalty_weight, normalized_rewards
-            )
-        else:
-            # No constraints - use standard weighted sum of normalized rewards (if weights provided)
-            if weights is not None and self.use_reward_normalization:
-                total_reward = sum(weights.get(param, 0.0) * normalized_rewards.get(param, 0.0) 
-                                 for param in self.optimise_parameters)
-        
-        return total_reward, vals, rewards
-    
-    # ===== REWARD COMBINATION METHODS =====
-    
-    def combine_rewards(self, rewards: Dict[str, float], objective_weights: Dict[str, float] = None, 
-                       env=None, vals: Dict[str, float] = None) -> float:
-        """
-        Combine individual rewards into a single total reward.
-        
-        Args:
-            rewards: Dict of individual rewards
-            objective_weights: Weights for each objective
-            env: Environment object (needed for hypervolume calculation)
-            vals: Current objective values (needed for hypervolume calculation)
-            
-        Returns:
-            Combined total reward
-        """
-        # Simple sum of all rewards as an example
-        if objective_weights is None:
-            objective_weights = {param: 1.0 for param in self.optimise_parameters}
-        
-        # Combine the rewards 
-        if self.combine == "sum":
-            total_reward = np.sum([rewards[key] * objective_weights[key] for key in self.optimise_parameters])
-        elif self.combine == "product":
-            total_reward = np.prod([rewards[key] * objective_weights[key] for key in self.optimise_parameters])
-        elif self.combine == "logproduct":
-            total_reward = np.log(np.prod([rewards[key] * objective_weights[key] for key in self.optimise_parameters]))
-        elif self.combine == "hypervolume":
-            total_reward = self._calculate_hypervolume_reward(env, vals, rewards)
-        else:
-            raise ValueError(f"combine must be either 'sum', 'product', 'logproduct', or 'hypervolume', not {self.combine}")
-        
-        #apply addons
-        for key in rewards.keys():
-            if "addon" in key:
-                total_reward += rewards[key]
-                rewards["total_reward"] = total_reward
-
-        return total_reward
-    
     def _calculate_hypervolume_reward(self, env, vals: Dict[str, float], rewards: Dict[str, float]) -> float:
         """
         Calculate reward based on hypervolume of Pareto front including the new point.
@@ -673,91 +709,6 @@ class RewardCalculator:
                     transformed_points[:, i] = -transformed_points[:, i]
         
         return transformed_points
-    
-    # ===== ADDON APPLICATION METHODS =====
-    
-    def apply_addon_functions(self, total_reward: float, vals: Dict[str, float], 
-                            rewards: Dict[str, float], env=None, weights: Dict[str, float] = None,
-                            use_normalisation: bool = False, use_boundary_penalties: bool = False,
-                            use_divergence_penalty: bool = False, use_air_penalty: bool = False,
-                            use_pareto_improvement: bool = False, use_preference_constraints: bool = False,
-                            air_penalty_weight: float = 1.0, divergence_penalty_weight: float = 1.0,
-                            pareto_improvement_weight: float = 1.0, pc_tracker=None, phase_info=None,
-                            constraint_penalty_weight: float = 1.0,
-                            target_mapping: Dict[str, str] = None, **kwargs) -> Tuple[float, Dict[str, float], Dict[str, float]]:
-        """
-        Apply addon functions to reward calculation results.
-        
-        Args:
-            total_reward: Current total reward
-            vals: Current objective values
-            rewards: Individual rewards dict
-            env: Environment object
-            weights: Parameter weights
-            use_normalisation: Whether to apply normalisation addon
-            use_boundary_penalties: Whether to apply boundary penalties
-            use_divergence_penalty: Whether to apply divergence penalty
-            use_air_penalty: Whether to apply air penalty
-            use_pareto_improvement: Whether to apply Pareto improvement reward
-            use_preference_constraints: Whether to apply preference constraints addon
-            air_penalty_weight: Weight for air penalty
-            divergence_penalty_weight: Weight for divergence penalty
-            pareto_improvement_weight: Weight for Pareto improvement reward
-            pc_tracker: PreferenceConstrainedTracker instance
-            phase_info: Phase information from preference-constrained training
-            target_mapping: Mapping of parameter names to scaling types
-            **kwargs: Additional parameters for addon functions
-            
-        Returns:
-            Tuple of (updated_total_reward, updated_vals, updated_rewards)
-        """
-        updated_total_reward = total_reward
-        updated_vals = vals.copy()
-        updated_rewards = rewards.copy()
-
-        # Apply normalisation addon
-        if use_normalisation and env is not None:
-            updated_rewards = apply_normalisation_addon(
-                updated_rewards, vals, self.optimise_parameters, 
-                self.optimise_targets, env, target_mapping
-            )
-        
-        # Apply boundary penalties
-        if use_boundary_penalties and env is not None:
-            updated_rewards = apply_boundary_penalties(
-                updated_rewards, vals, self.optimise_parameters, env, target_mapping,
-            )
-        
-        # Apply divergence penalty
-        if use_divergence_penalty:
-            updated_rewards = apply_divergence_penalty(
-                updated_rewards, self.optimise_parameters, weights, divergence_penalty_weight,
-                self.multi_value_rewards
-            )
-        
-        # Apply air penalty addon  
-        if use_air_penalty:
-            updated_rewards = apply_air_penalty_addon(
-                updated_total_reward, updated_rewards, vals, env, 
-                self.optimise_parameters, air_penalty_weight, self.multi_value_rewards, **kwargs
-            )
-        
-        # Apply Pareto improvement addon
-        if use_pareto_improvement:
-            updated_rewards = apply_pareto_improvement_addon(
-                updated_total_reward, updated_rewards, vals, env,
-                self.optimise_parameters, pareto_improvement_weight, self.multi_value_rewards, **kwargs
-            )
-        
-        # Apply preference constraints addon
-        if use_preference_constraints:
-            updated_total_reward, updated_rewards = apply_preference_constraints_addon(
-                updated_total_reward, updated_rewards, vals, env,
-                self.optimise_parameters, pc_tracker, phase_info, constraint_penalty_weight, **kwargs
-            )
-        
-
-        return updated_total_reward, updated_vals, updated_rewards
     
     def _apply_expert_constraints(self, total_reward: float, rewards: Dict[str, float], 
                                   expert_constraints: Dict[str, float], 

@@ -100,7 +100,6 @@ class BaseCoatingEnvironment:
         self.reward_normalisation_alpha = getattr(config.data, 'reward_normalisation_alpha', 0.1)
         
         # Reward addon system configuration from DataConfig
-        self.apply_normalisation = getattr(config.data, 'apply_normalisation', False)
         self.apply_boundary_penalties = getattr(config.data, 'apply_boundary_penalties', False)
         self.apply_divergence_penalty = getattr(config.data, 'apply_divergence_penalty', False)
         self.apply_air_penalty = getattr(config.data, 'apply_air_penalty', False)
@@ -194,7 +193,6 @@ class BaseCoatingEnvironment:
                                  reward_normalisation_ranges=None,
                                  reward_normalisation_alpha=0.1,
                                  # Reward addon system configuration
-                                 apply_normalisation=False,
                                  apply_boundary_penalties=False,
                                  apply_divergence_penalty=False,
                                  apply_air_penalty=False,
@@ -241,8 +239,13 @@ class BaseCoatingEnvironment:
         if objective_bounds is not None:
             self.objective_bounds = objective_bounds
         
+        # Reward normalisation parameters
+        self.use_reward_normalisation = use_reward_normalisation
+        self.reward_normalisation_mode = reward_normalisation_mode
+        self.reward_normalisation_ranges = reward_normalisation_ranges or {}
+        self.reward_normalisation_alpha = reward_normalisation_alpha
+        
         # Reward addon system configuration
-        self.apply_normalisation = apply_normalisation
         self.apply_boundary_penalties = apply_boundary_penalties
         self.apply_divergence_penalty = apply_divergence_penalty
         self.apply_air_penalty = apply_air_penalty
@@ -286,7 +289,6 @@ class BaseCoatingEnvironment:
             'reward_normalisation_ranges': getattr(self, 'reward_normalisation_ranges', {}),
             'reward_normalisation_alpha': getattr(self, 'reward_normalisation_alpha', 0.1),
             # Addon configuration
-            'apply_normalisation': getattr(self, 'apply_normalisation', False),
             'apply_boundary_penalties': getattr(self, 'apply_boundary_penalties', False),
             'apply_divergence_penalty': getattr(self, 'apply_divergence_penalty', False),
             'apply_air_penalty': getattr(self, 'apply_air_penalty', False),
@@ -785,7 +787,6 @@ class BaseCoatingEnvironment:
             'reward_normalisation_ranges': getattr(self, 'reward_normalisation_ranges', {}),
             'reward_normalisation_alpha': getattr(self, 'reward_normalisation_alpha', 0.1),
             # Addon configuration
-            'apply_normalisation': getattr(self, 'apply_normalisation', False),
             'apply_boundary_penalties': getattr(self, 'apply_boundary_penalties', False),
             'apply_divergence_penalty': getattr(self, 'apply_divergence_penalty', False),
             'apply_air_penalty': getattr(self, 'apply_air_penalty', False),
