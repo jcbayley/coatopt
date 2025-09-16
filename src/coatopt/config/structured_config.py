@@ -2,20 +2,23 @@
 Structured configuration management for coating optimisation.
 Provides type-safe configuration objects to replace repetitive config.get() calls.
 """
-from dataclasses import dataclass, field, fields, MISSING
-from typing import Dict, List, Any, Optional, get_type_hints
+
+from dataclasses import MISSING, dataclass, field, fields
+from typing import Any, Dict, List, Optional, get_type_hints
+
 from .load_config import CoatingConfigParser
 
 
 @dataclass
 class BaseConfig:
     """Base configuration class with automatic field mapping from INI sections."""
-    
+
     @classmethod
-    def from_config_section(cls, config: CoatingConfigParser, section_name: str, 
-                          strict=True, **defaults):
+    def from_config_section(
+        cls, config: CoatingConfigParser, section_name: str, strict=True, **defaults
+    ):
         """Automatically create config from INI section using dataclass field names.
-        
+
         Args:
             config: Configuration parser
             section_name: INI section name
@@ -23,69 +26,82 @@ class BaseConfig:
             **defaults: Default values for optional fields
         """
         kwargs = {}
-        
+
         # Get type hints for proper type conversion
         type_hints = get_type_hints(cls)
-        
+
         # Get all expected field names from the dataclass
         expected_fields = {field_info.name for field_info in fields(cls)}
-        
+
         if strict:
             # Get all actual field names from the config section
             try:
                 actual_fields = set(config.options(section_name))
             except:
                 actual_fields = set()
-            
+
             # Check for typos/unknown fields in config
             unknown_fields = actual_fields - expected_fields
             if unknown_fields:
                 # Create helpful error message with suggestions
                 error_msg = f"Unknown configuration parameters in section '[{section_name}]': {sorted(unknown_fields)}.\n"
                 error_msg += f"Valid parameters are: {sorted(expected_fields)}\n"
-                
+
                 # Try to suggest corrections for potential typos
                 suggestions = []
                 for unknown in unknown_fields:
-                    close_matches = [field for field in expected_fields 
-                                   if abs(len(field) - len(unknown)) <= 2 and
-                                   sum(c1 != c2 for c1, c2 in zip(field, unknown)) <= 2]
+                    close_matches = [
+                        field
+                        for field in expected_fields
+                        if abs(len(field) - len(unknown)) <= 2
+                        and sum(c1 != c2 for c1, c2 in zip(field, unknown)) <= 2
+                    ]
                     if close_matches:
-                        suggestions.append(f"'{unknown}' -> did you mean '{close_matches[0]}'?")
-                
+                        suggestions.append(
+                            f"'{unknown}' -> did you mean '{close_matches[0]}'?"
+                        )
+
                 if suggestions:
-                    error_msg += "Possible corrections:\n" + "\n".join(f"  {s}" for s in suggestions)
-                
+                    error_msg += "Possible corrections:\n" + "\n".join(
+                        f"  {s}" for s in suggestions
+                    )
+
                 raise ValueError(error_msg)
-        
+
         for field_info in fields(cls):
             field_name = field_info.name
             field_type = type_hints.get(field_name, str)
-            
+
             # Check if there's a default provided
-            default_value = defaults.get(field_name, field_info.default if field_info.default is not MISSING else None)
-            
+            default_value = defaults.get(
+                field_name,
+                field_info.default if field_info.default is not MISSING else None,
+            )
+
             try:
                 # Get value from config, using fallback if provided
                 if default_value is not None:
                     value = config.get(section_name, field_name, fallback=default_value)
                 else:
                     value = config.get(section_name, field_name)
-                
+
                 kwargs[field_name] = value
-                
+
             except Exception as e:
                 if default_value is not None:
                     kwargs[field_name] = default_value
                 else:
-                    raise ValueError(f"Required field '{field_name}' not found in section '{section_name}' and no default provided: {e}")
-        
+                    raise ValueError(
+                        f"Required field '{field_name}' not found in section '{section_name}' and no default provided: {e}"
+                    )
+
         return cls(**kwargs)
 
 
 @dataclass
 class GeneralConfig(BaseConfig):
     """General configuration parameters."""
+
     root_dir: str
     data_dir: str
     load_model: bool
@@ -97,6 +113,7 @@ class GeneralConfig(BaseConfig):
 @dataclass
 class DataConfig(BaseConfig):
     """Data and environment configuration parameters."""
+
     n_layers: int
     min_thickness: float
     max_thickness: float
@@ -107,25 +124,25 @@ class DataConfig(BaseConfig):
     optimise_parameters: List[str]
     optimise_targets: Dict[str, float]
     optimise_weight_ranges: Dict[str, List[float]]
-    design_criteria: Dict[str, float] 
+    design_criteria: Dict[str, float]
     use_optical_thickness: bool
     combine: str
     reward_function: str
-    
+
     # Electric field configuration
     include_electric_field: bool = False
     electric_field_points: int = 50
-    
+
     # Objective bounds for reward normalisation and optimization constraints
     objective_bounds: Dict[str, Dict[str, float]] = field(default_factory=dict)
-    
+
     # Reward normalisation parameters
     use_reward_normalisation: bool = False
     reward_normalisation_mode: str = "fixed"  # "fixed" or "adaptive"
     reward_normalisation_ranges: Dict[str, List[float]] = field(default_factory=dict)
     reward_normalisation_alpha: float = 0.1
     reward_normalisation_apply_clipping: bool = True
-    
+
     # Reward addon system configuration
     apply_boundary_penalties: bool = False
     apply_divergence_penalty: bool = False
@@ -141,6 +158,7 @@ class DataConfig(BaseConfig):
 @dataclass
 class NetworkConfig(BaseConfig):
     """Neural network architecture configuration."""
+
     model_type: str
     hyper_networks: bool
     include_layer_number: bool
@@ -155,26 +173,37 @@ class NetworkConfig(BaseConfig):
     continuous_hidden_size: int
     value_hidden_size: int
     buffer_size: int = 10000  # Default buffer size for replay memory
-    
+
     # Mixture of Experts configuration
     use_mixture_of_experts: bool = False
     moe_n_experts: int = 5
-    moe_expert_specialization: str = "sobol_sequence"  # "sobol_sequence", "random", or "adaptive_constraints"
+    moe_expert_specialization: str = (
+        "sobol_sequence"  # "sobol_sequence", "random", or "adaptive_constraints"
+    )
     moe_gate_hidden_dim: int = 64
     moe_gate_temperature: float = 1.0
     moe_load_balancing_weight: float = 0.01
-    
-    # Adaptive constraints configuration (for moe_expert_specialization = "adaptive_constraints")
-    moe_constraint_experts_per_objective: int = 2  # Number of constraint experts per objective
-    moe_constraint_penalty_weight: float = 100.0  # Penalty weight for constraint violations
-    moe_phase1_episodes: int = 1000  # Episodes to train pure experts before switching to constraints
 
-    multi_value_rewards: bool = False  # Whether the environment provides multi-objective rewards
+    # Adaptive constraints configuration (for moe_expert_specialization = "adaptive_constraints")
+    moe_constraint_experts_per_objective: int = (
+        2  # Number of constraint experts per objective
+    )
+    moe_constraint_penalty_weight: float = (
+        100.0  # Penalty weight for constraint violations
+    )
+    moe_phase1_episodes: int = (
+        1000  # Episodes to train pure experts before switching to constraints
+    )
+
+    multi_value_rewards: bool = (
+        False  # Whether the environment provides multi-objective rewards
+    )
 
 
 @dataclass
 class TrainingConfig(BaseConfig):
     """Training hyperparameters and settings."""
+
     n_iterations: int
     lr_discrete_policy: float
     lr_continuous_policy: float
@@ -187,21 +216,21 @@ class TrainingConfig(BaseConfig):
     optimiser: str
     device: str
     model_save_interval: int
-    
+
     # Entropy scheduling
     entropy_beta_start: float
     entropy_beta_end: float
     entropy_beta_decay_length: Optional[int]
     entropy_beta_decay_start: int
     entropy_beta_use_restarts: bool
-    
+
     # Learning rate scheduling
     scheduler_start: int
     scheduler_end: int
     lr_step: int
     lr_min: float
     t_mult: float
-    
+
     # Pareto optimisation
     n_init_solutions: int
     final_weight_epoch: int
@@ -224,7 +253,7 @@ class TrainingConfig(BaseConfig):
     entropy_beta_discrete_end: Optional[float] = None
     entropy_beta_continuous_start: Optional[float] = None
     entropy_beta_continuous_end: Optional[float] = None
-    
+
     # Preference-constrained training parameters
     pc_phase1_epochs_per_objective: int = 1000
     pc_phase2_epochs_per_step: int = 300
@@ -233,9 +262,11 @@ class TrainingConfig(BaseConfig):
     pc_constraint_margin: float = 0.05
     pc_cycle_objective_per_constraint_steps: bool = False
 
+
 @dataclass
 class GeneticConfig(BaseConfig):
     """Genetic algorithm configuration parameters."""
+
     algorithm: str  # NSGA2, NSGA3, MOEAD
     population_size: int
     n_generations: int
@@ -254,75 +285,84 @@ class GeneticConfig(BaseConfig):
 @dataclass
 class CoatingOptimisationConfig:
     """Complete configuration for coating optimisation."""
+
     general: GeneralConfig
     data: DataConfig
     network: Optional[NetworkConfig] = None
     training: Optional[TrainingConfig] = None
     genetic: Optional[GeneticConfig] = None
-    
+
     @classmethod
-    def from_config_parser(cls, config: CoatingConfigParser) -> 'CoatingOptimisationConfig':
+    def from_config_parser(
+        cls, config: CoatingConfigParser
+    ) -> "CoatingOptimisationConfig":
         """Create structured config from ConfigParser using automatic field mapping."""
-        
+
         # Define defaults for optional fields
         data_defaults = {
-            'optimise_weight_ranges': {},
-            'use_optical_thickness': True,
-            'combine': 'logproduct',
+            "optimise_weight_ranges": {},
+            "use_optical_thickness": True,
+            "combine": "logproduct",
             # Reward normalisation defaults
-            'use_reward_normalisation': False,
-            'reward_normalisation_mode': 'fixed',
-            'reward_normalisation_ranges': {},
-            'reward_normalisation_alpha': 0.1
+            "use_reward_normalisation": False,
+            "reward_normalisation_mode": "fixed",
+            "reward_normalisation_ranges": {},
+            "reward_normalisation_alpha": 0.1,
         }
-        
+
         network_defaults = {
-            'n_continuous_layers': 2,
-            'n_discrete_layers': 2,
-            'n_value_layers': 2,
-            'discrete_hidden_size': 16,
-            'continuous_hidden_size': 16,
-            'value_hidden_size': 16
+            "n_continuous_layers": 2,
+            "n_discrete_layers": 2,
+            "n_value_layers": 2,
+            "discrete_hidden_size": 16,
+            "continuous_hidden_size": 16,
+            "value_hidden_size": 16,
         }
-        
+
         training_defaults = {
-            'cycle_weights': False,
-            'transfer_fraction': 0.25,
-            'use_hypervolume_trainer': False,
-            'use_hypervolume_loss': False,
-            'hv_loss_weight': 0.5,
-            'hv_update_interval': 10,
-            'adaptive_reference_point': True
+            "cycle_weights": False,
+            "transfer_fraction": 0.25,
+            "use_hypervolume_trainer": False,
+            "use_hypervolume_loss": False,
+            "hv_loss_weight": 0.5,
+            "hv_update_interval": 10,
+            "adaptive_reference_point": True,
         }
-        
+
         genetic_defaults = {
-            'eliminate_duplicates': True,
-            'seed': 10,
-            'thickness_sigma': 1e-4
+            "eliminate_duplicates": True,
+            "seed": 10,
+            "thickness_sigma": 1e-4,
         }
-        
+
         # Create config objects automatically
         general = GeneralConfig.from_config_section(config, "General")
         data = DataConfig.from_config_section(config, "Data", **data_defaults)
-        
+
         # Optional sections
         network = None
         training = None
         genetic = None
-        
+
         if config.has_section("Network"):
-            network = NetworkConfig.from_config_section(config, "Network", **network_defaults)
-        
+            network = NetworkConfig.from_config_section(
+                config, "Network", **network_defaults
+            )
+
         if config.has_section("Training"):
-            training = TrainingConfig.from_config_section(config, "Training", **training_defaults)
-        
+            training = TrainingConfig.from_config_section(
+                config, "Training", **training_defaults
+            )
+
         if config.has_section("Genetic"):
-            genetic = GeneticConfig.from_config_section(config, "Genetic", **genetic_defaults)
-        
+            genetic = GeneticConfig.from_config_section(
+                config, "Genetic", **genetic_defaults
+            )
+
         return cls(
             general=general,
             data=data,
             network=network,
             training=training,
-            genetic=genetic
+            genetic=genetic,
         )

@@ -4,16 +4,32 @@ This guide covers the basic usage of the CoatOpt package for multi-objective coa
 
 ## Installation
 
-1. Create a conda environment (Python 3.11 recommended):
+CoatOpt uses **uv** as the package manager. Python 3.9+ is required.
+
+### Option 1: Using uv (Recommended)
+
+1. Install uv if you don't have it:
 ```bash
-conda create -n coatopt python=3.11
-conda activate coatopt
+curl -LsSf https://astral.sh/uv/install.sh | sh
+```
+
+2. Clone and set up the project:
+```bash
+cd coatopt
+uv sync
+```
+
+### Option 2: Traditional Setup
+
+1. Create a virtual environment:
+```bash
+python -m venv .venv
+source .venv/bin/activate  # On Windows: .venv\Scripts\activate
 ```
 
 2. Install the package:
 ```bash
-cd coatopt
-pip install .
+pip install -e .
 ```
 
 ## Quick Start
@@ -25,6 +41,11 @@ The primary way to use CoatOpt is through the command line interface:
 #### Training a New Model
 
 ```bash
+# Using uv (recommended)
+uv run coatopt-train -c src/coatopt/config/default.ini --save-plots
+
+# Or with activated environment
+source .venv/bin/activate
 coatopt-train -c src/coatopt/config/default.ini --save-plots
 ```
 
@@ -33,7 +54,7 @@ coatopt-train -c src/coatopt/config/default.ini --save-plots
 By default, training continues from existing checkpoints. To explicitly continue:
 
 ```bash
-coatopt-train -c config.ini
+uv run coatopt-train -c config.ini
 ```
 
 #### Start Fresh Training (Ignore Existing Data)
@@ -41,7 +62,7 @@ coatopt-train -c config.ini
 To start training from scratch, ignoring any existing checkpoints:
 
 ```bash
-coatopt-train -c config.ini --retrain
+uv run coatopt-train -c config.ini --retrain
 ```
 
 #### Evaluation Only
@@ -49,7 +70,7 @@ coatopt-train -c config.ini --retrain
 To run evaluation on a trained model without additional training:
 
 ```bash
-coatopt-train -c config.ini --evaluate -n 2000
+uv run coatopt-train -c config.ini --evaluate -n 2000
 ```
 
 #### Quiet Mode
@@ -57,7 +78,7 @@ coatopt-train -c config.ini --evaluate -n 2000
 To run with minimal output:
 
 ```bash
-coatopt-train -c config.ini --quiet
+uv run coatopt-train -c config.ini --quiet
 ```
 
 ### CLI Options
@@ -75,6 +96,11 @@ coatopt-train -c config.ini --quiet
 For interactive training and visualization:
 
 ```bash
+# Using uv (recommended)
+uv run coatopt-ui
+
+# Or with activated environment
+source .venv/bin/activate
 coatopt-ui
 ```
 
@@ -98,7 +124,7 @@ cp src/coatopt/config/default.ini my_config.ini
 
 3. Run training with your custom configuration:
 ```bash
-coatopt-train -c my_config.ini
+uv run coatopt-train -c my_config.ini
 ```
 
 ## Output Structure
@@ -120,7 +146,7 @@ output_directory/
 
 CoatOpt simultaneously optimizes multiple objectives:
 - **Reflectivity**: Maximize mirror reflectance
-- **Thermal Noise**: Minimize Brownian thermal noise  
+- **Thermal Noise**: Minimize Brownian thermal noise
 - **Absorption**: Minimize optical absorption
 - **Total thickness**: Minimize total thickness
 
@@ -141,10 +167,10 @@ CoatOpt uses Parameter Constrained Hybrid Proximal Policy Optimization (PC-HPPO)
 
 ```bash
 # Train a model quickly with default settings
-coatopt-train -c src/coatopt/config/default.ini --save-plots
+uv run coatopt-train -c src/coatopt/config/default.ini --save-plots
 
 # Evaluate the trained model
-coatopt-train -c src/coatopt/config/default.ini --evaluate -n 1000 --save-plots
+uv run coatopt-train -c src/coatopt/config/default.ini --evaluate -n 1000 --save-plots
 ```
 
 ## Troubleshooting
@@ -156,8 +182,40 @@ coatopt-train -c src/coatopt/config/default.ini --evaluate -n 1000 --save-plots
 3. **Poor Convergence**: Adjust learning rates or increase `n_iterations`
 4. **File Not Found**: Use absolute paths in configuration
 
+## Development Setup
+
+For contributors and developers:
+
+### Install Development Dependencies
+
+```bash
+# Install with development tools
+uv sync --extra dev
+
+# Set up pre-commit hooks for code quality
+uv run pre-commit install
+```
+
+### Code Quality Tools
+
+The project includes pre-commit hooks for:
+- **black**: Code formatting
+- **flake8**: Code linting
+- **isort**: Import sorting
+- **pytest**: Running tests
+
+### Running Tests
+
+```bash
+# Run all tests
+uv run pytest
+
+# Run tests with coverage
+uv run pytest --cov=src --cov-report=html
+```
+
 ### Getting Help
 
 - Check configuration options in `available_options.md`
 - Review default configuration in `default_config.md`
-- Use `--help` flag: `coatopt-train --help`
+- Use `--help` flag: `uv run coatopt-train --help`

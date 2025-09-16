@@ -26,7 +26,7 @@ CoatOpt is a reinforcement learning framework for optimizing gravitational wave 
 ### Key Features
 
 - **Multi-Objective Optimization**: Simultaneously optimize reflectivity, thermal noise, and absorption
-- **Pareto Front Exploration**: Maintain and explore trade-offs between competing objectives  
+- **Pareto Front Exploration**: Maintain and explore trade-offs between competing objectives
 - **Advanced Neural Networks**: LSTM, attention, and hypernetwork architectures
 - **Flexible Configuration**: Extensive customization through INI files
 - **CLI and GUI**: Command-line and graphical user interfaces
@@ -42,6 +42,11 @@ CoatOpt is a reinforcement learning framework for optimizing gravitational wave 
 
 ### 1. Basic Training
 ```bash
+# Using uv (recommended)
+uv run coatopt-train -c src/coatopt/config/default.ini --save-plots
+
+# Or activate environment first
+source .venv/bin/activate
 coatopt-train -c src/coatopt/config/default.ini --save-plots
 ```
 
@@ -50,17 +55,17 @@ coatopt-train -c src/coatopt/config/default.ini --save-plots
 # Copy and modify default config
 cp src/coatopt/config/default.ini my_experiment.ini
 # Edit my_experiment.ini as needed
-coatopt-train -c my_experiment.ini --save-plots
+uv run coatopt-train -c my_experiment.ini --save-plots
 ```
 
 ### 3. Evaluation Only
 ```bash
-coatopt-train -c config.ini --evaluate -n 2000 --save-plots
+uv run coatopt-train -c config.ini --evaluate -n 2000 --save-plots
 ```
 
 ### 4. Interactive GUI
 ```bash
-coatopt-ui
+uv run coatopt-ui
 ```
 
 ## Configuration Hierarchy
@@ -87,7 +92,7 @@ CoatOpt Configuration
 
 ### Reward Functions
 - `default`: Standard sigmoid-based rewards
-- `log_targets`: Logarithmic minimization  
+- `log_targets`: Logarithmic minimization
 - `normed_log_targets`: Normalized log rewards
 - `hypervolume`: Hypervolume-based Pareto rewards
 - `target`, `raw`, `area`: Specialized reward types
@@ -110,7 +115,7 @@ Training produces organized outputs:
 ```
 output_directory/
 ├── states/                 # Training checkpoints
-├── network_weights/        # Model weights  
+├── network_weights/        # Model weights
 ├── plots/                  # Training visualizations
 ├── evaluation/            # Evaluation results
 ├── pareto_front.h5        # Final Pareto front
@@ -128,7 +133,7 @@ output_directory/
 
 ### Command Line Help
 ```bash
-coatopt-train --help
+uv run coatopt-train --help
 ```
 
 ### Troubleshooting

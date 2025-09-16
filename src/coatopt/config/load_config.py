@@ -1,9 +1,9 @@
-import importlib.resources as pkg_resources
+import ast
 import configparser
+import importlib.resources as pkg_resources
+import json
 import logging
 from typing import Any
-import ast
-import json
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +34,7 @@ def try_literal_eval(value: Any, /) -> Any:
     except (ValueError, SyntaxError):
         return value
 
+
 def read_config(config_file: str, **kwargs) -> CoatingConfigParser:
     """Read a config file"""
     config = CoatingConfigParser(**kwargs)
@@ -50,7 +51,7 @@ def read_materials(materials_file: str) -> dict:
         materials_file = pkg_resources.files("coatopt.config") / "materials2.json"
     elif materials_file == "default_noair":
         materials_file = pkg_resources.files("coatopt.config") / "materials_noair.json"
-        
+
     with open(materials_file, "r") as f:
         materials = json.load(f)
 

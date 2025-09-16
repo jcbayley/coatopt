@@ -1,7 +1,7 @@
 # CoatOpt: Multi-Objective Coating Optimization
 
 A reinforcement learning framework for optimizing gravitational wave detector mirror coatings using PC-HPPO (Parameter Constrained Hybrid Proximal Policy Optimization).
-Developed ideas from https://iopscience.iop.org/article/10.1088/2632-2153/abc327, https://arxiv.org/abs/1903.01344 and 
+Developed ideas from https://iopscience.iop.org/article/10.1088/2632-2153/abc327, https://arxiv.org/abs/1903.01344 and
 ## Overview
 
 CoatOpt uses multi-objective reinforcement learning to design optimal coating stacks that simultaneously optimize:
@@ -41,7 +41,7 @@ coatopt-cli -c src/coatopt/config/default.ini --save-plots
 Train the PC-HPPO-OML algorithm for multi-objective Pareto optimization in the user interface, then see UI instructions:
 
 ```bash
-coatopt-ui 
+coatopt-ui
 ```
 
 ### Testing/Evaluation
@@ -99,9 +99,8 @@ PC-HPPO-OML uses:
 
 Core dependencies:
 - `torch`: Neural networks
-- `numpy`, `scipy`: Numerical computation  
+- `numpy`, `scipy`: Numerical computation
 - `tmm`, `tmm_fast`: Transfer Matrix Method for optics
 - `matplotlib`: Visualization
 - `pandas`: Data handling
 - `pymoo`: Multi-objective optimization utilities
-
