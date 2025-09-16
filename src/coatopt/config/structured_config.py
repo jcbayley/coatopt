@@ -37,7 +37,7 @@ class BaseConfig:
             # Get all actual field names from the config section
             try:
                 actual_fields = set(config.options(section_name))
-            except:
+            except BaseException:
                 actual_fields = set()
 
             # Check for typos/unknown fields in config
@@ -184,7 +184,8 @@ class NetworkConfig(BaseConfig):
     moe_gate_temperature: float = 1.0
     moe_load_balancing_weight: float = 0.01
 
-    # Adaptive constraints configuration (for moe_expert_specialization = "adaptive_constraints")
+    # Adaptive constraints configuration (for moe_expert_specialization =
+    # "adaptive_constraints")
     moe_constraint_experts_per_objective: int = (
         2  # Number of constraint experts per objective
     )

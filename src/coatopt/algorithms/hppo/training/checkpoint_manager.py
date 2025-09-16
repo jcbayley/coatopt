@@ -245,7 +245,7 @@ class TrainingCheckpointManager:
                             df_clean[col] = pd.to_numeric(
                                 df_clean[col], errors="coerce"
                             ).fillna(0.0)
-                        except:
+                        except BaseException:
                             # Convert to string and handle empty values
                             df_clean[col] = (
                                 df_clean[col]
@@ -337,7 +337,7 @@ class TrainingCheckpointManager:
             if key in ["training_config", "environment_config"]:
                 try:
                     metadata[key] = json.loads(value)
-                except:
+                except BaseException:
                     metadata[key] = value
             else:
                 metadata[key] = value
@@ -417,7 +417,7 @@ class TrainingCheckpointManager:
                 # Try to parse as JSON
                 try:
                     env_state[key] = json.loads(value)
-                except:
+                except BaseException:
                     env_state[key] = value
             else:
                 if dataset.shape == ():
@@ -437,7 +437,7 @@ class TrainingCheckpointManager:
 
         try:
             return pickle.loads(pickled_bytes)
-        except:
+        except BaseException:
             return []
 
     def get_checkpoint_info(self) -> Dict[str, Any]:
@@ -462,7 +462,7 @@ class TrainingCheckpointManager:
                     info["last_updated"] = f["metadata"]["last_updated"][()].decode(
                         "utf-8"
                     )
-        except:
+        except BaseException:
             pass
 
         return info

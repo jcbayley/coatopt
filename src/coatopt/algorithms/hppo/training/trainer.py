@@ -217,7 +217,8 @@ class HPPOTrainer:
         # Phase 2 Enhancement: Initialize weight archive for adaptive exploration
         self.weight_archive = WeightArchive(max_size=50)  # Track last 50 weight vectors
 
-        # Initialize preference constrained tracker if using preference_constrained cycling
+        # Initialize preference constrained tracker if using
+        # preference_constrained cycling
         self.pc_tracker = None
         if (
             hasattr(self.env, "cycle_weights")
@@ -363,7 +364,8 @@ class HPPOTrainer:
         self.continue_training = False
         self.best_states = []
 
-        # Pareto tracking is handled by the context initialization and centralized tracker
+        # Pareto tracking is handled by the context initialization and centralized
+        # tracker
 
     def _load_training_state(self) -> None:
         """Load training state from unified checkpoint."""
@@ -972,7 +974,8 @@ class HPPOTrainer:
                 moe_aux_losses = {}
 
             # Scale continuous action to environment bounds
-            # action is now a simple list: [discrete_val, continuous_val1, continuous_val2, ...]
+            # action is now a simple list: [discrete_val, continuous_val1,
+            # continuous_val2, ...]
             if len(action) > 1:
                 action[1] = (
                     action[1] * (self.env.max_thickness - self.env.min_thickness)
@@ -1097,7 +1100,8 @@ class HPPOTrainer:
                 episode, make_scheduler_step, make_scheduler_step
             )
 
-            # Handle both old format (4 values) and new format (5 values) for backward compatibility
+            # Handle both old format (4 values) and new format (5 values) for backward
+            # compatibility
             if len(lr_outs) == 5:
                 # New format with separate discrete and continuous entropy coefficients
                 lr_discrete, lr_continuous, lr_value, beta_discrete, beta_continuous = (
@@ -1294,7 +1298,8 @@ class HPPOTrainer:
         self, episode: int, state: np.ndarray, reward: float
     ) -> None:
         """Save visualization of episode state."""
-        # Only save visualizations if requested (via callbacks or legacy save_episode_visualizations)
+        # Only save visualizations if requested (via callbacks or legacy
+        # save_episode_visualizations)
         if not (self.callbacks.save_visualizations or self.save_episode_visualizations):
             return
 
@@ -1519,7 +1524,8 @@ class HPPOTrainer:
         if len(self.context.pareto_front_values) == 0:
             return None
 
-        # Transform pareto front values for UI display (reflectivity -> 1-reflectivity for minimization)
+        # Transform pareto front values for UI display (reflectivity ->
+        # 1-reflectivity for minimization)
         transformed_pareto_points = []
         for vals in self.context.pareto_front_values:
             point = []
@@ -1761,7 +1767,7 @@ def create_ui_callbacks(ui_queue, ui_stop_check) -> TrainingCallbacks:
             }
             ui_queue.put(training_update, block=False)
 
-        except:
+        except BaseException:
             pass  # Don't let queue issues stop training
 
     return TrainingCallbacks(

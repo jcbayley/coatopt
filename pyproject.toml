@@ -44,6 +44,11 @@ dev = [
 requires = ["setuptools>=61", "setuptools-scm>=8"]
 build-backend = "setuptools.build_meta"
 
+[dependency-groups]
+dev = [
+    "autopep8>=2.3.2",
+]
+
 [project.scripts]
 coatopt-ui = "coatopt_ui.launch_ui:main"
 coatopt-train = "coatopt_cli.train:main"

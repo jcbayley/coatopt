@@ -228,7 +228,8 @@ def create_pc_hppo_agent(
     base_input_size = env.obs_space_shape
 
     # All environments use the same base input size - additional features like
-    # objective weights or exploration features are handled by the network's _prepare_input method
+    # objective weights or exploration features are handled by the network's
+    # _prepare_input method
     input_size = base_input_size
     print(f"Creating PC-HPPO agent with input size: {input_size}")
 
@@ -441,7 +442,8 @@ def create_genetic_environment(
     Returns:
         Configured GeneticCoatingStack environment
     """
-    # Create environment with standard parameters (thickness_sigma will be handled by genetic environment)
+    # Create environment with standard parameters (thickness_sigma will be
+    # handled by genetic environment)
     env = GeneticCoatingStack(
         config=config,
         materials=materials,

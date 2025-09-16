@@ -404,7 +404,8 @@ class RewardCalculator:
                 normalised_rewards,
             )
         else:
-            # No constraints - use standard weighted sum of normalised rewards (if weights provided)
+            # No constraints - use standard weighted sum of normalised rewards (if
+            # weights provided)
             if weights is not None and self.use_reward_normalisation:
                 total_reward = sum(
                     weights.get(param, 0.0) * normalised_rewards.get(param, 0.0)
@@ -801,7 +802,8 @@ class RewardCalculator:
                 current_point, current_val, current_state, force_update=True
             )
 
-            # Get the Pareto front points (including the new point if it's non-dominated)
+            # Get the Pareto front points (including the new point if it's
+            # non-dominated)
             pareto_points = temp_tracker.get_front()
 
             if len(pareto_points) == 0:
@@ -902,7 +904,8 @@ class RewardCalculator:
             if i < transformed_points.shape[1]:
                 # Check if this is a maximization objective
                 if self.target_mapping.get(param, "").endswith("-"):
-                    # This is maximization, negate for pymoo (which expects minimization)
+                    # This is maximization, negate for pymoo (which expects
+                    # minimization)
                     transformed_points[:, i] = -transformed_points[:, i]
 
         return transformed_points
@@ -943,7 +946,8 @@ class RewardCalculator:
             normalised_reward = normalised_rewards.get(param, 0.0)
 
             if param in expert_constraints:
-                # This parameter is constrained - apply penalty for deviation from target
+                # This parameter is constrained - apply penalty for deviation from
+                # target
                 target_reward = expert_constraints[param]
                 constraint_penalty = (
                     -abs(normalised_reward - target_reward) * constraint_penalty_weight

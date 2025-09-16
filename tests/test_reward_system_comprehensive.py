@@ -271,7 +271,8 @@ class TestRewardSystemComprehensive:
         # At minimum, both should be finite
         assert np.isfinite(total_equal) and np.isfinite(total_skewed)
 
-        # Individual rewards should be the same (weights affect combination, not individual rewards)
+        # Individual rewards should be the same (weights affect combination, not
+        # individual rewards)
         for param in ["reflectivity", "thermal_noise", "absorption"]:
             if param in rewards_equal and param in rewards_skewed:
                 # Individual objective rewards should be the same

@@ -231,7 +231,8 @@ class MixtureOfExpertsBase(nn.Module):
                     break
 
                 # Create constraint expert: fix obj_name at target_reward, optimize others
-                # For now, use equal weights (actual constraints handled in reward function)
+                # For now, use equal weights (actual constraints handled in reward
+                # function)
                 weights = np.ones(self.n_objectives) / self.n_objectives
                 regions.append(torch.tensor(weights, dtype=torch.float32))
                 expert_idx += 1
@@ -335,7 +336,8 @@ class MixtureOfExpertsBase(nn.Module):
         # Lower distance should lead to higher gate weight
         target_gates = F.softmax(-distances, dim=-1)
 
-        # KL divergence between actual and target gate weights (with much stronger weight)
+        # KL divergence between actual and target gate weights (with much stronger
+        # weight)
         specialization_loss = 50.0 * F.kl_div(
             F.log_softmax(gate_weights, dim=-1), target_gates, reduction="batchmean"
         )
@@ -408,7 +410,8 @@ class MixtureOfExpertsBase(nn.Module):
             [region.to(device) for region in self.expert_regions]
         )  # (n_experts, n_objectives)
 
-        # Compute distances from current weights to each expert's region (use first sample if batch)
+        # Compute distances from current weights to each expert's region (use
+        # first sample if batch)
         current_weights = (
             objective_weights[0] if objective_weights.size(0) > 0 else objective_weights
         )
@@ -580,7 +583,8 @@ class MoEDiscretePolicy(MixtureOfExpertsBase):
         expert_outputs = []
 
         for expert in self.experts:
-            # All experts forward - let the gating network and specialization loss handle routing
+            # All experts forward - let the gating network and specialization loss
+            # handle routing
             output = expert.forward(state, layer_number, material, None)
             expert_outputs.append(output)
 
@@ -709,7 +713,8 @@ class MoEContinuousPolicy(MixtureOfExpertsBase):
         expert_outputs = []
 
         for expert in self.experts:
-            # All experts forward - let the gating network and specialization loss handle routing
+            # All experts forward - let the gating network and specialization loss
+            # handle routing
             mean, log_std = expert.forward(state, layer_number, material, None)
             expert_outputs.append((mean, log_std))
 
@@ -851,7 +856,8 @@ class MoEValueNetwork(MixtureOfExpertsBase):
         expert_outputs = []
 
         for expert in self.experts:
-            # All experts forward - let the gating network and specialization loss handle routing
+            # All experts forward - let the gating network and specialization loss
+            # handle routing
             output = expert.forward(state, layer_number, None)
             expert_outputs.append(output)
 

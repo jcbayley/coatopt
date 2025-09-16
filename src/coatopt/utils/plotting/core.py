@@ -287,7 +287,8 @@ class TrainingPlotManager:
                 }
                 self.add_training_data(episode_data)
 
-            # Load current Pareto front data (only the most recent front, not historical)
+            # Load current Pareto front data (only the most recent front, not
+            # historical)
             if len(context.pareto_front_values) > 0:
                 # Create current Pareto data entry with full context data
                 current_pareto_data = {
@@ -1040,7 +1041,8 @@ class TrainingPlotManager:
                 self.pareto_rewards_fig.tight_layout()
                 return None
 
-            # No transformation needed for rewards - they're already in the correct space
+            # No transformation needed for rewards - they're already in the correct
+            # space
             pareto_front = pareto_front_rewards
             best_points = all_rewards
 
@@ -1166,7 +1168,7 @@ class TrainingPlotManager:
                     ax.plot(
                         sorted_front_x, sorted_front_y, "r-", alpha=0.5, linewidth=1
                     )
-                except:
+                except BaseException:
                     pass
 
         # Add evaluation points if available
@@ -1214,7 +1216,8 @@ class TrainingPlotManager:
                     try:
                         best_points_array = np.array(best_points)
                         if best_points_array.shape[1] > max(i, j):
-                            # Create color gradient based on order (training progression)
+                            # Create color gradient based on order (training
+                            # progression)
                             n_points = len(best_points_array)
                             if n_points > 1:
                                 # Create colormap from blue (early) to red (late)
@@ -1237,7 +1240,7 @@ class TrainingPlotManager:
                                     s=5,
                                     label="All Solutions",
                                 )
-                    except:
+                    except BaseException:
                         pass
 
                 # Plot Pareto front
@@ -1370,7 +1373,7 @@ class TrainingPlotManager:
                 sorted_front_x = pareto_front[sorted_indices, 0]
                 sorted_front_y = pareto_front[sorted_indices, 1]
                 ax.plot(sorted_front_x, sorted_front_y, "r-", alpha=0.5, linewidth=1)
-            except:
+            except BaseException:
                 pass
 
         # self._add_objective_targets(ax)
@@ -1466,7 +1469,7 @@ class TrainingPlotManager:
                 pareto_ax.plot(
                     sorted_front_x, sorted_front_y, "r-", alpha=0.5, linewidth=1
                 )
-            except:
+            except BaseException:
                 pass
 
         # Configure Pareto plot
@@ -1837,7 +1840,8 @@ class TrainingPlotManager:
                     try:
                         best_points_array = np.array(best_points)
                         if best_points_array.shape[1] > max(i, j):
-                            # Create color gradient based on order (training progression)
+                            # Create color gradient based on order (training
+                            # progression)
                             n_points = len(best_points_array)
                             if n_points > 1:
                                 # Create colormap from blue (early) to red (late)
@@ -1860,7 +1864,7 @@ class TrainingPlotManager:
                                     s=5,
                                     label="All Solutions",
                                 )
-                    except:
+                    except BaseException:
                         pass
 
                 # Plot Pareto front
