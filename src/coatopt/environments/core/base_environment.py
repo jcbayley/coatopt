@@ -557,6 +557,10 @@ class BaseCoatingEnvironment:
             state_array = state.get_array()
         else:
             # Backward compatibility with numpy arrays/tensors
+            if state is None:
+                raise ValueError(
+                    "State is None - this indicates a bug in the environment step method"
+                )
             if isinstance(state, torch.Tensor):
                 state_tensor = state
             else:

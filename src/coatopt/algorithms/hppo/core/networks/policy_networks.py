@@ -302,7 +302,19 @@ class DiscretePolicy(BaseNetwork):
 
     def _process_outputs(self, raw_outputs: Dict[str, torch.Tensor]) -> torch.Tensor:
         """Process discrete policy output (softmax probabilities)."""
-        return torch.softmax(raw_outputs["logits"], dim=-1)
+        logits = raw_outputs["logits"]
+
+        # Clamp logits to prevent numerical instability
+        logits = torch.clamp(logits, min=-20.0, max=20.0)
+
+        # Use numerically stable softmax
+        probs = F.softmax(logits, dim=-1)
+
+        # Add small epsilon to prevent zero probabilities
+        probs = probs + 1e-8
+        probs = probs / probs.sum(dim=-1, keepdim=True)
+
+        return probs
 
 
 class ContinuousPolicy(BaseNetwork):
