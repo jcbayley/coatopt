@@ -17,7 +17,8 @@ dependencies = [
     "tmm_fast",
     "numba>=0.56.0",
     "mlflow>=2.0.0",
-    "pymoo>=0.6.0"
+    "pymoo>=0.6.0",
+    "h5py>=3.0.0"
 ]
 
 [tool.setuptools.packages.find]
