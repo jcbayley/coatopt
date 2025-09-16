@@ -1,10 +1,12 @@
 import pytest
 import numpy as np
 from coatopt.environments.reward_functions.reward_system import (
+    RewardCalculator,
+)
+from coatopt.environments.reward_functions.reward_addons import (
     calculate_air_penalty_reward_new,
     apply_air_penalty_addon,
     apply_boundary_penalties,
-    RewardCalculator,
 )
 
 class DummyState:
@@ -133,7 +135,6 @@ def test_reward_calculator_calculate_runs():
     env = DummyEnv(DummyState(10, 1))
     calc = RewardCalculator(
         reward_type="default",
-        apply_normalization=True,
         apply_boundary_penalties=True,
         apply_air_penalty=True
     )
@@ -147,34 +148,3 @@ def test_reward_calculator_calculate_runs():
     assert isinstance(total_reward, float)
     assert isinstance(vals, dict)
     assert isinstance(rewards, dict)
-
-
-# Test normalization addon
-from coatopt.environments.reward_functions.reward_system import apply_normalization_addon
-def test_apply_normalization_addon():
-    rewards = {"reflectivity": 0.5, "thermal_noise": 0.5, "thickness": 0.5, "absorption": 0.5}
-    vals = {"reflectivity": 0.995, "thermal_noise": 1e-21, "thickness": 0.1, "absorption": 0.01}
-    optimise_parameters = ["reflectivity", "thermal_noise", "thickness", "absorption"]
-    optimise_targets = {"reflectivity": 0.999, "thermal_noise": 1e-22, "thickness": 0.05, "absorption": 0.0}
-    env = DummyEnv(DummyState(10, 1))
-    env.objective_bounds = {
-        "reflectivity": [0.99, 1.0],
-        "thermal_noise": [0, 1e-20],
-        "thickness": [0, 0.2],
-        "absorption": [0, 0.05],
-    }
-    updated = apply_normalization_addon(rewards, vals, optimise_parameters, optimise_targets, env)
-    # Should add normalized values for each parameter
-    for key in optimise_parameters:
-        assert f"{key}_normalized" in updated
-
-
-# Test divergence penalty
-from coatopt.environments.reward_functions.reward_system import apply_divergence_penalty
-def test_apply_divergence_penalty():
-    rewards = {"reflectivity": 0.8, "thermal_noise": 0.2}
-    optimise_parameters = ["reflectivity", "thermal_noise"]
-    weights = {"reflectivity": 1.0, "thermal_noise": 1.0}
-    penalty, updated = apply_divergence_penalty(rewards, optimise_parameters, weights, divergence_penalty_weight=2.0)
-    assert "divergence_penalty" in updated
-    assert penalty < 0
