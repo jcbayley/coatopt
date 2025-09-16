@@ -115,7 +115,8 @@ def apply_divergence_penalty(
             divergence = max_reward - min_reward
 
             # Scale penalty by minimum weight - less penalty when one objective is less important
-            # This ensures that when weights are [1,0] or close to it, penalty is minimal
+            # This ensures that when weights are [1,0] or close to it, penalty is
+            # minimal
             divergence_penalty = (
                 -divergence * min_weight * 0.5 * divergence_penalty_weight
             )
@@ -218,7 +219,8 @@ def calculate_air_penalty_reward_new(
         for key, threshold in design_criteria.items():
             if key in current_vals and key in optimise_parameters:
                 val = current_vals[key]
-                # TODO: This should be changed to handle the direction of optimization properly
+                # TODO: This should be changed to handle the direction of optimization
+                # properly
                 if key in ["reflectivity"]:
                     if val > threshold:
                         criteria_met[key] = True

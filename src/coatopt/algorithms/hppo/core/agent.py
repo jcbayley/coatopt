@@ -599,7 +599,8 @@ class PCHPPO:
             self.scheduler_continuous.step(step)
             self.scheduler_value.step(step)
 
-        # Calculate entropy coefficients using cosine annealing with optional warm restarts
+        # Calculate entropy coefficients using cosine annealing with optional warm
+        # restarts
         def calculate_entropy_coefficient(start_val, end_val):
             # If scheduler not active, use end value (stay at minimum)
             if not scheduler_active:
@@ -700,12 +701,15 @@ class PCHPPO:
         Returns:
             Tuple containing action components, probabilities, values, and MoE auxiliary losses
         """
-        # Prepare inputs - keep original state for constraints, get observation for networks
+        # Prepare inputs - keep original state for constraints, get observation
+        # for networks
         original_state = state  # Keep reference to original CoatingState
 
-        # Get observation tensor for networks - handles all formatting including pre_type
+        # Get observation tensor for networks - handles all formatting including
+        # pre_type
         if hasattr(state, "get_observation_tensor"):
-            # CoatingState - use its comprehensive observation method with pre_type formatting
+            # CoatingState - use its comprehensive observation method with pre_type
+            # formatting
             obs_tensor = state.get_observation_tensor(pre_type=self.pre_type)
             # Add batch dimension if missing
             if obs_tensor.dim() == 1:  # [features] -> [1, features]
@@ -715,7 +719,8 @@ class PCHPPO:
             ):  # [layers, features] -> [1, layers, features]
                 obs_tensor = obs_tensor.unsqueeze(0)
         else:
-            # Fallback for raw tensors (shouldn't happen with current flow but just in case)
+            # Fallback for raw tensors (shouldn't happen with current flow but just in
+            # case)
             obs_tensor = state
             if self.pre_type == "linear" and obs_tensor.dim() > 1:
                 obs_tensor = obs_tensor.flatten(1)
@@ -818,7 +823,8 @@ class PCHPPO:
 
         # Get state value (now always returns raw multi-objective values)
         if self.use_mixture_of_experts:
-            # With shared value network, we get raw N-dimensional values (no weighting in network)
+            # With shared value network, we get raw N-dimensional values (no weighting
+            # in network)
             state_value = self.value(
                 pre_output_v, layer_number, objective_weights=objective_weights
             )
@@ -1229,7 +1235,8 @@ class PCHPPO:
                 if (
                     batch_returns.ndim > 1 and self.multi_value_rewards
                 ):  # Multi-objective returns
-                    # For multi-objective case, compute value loss using weighted returns and values
+                    # For multi-objective case, compute value loss using weighted
+                    # returns and values
                     value_loss = self.mse_loss(
                         weighted_returns.to(torch.float32).squeeze(),
                         weighted_state_value.squeeze(),

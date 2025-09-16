@@ -45,7 +45,7 @@ class PreNetworkAttention(torch.nn.Module):
         x = self.transformer_encoder(x)
         x = x.permute(1, 0, 2)  # Change back to shape (batch_size, seq_len, embed_dim)
         x = self.fc(x)
-        if layer_number != None:
+        if layer_number is not None:
             # indices = layer_number.flatten().view(x.size(0), 1, 1).to(torch.int64)
             # indices = indices.expand(x.size(0), 1, x.size(2))
             # x = torch.gather(x, 1, indices)
@@ -178,7 +178,8 @@ class PreNetworkLSTM(torch.nn.Module):
             lstm_out, output_lengths = pad_packed_sequence(lstm_out, batch_first=True)
             # Use the last output of LSTM for further processing
             out = lstm_out[torch.arange(lstm_out.size(0)), output_lengths - 1, :]
-            # out = lstm_out[:, output_lengths.view(-1) - 1, :]        # Use the last output of LSTM for further processing
+            # out = lstm_out[:, output_lengths.view(-1) - 1, :]        # Use the last
+            # output of LSTM for further processing
         else:
             out = lstm_out[:, -1, :]  # Take the output from the last layer (N)
 

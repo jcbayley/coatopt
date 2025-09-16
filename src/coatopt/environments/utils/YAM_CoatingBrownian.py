@@ -140,7 +140,8 @@ def thin_film_stack(n_input, dOpt, lambda_):
     plt.grid(False)
     plt.legend(legend_str)
 
-    # Additional code for plotting the normalised electric field intensity squared can be added here
+    # Additional code for plotting the normalised electric field intensity
+    # squared can be added here
 
     plt.show()
 
@@ -541,7 +542,7 @@ def getCoatingThermalNoise(
         f, lambda_, wBeam, Temp, materialParams, materialSub, materialLayer, dOpt, dcdp
     )
 
-    if plots == True:
+    if plots:
         # Plotting
         # Absorption values
         plt.figure()

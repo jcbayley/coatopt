@@ -108,7 +108,8 @@ def CalculateEFI_tmm(
 
     ##################################################
     # set up calculation of EFI
-    # polarisation = 'p'                                            #polarisation of light
+    # polarisation = 'p'
+    # #polarisation of light
     angle = np.deg2rad(0)  # angle of incidence - assuming normal incidence
 
     n_list = np.append(complex(n_air, 0), n_coat_complex)
@@ -120,7 +121,8 @@ def CalculateEFI_tmm(
     t_list = np.append(np.inf, t_coat)  # theres definitely a better way to do this
     t_list = np.append(t_list, np.inf)
 
-    # t_listsub  = np.insert(t_listsub,[0,len(t_listsub)],np.inf )  # EFI requires values are wrapped in inf for some reason
+    # t_listsub  = np.insert(t_listsub,[0,len(t_listsub)],np.inf )  # EFI
+    # requires values are wrapped in inf for some reason
     coh_tmm_data = tmm.coh_tmm(
         polarisation, n_list, t_list, th_0=angle, lam_vac=wavelength
     )  # theta set to 0 (this is for the pump remember)
@@ -717,7 +719,9 @@ def nearest_index(arr, val):
     """
     return np.argmin(np.abs(arr - val))
 
-    # stack_RT_fast(dOpt, materialLayer, materialParams, lambda_list,lambda_0,tphys=None ,polarisation='p',plots=False,plot_range=None):
+    # stack_RT_fast(dOpt, materialLayer, materialParams,
+    # lambda_list,lambda_0,tphys=None
+    # ,polarisation='p',plots=False,plot_range=None):
 
 
 def stack_RT_fast(
@@ -837,7 +841,7 @@ def stack_RT_fast(
     if plots is not None:
         transmission_spec_scaled = transmission * 100
 
-        if plots == True:
+        if plots:
 
             plt.figure(figsize=(10, 6))
             plt.plot(

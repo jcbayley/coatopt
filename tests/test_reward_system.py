@@ -2,9 +2,9 @@ import numpy as np
 import pytest
 
 from coatopt.environments.reward_functions.reward_addons import (
-    calculate_air_penalty_reward_new,
     apply_air_penalty_addon,
-    apply_boundary_penalties
+    apply_boundary_penalties,
+    calculate_air_penalty_reward_new,
 )
 from coatopt.environments.reward_functions.reward_system import RewardCalculator
 
@@ -28,11 +28,14 @@ class DummyEnv:
 
 
 # Test calculate_air_penalty_reward_new
-@pytest.mark.parametrize("total_layers, air_layers, min_real_layers, expected_sign, design_criteria", [
-    (10, 2, 5, 0, None),   # Enough real layers (8>=5), no penalty
-    (10, 1, 5, 1, {"reflectivity": 0}),    # Enough real layers + criteria met, reward  
-    (4, 0, 5, -1, None),    # Too few real layers (4<5), penalty
-])
+@pytest.mark.parametrize(
+    "total_layers, air_layers, min_real_layers, expected_sign, design_criteria",
+    [
+        (10, 2, 5, 0, None),  # Enough real layers (8>=5), no penalty
+        (10, 1, 5, 1, {"reflectivity": 0}),  # Enough real layers + criteria met, reward
+        (4, 0, 5, -1, None),  # Too few real layers (4<5), penalty
+    ],
+)
 def test_calculate_air_penalty_reward_new(
     total_layers, air_layers, min_real_layers, expected_sign, design_criteria
 ):
@@ -43,7 +46,7 @@ def test_calculate_air_penalty_reward_new(
         min_real_layers=min_real_layers,
         design_criteria=design_criteria,
         current_vals={"reflectivity": 1.0} if design_criteria else None,
-        optimise_parameters=["reflectivity"] if design_criteria else []
+        optimise_parameters=["reflectivity"] if design_criteria else [],
     )
     if expected_sign == 0:
         assert result == 0
@@ -71,7 +74,9 @@ def test_apply_air_penalty_addon_reward():
         optimise_parameters=["base"],
     )
     assert "air_addon" in new_rewards
-    assert new_rewards["total_reward"] == total_reward  # No penalty expected with 8 real >= 5 min
+    assert (
+        new_rewards["total_reward"] == total_reward
+    )  # No penalty expected with 8 real >= 5 min
 
 
 def test_apply_air_penalty_addon_reward_allair():
@@ -162,7 +167,13 @@ def test_apply_air_penalty_addon_penalty():
     rewards = {"base": 1.0}
     vals = {"base": 0.5}
     new_rewards = apply_air_penalty_addon(
-        total_reward, rewards, vals, env, air_penalty_weight=1.0, penalty_strength=1.0, optimise_parameters=["base"]
+        total_reward,
+        rewards,
+        vals,
+        env,
+        air_penalty_weight=1.0,
+        penalty_strength=1.0,
+        optimise_parameters=["base"],
     )
     assert "air_addon" in new_rewards
     assert new_rewards["total_reward"] == total_reward - 1.0
@@ -175,7 +186,13 @@ def test_apply_air_penalty_addon_env_none():
     rewards = {"base": 1.0}
     vals = {"base": 0.5}
     new_rewards = apply_air_penalty_addon(
-        total_reward, rewards, vals, env, air_penalty_weight=1.0, penalty_strength=1.0, optimise_parameters=["base"]
+        total_reward,
+        rewards,
+        vals,
+        env,
+        air_penalty_weight=1.0,
+        penalty_strength=1.0,
+        optimise_parameters=["base"],
     )
     # When env is None, no air penalty is calculated, so original rewards returned
     assert new_rewards == rewards  # Should return original rewards unchanged
@@ -242,10 +259,10 @@ def test_apply_boundary_penalties_no_penalty():
 def test_reward_calculator_calculate_runs():
     env = DummyEnv(DummyState(10, 1))
     calc = RewardCalculator(
-        reward_type="default", 
+        reward_type="default",
         optimise_parameters=["reflectivity", "thermal_noise"],
-        apply_boundary_penalties=True, 
-        apply_air_penalty=True
+        apply_boundary_penalties=True,
+        apply_air_penalty=True,
     )
     reflectivity = 0.995
     thermal_noise = 1e-21

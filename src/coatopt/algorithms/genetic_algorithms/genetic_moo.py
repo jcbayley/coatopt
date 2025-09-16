@@ -217,7 +217,8 @@ class CheckpointCallback(Callback):
 
     def _create_sample_coating_plots(self, states, checkpoint_dir, generation):
         """Create sample coating plots using existing plotting functionality."""
-        # Create a few sample coating plots (similar to existing _create_coating_plots but for checkpoint)
+        # Create a few sample coating plots (similar to existing
+        # _create_coating_plots but for checkpoint)
         n_sample_plots = min(5, len(states))
 
         for i in range(n_sample_plots):
@@ -432,7 +433,8 @@ class GeneticTrainer:
                     results[f"{param}_rewards"].append(-F[i, j])
 
                     # For values, we can approximate from rewards or compute only when needed
-                    # This avoids the expensive compute_state_value call for all solutions
+                    # This avoids the expensive compute_state_value call for all
+                    # solutions
                     if param == "reflectivity":
                         # Convert reward back to reflectivity value
                         results[f"{param}_vals"].append(1 - 10 ** (-(-F[i, j])))
@@ -441,7 +443,8 @@ class GeneticTrainer:
                         results[f"{param}_vals"].append(10 ** (-(-F[i, j]) - 10))
                     elif param == "thermal_noise":
                         # For thermal noise, the relationship is more complex
-                        # Use a placeholder for now, or compute only for final Pareto front
+                        # Use a placeholder for now, or compute only for final Pareto
+                        # front
                         results[f"{param}_vals"].append(-F[i, j])
                     else:
                         results[f"{param}_vals"].append(-F[i, j])
@@ -607,7 +610,8 @@ class GeneticTrainer:
                     "pareto_states", data=pareto_states, compression="gzip"
                 )
 
-                # Compute reference point (genetic doesn't compute this during optimization)
+                # Compute reference point (genetic doesn't compute this during
+                # optimization)
                 if len(pareto_front_rewards) > 0:
                     reference_point = (
                         np.max(np.array(pareto_front_rewards).T, axis=0) * 1.1

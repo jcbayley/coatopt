@@ -64,7 +64,8 @@ class MultiObjectiveEnvironment(HPPOEnvironment):
         )
 
         # Pareto tracking is now handled by the trainer - remove local tracking
-        # Keep pareto_front attribute for backward compatibility (will be synced from trainer)
+        # Keep pareto_front attribute for backward compatibility (will be synced
+        # from trainer)
         self.pareto_front = []
 
     def setup_multiobjective_specific_attributes(self, **kwargs):

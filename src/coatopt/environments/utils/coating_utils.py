@@ -220,14 +220,15 @@ def getCoatNoise2(
 def re_integrand(
     state, EFI, light_wavelength, num_points=30000, all_materials: dict = {}
 ):
-    ### set up a function to integrate over the total elecric feild intensity as a function of depth
-    ### t
+    # set up a function to integrate over the total elecric feild intensity as a function of depth
+    # t
     # materialLayer:         numpy.ndarray - An array of integers where each element represents the material type for each layer in the coating stack.
     # materialParams:        dict - A dictionary containing the refractive indices for each material type. The keys are material types (as referenced in materialLayer), and each key maps to another dictionary with a key 'n' for refractive index.
     # light_wavelength:               float - The wavelength of light in nanometers used for calculating the layer thicknesses.
     # num_points:            int - The total number of points to represent in the array, distributed across the entire stack.
     # Returns
-    # EFI/refractiveindex    numpy.ndarray - Electric feild intensity normallised to the refractive index at each point in the coating stack
+    # EFI/refractiveindex    numpy.ndarray - Electric feild intensity
+    # normallised to the refractive index at each point in the coating stack
 
     # Initialize variables
     depths = []
@@ -286,14 +287,15 @@ def re_integrand(
 
 
 def integrand(EFI, light_wavelength, materialLayer, materialParams, num_points=30000):
-    ### set up a function to integrate over the total elecric feild intensity as a function of depth
-    ### t
+    # set up a function to integrate over the total elecric feild intensity as a function of depth
+    # t
     # materialLayer:         numpy.ndarray - An array of integers where each element represents the material type for each layer in the coating stack.
     # materialParams:        dict - A dictionary containing the refractive indices for each material type. The keys are material types (as referenced in materialLayer), and each key maps to another dictionary with a key 'n' for refractive index.
     # light_wavelength:               float - The wavelength of light in nanometers used for calculating the layer thicknesses.
     # num_points:            int - The total number of points to represent in the array, distributed across the entire stack.
     # Returns
-    # EFI/refractiveindex    numpy.ndarray - Electric feild intensity normallised to the refractive index at each point in the coating stack
+    # EFI/refractiveindex    numpy.ndarray - Electric feild intensity
+    # normallised to the refractive index at each point in the coating stack
 
     # Initialize variables
     depths = []
@@ -369,8 +371,8 @@ def merit_function(
     use_optical_thickness=True,
     return_field_data=False,
 ):
-    # set up with default inputs to match aLIGO for testing = this should be modified to allow for varying inputs.
-
+    # set up with default inputs to match aLIGO for testing = this should be
+    # modified to allow for varying inputs.
     """
     Calculate the merit function for a given coating configuration.
 

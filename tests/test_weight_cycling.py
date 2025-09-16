@@ -168,7 +168,8 @@ class TestObjectiveSpaceCoverage:
 
         # Second objective should be identified as under-explored
         weights = result["under_explored_regions"]
-        # Note: Due to randomness and algorithm complexity, we just check that weights are valid
+        # Note: Due to randomness and algorithm complexity, we just check that
+        # weights are valid
         assert len(weights) == 2
         assert np.isclose(np.sum(weights), 1.0)
         assert np.all(weights > 0)
@@ -245,7 +246,8 @@ class TestAnnealedDirichletWeights:
         assert np.allclose(np.sum(weights, axis=1), 1.0)
 
         # Test edge case - if NaN values are returned, the function doesn't handle them
-        # This is actually expected behavior - the function passes through what dirichlet returns
+        # This is actually expected behavior - the function passes through what
+        # dirichlet returns
         with patch("numpy.random.dirichlet") as mock_dirichlet:
             invalid_weights = np.array([[np.nan, 0.5]])
             mock_dirichlet.return_value = invalid_weights
@@ -425,7 +427,8 @@ class TestWeightArchive:
         assert len(recent) == 3
 
         # Check if any of the recent weights match expected recent weights
-        # The function may return in any order, so let's just verify it contains recent ones
+        # The function may return in any order, so let's just verify it contains
+        # recent ones
         last_three_expected = expected_weights[-3:]  # Last 3 we added
 
         # Verify that all returned weights are among the expected ones

@@ -425,7 +425,8 @@ def sample_reward_weights(
     """
 
     if cycle_weights == "individual_then_adaptive":
-        # Two-phase strategy: explore each objective individually, then learn combinations
+        # Two-phase strategy: explore each objective individually, then learn
+        # combinations
         phase_info = get_objective_exploration_phase(
             epoch or 0, n_objectives, episodes_per_objective=1000
         )
@@ -435,9 +436,11 @@ def sample_reward_weights(
             weights = np.zeros(n_objectives)
             weights[phase_info["target_objective"]] = 1.0
         else:
-            # Phase 2: Now that we know each objective's potential, use adaptive exploration
+            # Phase 2: Now that we know each objective's potential, use adaptive
+            # exploration
             if epoch is not None and final_weight_epoch > 0:
-                # Adjust progress calculation to account for individual exploration phase
+                # Adjust progress calculation to account for individual exploration
+                # phase
                 individual_phase_episodes = n_objectives * 100
                 remaining_epochs = final_weight_epoch - individual_phase_episodes
                 if remaining_epochs > 0:
@@ -467,7 +470,8 @@ def sample_reward_weights(
                 weight_archive.add_weight(weights)
 
     elif cycle_weights == "preference_constrained":
-        # Preference-constrained training: Phase 1 individual exploration, Phase 2 constrained optimization
+        # Preference-constrained training: Phase 1 individual exploration, Phase 2
+        # constrained optimization
         if pc_tracker is None:
             raise ValueError(
                 "preference_constrained cycling requires pc_tracker parameter"
@@ -476,7 +480,8 @@ def sample_reward_weights(
         phase_info = pc_tracker.get_training_phase_info(epoch or 0)
         weights_dict = phase_info["weights"]
 
-        # Convert weights_dict values to a numpy array (order by sorted keys for consistency)
+        # Convert weights_dict values to a numpy array (order by sorted keys for
+        # consistency)
         weights = np.array([weights_dict[k] for k in pc_tracker.optimise_parameters])
         # Return both weights and phase info for use in reward calculation
         return weights, phase_info

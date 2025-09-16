@@ -5,22 +5,19 @@ A simple GUI for loading configuration files and monitoring training progress
 with live plots of rewards and Pareto front evolution.
 """
 
+import logging
 import os
 import queue
 import sys
 import threading
 import tkinter as tk
+import traceback
 from tkinter import filedialog, messagebox, ttk
 
 # Set matplotlib backend before any other matplotlib imports
 import matplotlib
-import numpy as np
-
-matplotlib.use("TkAgg")  # Use interactive backend for tkinter GUI with click events
-import logging
-import traceback
-
 import matplotlib.pyplot as plt
+import numpy as np
 import pandas as pd
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from matplotlib.figure import Figure
@@ -35,6 +32,8 @@ from coatopt.utils.evaluation import (
     run_evaluation_pipeline,
 )
 from coatopt.utils.plotting import TrainingPlotManager
+
+matplotlib.use("TkAgg")  # Use interactive backend for tkinter GUI with click events
 
 
 class TrainingMonitorUI:
@@ -78,7 +77,8 @@ class TrainingMonitorUI:
         self.setup_ui()
         self.setup_plots()
 
-        # Start monitoring for training updates (less frequent to improve responsiveness)
+        # Start monitoring for training updates (less frequent to improve
+        # responsiveness)
         self.root.after(250, self.check_training_updates)
 
     def setup_ui(self):
@@ -1106,7 +1106,8 @@ class TrainingMonitorUI:
     def check_training_updates(self):
         """Check for training updates and update plots."""
         try:
-            # Process only a limited number of updates per cycle to maintain responsiveness
+            # Process only a limited number of updates per cycle to maintain
+            # responsiveness
             updates_processed = 0
             max_updates_per_cycle = 5
 
@@ -1454,7 +1455,7 @@ class TrainingMonitorUI:
                 sorted_front_i = pareto_front[sorted_indices, i]
                 sorted_front_j = pareto_front[sorted_indices, j]
                 ax.plot(sorted_front_i, sorted_front_j, "r-", alpha=0.5, linewidth=1)
-            except:
+            except BaseException:
                 pass  # Skip line if it causes issues
 
         # Add target lines if available
@@ -1724,10 +1725,12 @@ class TrainingMonitorUI:
             state = None
             if self.pareto_states and pareto_idx < len(self.pareto_states):
                 state = self.pareto_states[pareto_idx]
-                # print(f"Using pareto_states[{pareto_idx}]")  # Commented out to reduce console spam
+                # print(f"Using pareto_states[{pareto_idx}]")  # Commented out to reduce
+                # console spam
             elif self.saved_states and pareto_idx < len(self.saved_states):
                 state = self.saved_states[pareto_idx]
-                # print(f"Using saved_states[{pareto_idx}] as fallback")  # Commented out to reduce console spam
+                # print(f"Using saved_states[{pareto_idx}] as fallback")  # Commented
+                # out to reduce console spam
 
             if state is not None:
                 # print(f"State shape: {np.array(state).shape}")
@@ -1994,7 +1997,7 @@ def main():
             app.cleanup()  # Clean up event handlers
             root.quit()
             root.destroy()
-        except:
+        except BaseException:
             pass
 
 

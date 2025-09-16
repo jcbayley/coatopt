@@ -12,9 +12,6 @@ import os
 import sys
 from pathlib import Path
 
-# Add coatopt to path
-sys.path.insert(0, str(Path(__file__).parent.parent))
-
 from coatopt.config import read_config, read_materials
 from coatopt.config.structured_config import CoatingOptimisationConfig
 from coatopt.factories import setup_genetic_optimisation_pipeline
@@ -22,6 +19,9 @@ from coatopt.utils.evaluation import (
     create_enhanced_pareto_plots,
     run_evaluation_pipeline,
 )
+
+# Add coatopt to path
+sys.path.insert(0, str(Path(__file__).parent.parent))
 
 
 def parse_arguments():

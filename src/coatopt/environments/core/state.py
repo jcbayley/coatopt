@@ -869,7 +869,8 @@ class CoatingState:
         """
         layer_stack = obs["layer_stack"]
 
-        # Convert layer stack to tensor [n_layers, 4] -> [thickness, material_index, n, k]
+        # Convert layer stack to tensor [n_layers, 4] -> [thickness,
+        # material_index, n, k]
         layer_data = []
         for layer in layer_stack:
             # Flatten material_index (which is a list) into the row

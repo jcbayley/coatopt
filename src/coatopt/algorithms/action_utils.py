@@ -223,7 +223,7 @@ def debug_state_consistency(
 
 # Import remaining functions from original action_utils
 def prepare_layer_number(
-    layer_number: Optional[Union[np.ndarray, torch.Tensor]]
+    layer_number: Optional[Union[np.ndarray, torch.Tensor]],
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     """
     Prepare layer number for neural networks.
@@ -260,7 +260,8 @@ def _process_enhanced_observation(obs_dict: dict) -> torch.Tensor:
     # Extract layer stack information
     layer_stack = obs_dict["layer_stack"]
 
-    # Convert layer stack to tensor format [n_layers, 4] -> [thickness, material_index, n, k]
+    # Convert layer stack to tensor format [n_layers, 4] -> [thickness,
+    # material_index, n, k]
     layer_data = []
     for layer in layer_stack:
         layer_data.append(

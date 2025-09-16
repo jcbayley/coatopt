@@ -10,9 +10,6 @@ from pathlib import Path
 
 import numpy as np
 
-# Add coatopt to path
-sys.path.insert(0, str(Path(__file__).parent.parent))
-
 from coatopt.algorithms.hppo.training.trainer import (
     HPPOConstants,
     HPPOTrainer,
@@ -28,6 +25,9 @@ from coatopt.utils.evaluation import (
 from coatopt.utils.mlflow_tracking import MLflowTracker, create_mlflow_tracker
 from coatopt.utils.plotting import TrainingPlotManager
 from coatopt.utils.plotting.core import TrainingPlotManager as CoreTrainingPlotManager
+
+# Add coatopt to path
+sys.path.insert(0, str(Path(__file__).parent.parent))
 
 
 class CommandLineTrainer:
@@ -222,7 +222,8 @@ class CommandLineTrainer:
         if self.continue_training and self.plot_manager:
             self.plot_manager.load_context_data(self.trainer.checkpoint_manager)
 
-            # Additional constraint history loading is now handled within load_context_data
+            # Additional constraint history loading is now handled within
+            # load_context_data
 
         # Check if we have existing data
         if self.continue_training:
