@@ -1,5 +1,6 @@
 import math
 from numbers import Number
+
 import torch
 from torch.distributions import Distribution, constraints
 from torch.distributions.utils import broadcast_all
@@ -18,8 +19,8 @@ class TruncatedStandardNormal(Distribution):
     """
 
     arg_constraints = {
-        'a': constraints.real,
-        'b': constraints.real,
+        "a": constraints.real,
+        "b": constraints.real,
     }
     has_rsample = True
 
@@ -29,11 +30,19 @@ class TruncatedStandardNormal(Distribution):
             batch_shape = torch.Size()
         else:
             batch_shape = self.a.size()
-        super(TruncatedStandardNormal, self).__init__(batch_shape, validate_args=validate_args)
+        super(TruncatedStandardNormal, self).__init__(
+            batch_shape, validate_args=validate_args
+        )
         if self.a.dtype != self.b.dtype:
-            raise ValueError('Truncation bounds types are different')
-        if any((self.a >= self.b).view(-1,).tolist()):
-            raise ValueError(f'Incorrect truncation range, a={self.a} b={self.b}')
+            raise ValueError("Truncation bounds types are different")
+        if any(
+            (self.a >= self.b)
+            .view(
+                -1,
+            )
+            .tolist()
+        ):
+            raise ValueError(f"Incorrect truncation range, a={self.a} b={self.b}")
         eps = torch.finfo(self.a.dtype).eps
         self._dtype_min_gt_0 = eps
         self._dtype_max_lt_1 = 1 - eps
@@ -45,9 +54,16 @@ class TruncatedStandardNormal(Distribution):
         self._log_Z = self._Z.log()
         little_phi_coeff_a = torch.nan_to_num(self.a, nan=math.nan)
         little_phi_coeff_b = torch.nan_to_num(self.b, nan=math.nan)
-        self._lpbb_m_lpaa_d_Z = (self._little_phi_b * little_phi_coeff_b - self._little_phi_a * little_phi_coeff_a) / self._Z
+        self._lpbb_m_lpaa_d_Z = (
+            self._little_phi_b * little_phi_coeff_b
+            - self._little_phi_a * little_phi_coeff_a
+        ) / self._Z
         self._mean = -(self._little_phi_b - self._little_phi_a) / self._Z
-        self._variance = 1 - self._lpbb_m_lpaa_d_Z - ((self._little_phi_b - self._little_phi_a) / self._Z) ** 2
+        self._variance = (
+            1
+            - self._lpbb_m_lpaa_d_Z
+            - ((self._little_phi_b - self._little_phi_a) / self._Z) ** 2
+        )
         self._entropy = CONST_LOG_SQRT_2PI_E + self._log_Z - 0.5 * self._lpbb_m_lpaa_d_Z
 
     @constraints.dependent_property
@@ -72,7 +88,7 @@ class TruncatedStandardNormal(Distribution):
 
     @staticmethod
     def _little_phi(x):
-        return (-(x ** 2) * 0.5).exp() * CONST_INV_SQRT_2PI
+        return (-(x**2) * 0.5).exp() * CONST_INV_SQRT_2PI
 
     @staticmethod
     def _big_phi(x):
@@ -93,11 +109,13 @@ class TruncatedStandardNormal(Distribution):
     def log_prob(self, value):
         if self._validate_args:
             self._validate_sample(value)
-        return CONST_LOG_INV_SQRT_2PI - self._log_Z - (value ** 2) * 0.5
+        return CONST_LOG_INV_SQRT_2PI - self._log_Z - (value**2) * 0.5
 
     def rsample(self, sample_shape=torch.Size()):
         shape = self._extended_shape(sample_shape)
-        p = torch.empty(shape, device=self.a.device).uniform_(self._dtype_min_gt_0, self._dtype_max_lt_1)
+        p = torch.empty(shape, device=self.a.device).uniform_(
+            self._dtype_min_gt_0, self._dtype_max_lt_1
+        )
         return self.icdf(p)
 
 
@@ -112,13 +130,13 @@ class TruncatedNormalDist(TruncatedStandardNormal):
     def __init__(self, loc, scale, a, b, validate_args=None):
         self.loc, self.scale, a, b = broadcast_all(loc, scale, a, b)
         if (self.scale < 0).any():
-            raise ValueError('Scale must be non-negative')
+            raise ValueError("Scale must be non-negative")
         a = (a - self.loc) / self.scale
         b = (b - self.loc) / self.scale
         super(TruncatedNormalDist, self).__init__(a, b, validate_args=validate_args)
         self._log_scale = self.scale.log()
         self._mean = self._mean * self.scale + self.loc
-        self._variance = self._variance * self.scale ** 2
+        self._variance = self._variance * self.scale**2
         self._entropy += self._log_scale
 
     def _to_std_rv(self, value):
@@ -134,7 +152,12 @@ class TruncatedNormalDist(TruncatedStandardNormal):
         return self._from_std_rv(super(TruncatedNormalDist, self).icdf(value))
 
     def log_prob(self, value):
-        return super(TruncatedNormalDist, self).log_prob(self._to_std_rv(value)) - self._log_scale
-    
-    def entropy(self,):
+        return (
+            super(TruncatedNormalDist, self).log_prob(self._to_std_rv(value))
+            - self._log_scale
+        )
+
+    def entropy(
+        self,
+    ):
         return self._entropy

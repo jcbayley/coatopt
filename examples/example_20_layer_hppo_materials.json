@@ -16,43 +16,43 @@
         "name" : "SiO2",
         "n"    : 1.45,
         "a"    : 0,
-        "alpha": 0.51e-6, 
-        "beta" : 8e-6,    
+        "alpha": 0.51e-6,
+        "beta" : 8e-6,
         "kappa": 1.38,
-        "C"    : 1.64e6,  
-        "Y"    : 70e9,    
+        "C"    : 1.64e6,
+        "Y"    : 70e9,
         "prat" : 0.17,
-        "phiM" : 2.3e-5,   
+        "phiM" : 2.3e-5,
 
-        "k"    : 3E-8    
-            
+        "k"    : 3E-8
+
     },
     "2": {
         "name" : "Ti:Ta2O5",
         "n"    : 2.09,
         "a"    : 2,
-        "alpha": 3.6e-6,    
-        "beta" : 14e-6,     
-        "kappa": 33,        
-        "C"    : 2.1e6,      
-        "Y"    : 120e9,      
+        "alpha": 3.6e-6,
+        "beta" : 14e-6,
+        "kappa": 33,
+        "C"    : 2.1e6,
+        "Y"    : 120e9,
         "prat" : 0.23,
-        "phiM" : 2.3E-4,  
-        "k"    : 5E-8    
-        
+        "phiM" : 2.3E-4,
+        "k"    : 5E-8
+
     },
-    "3": { 
+    "3": {
         "name" : "aSi",
         "desc" : "amorphous silicon - room temperature - Ion Planting",
-        "n"    : 3.73, 
-        "a"    : 10,    
-        "alpha": 2e-6, 
-        "beta" : 10e-6, 
-        "kappa": 30,    
-        "C"    : 2.0e6, 
-        "Y"    : 147e9, 
-        "prat" : 0.23, 
-        "phiM" : 2e-5, 
+        "n"    : 3.73,
+        "a"    : 10,
+        "alpha": 2e-6,
+        "beta" : 10e-6,
+        "kappa": 30,
+        "C"    : 2.0e6,
+        "Y"    : 147e9,
+        "prat" : 0.23,
+        "phiM" : 2e-5,
         "k"    : 5E-3
     }
 }

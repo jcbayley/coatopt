@@ -120,7 +120,7 @@ output_directory/
 
 CoatOpt simultaneously optimizes multiple objectives:
 - **Reflectivity**: Maximize mirror reflectance
-- **Thermal Noise**: Minimize Brownian thermal noise  
+- **Thermal Noise**: Minimize Brownian thermal noise
 - **Absorption**: Minimize optical absorption
 - **Total thickness**: Minimize total thickness
 

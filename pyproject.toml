@@ -23,7 +23,7 @@ dependencies = [
 
 [tool.setuptools.packages.find]
 where = ["src"]
-include = ["coatopt", "coatopt_ui", "coatopt_cli"] 
+include = ["coatopt", "coatopt_ui", "coatopt_cli"]
 exclude = ["docs*"]
 namespaces = false
 
@@ -31,7 +31,10 @@ namespaces = false
 dev = [
     "tox",
     "pre-commit",
-    "bump2version"
+    "bump2version",
+    "black>=24.4.0",
+    "flake8>=7.0.0",
+    "isort>=5.13.0"
 ]
 test = [
     "pytest>=7.0.0",

@@ -6,20 +6,15 @@ This module provides imports for backward compatibility while the actual impleme
 are now in separate, well-organized modules.
 """
 
+from coatopt.algorithms.config import HPPOConstants
+from coatopt.algorithms.hppo.core.agent import PCHPPO
+
 # Import the refactored classes for backward compatibility
 from coatopt.algorithms.hppo.core.replay_buffer import ReplayBuffer
-from coatopt.algorithms.hppo.core.agent import PCHPPO
 from coatopt.algorithms.hppo.training.trainer import HPPOTrainer
-from coatopt.algorithms.config import HPPOConstants
 
 # Import utility functions
 from coatopt.utils.plotting.training import pad_lists
 
 # Re-export for backward compatibility
-__all__ = [
-    'ReplayBuffer',
-    'PCHPPO', 
-    'HPPOTrainer',
-    'HPPOConstants',
-    'pad_lists'
-]
+__all__ = ["ReplayBuffer", "PCHPPO", "HPPOTrainer", "HPPOConstants", "pad_lists"]

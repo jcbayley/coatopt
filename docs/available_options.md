@@ -39,7 +39,7 @@ CoatOpt supports multiple reward function types that can be specified using the 
 - Works best with Reflectivity, Absorption, Thermal noise
 
 #### `"hypervolume"` - Hypervolume Reward
-- Rewards solutions that increase Pareto front hypervolume  
+- Rewards solutions that increase Pareto front hypervolume
 - Encourages diverse Pareto-optimal solutions
 - Best for pure multi-objective optimization
 
@@ -131,7 +131,7 @@ reward_normalization_alpha = 0.3              # Learning rate for adaptive mode
 CoatOpt can automatically compute reward normalization ranges based on the objective bounds defined in reward functions:
 
 - **Automatic Detection**: Leave `reward_normalization_ranges = {}` empty
-- **Reward Function Analysis**: Analyzes your reward function type (e.g., log-based) 
+- **Reward Function Analysis**: Analyzes your reward function type (e.g., log-based)
 - **Objective Bounds**: Uses `env.objective_bounds` to estimate typical reward ranges
 - **Smart Defaults**: Provides sensible ranges for common reward functions like `normalise_log_targets`
 
@@ -139,7 +139,7 @@ CoatOpt can automatically compute reward normalization ranges based on the objec
 
 ```ini
 reward_normalization_ranges = {               # Manual override (optional)
-    "reflectivity": [8, 28], 
+    "reflectivity": [8, 28],
     "absorption": [8, 25]
 }
 ```
@@ -165,7 +165,7 @@ The system automatically computes appropriate ranges when left empty by analyzin
 - **Scale Estimation**: Automatically estimates typical reward ranges for each objective
 
 **Manual Range Override** (optional): If auto-detection doesn't work well, specify ranges manually:
-- Reflectivity rewards typically range 8-28  
+- Reflectivity rewards typically range 8-28
 - Absorption rewards typically range 8-25
 - Run episodes without normalization to observe actual ranges
 
@@ -292,7 +292,7 @@ final_weight_alpha = 1.0
 ```ini
 [Training]
 use_hypervolume_trainer = True      # Enable hypervolume-enhanced trainer
-use_hypervolume_loss = True         # Use HV loss in addition to standard rewards  
+use_hypervolume_loss = True         # Use HV loss in addition to standard rewards
 hv_loss_weight = 0.5               # Weight for hypervolume loss (0-1)
 hv_update_interval = 10            # Update HV reference point every N episodes
 adaptive_reference_point = True     # Automatically adapt reference point
@@ -327,7 +327,7 @@ Materials are defined in JSON format:
 {
     "material_name": {
         "n": 2.3,        // Refractive index
-        "k": 0.0001,     // Extinction coefficient  
+        "k": 0.0001,     // Extinction coefficient
         "Y": 1.4e11,     // Young's modulus
         "sigma": 0.23,   // Poisson ratio
         "phi": 2.3e-4    // Loss angle
@@ -362,7 +362,7 @@ entropy_beta_use_restarts = True   # Restart entropy decay like LR scheduler
 # Separate entropy coefficients for discrete and continuous policies (recommended)
 entropy_beta_discrete_start = 0.1    # Discrete policy exploration
 entropy_beta_discrete_end = 0.01
-entropy_beta_continuous_start = 0.05 # Continuous policy exploration  
+entropy_beta_continuous_start = 0.05 # Continuous policy exploration
 entropy_beta_continuous_end = 0.001
 ```
 
@@ -395,7 +395,7 @@ lr_min = 1e-6                # Minimum learning rate
 CoatOpt validates configurations at startup and will report errors for:
 
 - Invalid reward function names
-- Incompatible network configurations  
+- Incompatible network configurations
 - Missing required parameters
 - Invalid file paths
 - Unsupported device configurations
@@ -408,7 +408,7 @@ CoatOpt validates configurations at startup and will report errors for:
 - Use linear networks: `pre_network_type = "linear"`
 - Reduce network sizes
 
-### For Quality  
+### For Quality
 - Use attention networks: `pre_network_type = "attn"`
 - Increase network sizes
 - More training iterations: `n_iterations = 15000`

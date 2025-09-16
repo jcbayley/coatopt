@@ -2,7 +2,9 @@
 Replay buffer for storing and managing training experiences.
 Extracted from pc_hppo_oml.py for better organization.
 """
-from typing import List, Optional, Any
+
+from typing import Any, List, Optional
+
 import torch
 from torch.nn.utils.rnn import pad_sequence
 
@@ -10,26 +12,29 @@ from torch.nn.utils.rnn import pad_sequence
 class ReplayBuffer:
     """
     Buffer for storing training experiences in PPO algorithm.
-    
+
     Stores states, actions, rewards, and other training data needed
     for policy and value function updates.
     """
-    
+
     def __init__(self, max_size: int = 10000):
         """
         Initialize replay buffer with optional size limit.
-        
+
         Args:
             max_size: Maximum number of experiences to store
         """
         self.max_size = max_size
-        
+
         # Main experience storage - use deque for efficient memory management
         from collections import deque
+
         self.discrete_actions: deque = deque(maxlen=max_size)
         self.continuous_actions: deque = deque(maxlen=max_size)
         self.states: deque = deque(maxlen=max_size)
-        self.observations: deque = deque(maxlen=max_size)  # Pre-computed observation tensors
+        self.observations: deque = deque(
+            maxlen=max_size
+        )  # Pre-computed observation tensors
         self.logprobs_discrete: deque = deque(maxlen=max_size)
         self.logprobs_continuous: deque = deque(maxlen=max_size)
         self.rewards: deque = deque(maxlen=max_size)
@@ -43,7 +48,7 @@ class ReplayBuffer:
         self.objective_weights: deque = deque(maxlen=max_size)
 
         # Remove unused temporary storage for cleaner memory footprint
-    
+
     def clear(self) -> None:
         """Clear all stored experiences efficiently."""
         # Efficient clearing - deque.clear() is O(1) vs del [:] which is O(n)
@@ -64,25 +69,25 @@ class ReplayBuffer:
         self.objective_weights.clear()
 
     def update(
-        self, 
-        discrete_action: torch.Tensor, 
-        continuous_action: torch.Tensor, 
-        state: torch.Tensor, 
+        self,
+        discrete_action: torch.Tensor,
+        continuous_action: torch.Tensor,
+        state: torch.Tensor,
         observation: torch.Tensor,  # Pre-computed observation tensor
         logprob_discrete: torch.Tensor,
-        logprob_continuous: torch.Tensor, 
-        reward: float, 
-        state_value: torch.Tensor, 
+        logprob_continuous: torch.Tensor,
+        reward: float,
+        state_value: torch.Tensor,
         done: bool,
         entropy_discrete: torch.Tensor,
         entropy_continuous: torch.Tensor,
         layer_number: int = 0,
         hidden_state: Optional[torch.Tensor] = None,
-        objective_weights: Optional[torch.Tensor] = None
+        objective_weights: Optional[torch.Tensor] = None,
     ) -> None:
         """
         Add a new experience to the buffer.
-        
+
         Args:
             discrete_action: Discrete action taken
             continuous_action: Continuous action taken
@@ -117,16 +122,16 @@ class ReplayBuffer:
     def update_returns(self, returns: List[float]) -> None:
         """
         Update the returns for stored experiences.
-        
+
         Args:
             returns: List of discounted returns (scalar or multi-objective)
         """
         self.returns.extend(returns)
-    
+
     def update_multiobjective_returns(self, returns: List[List[float]]) -> None:
         """
         Update the multi-objective returns for stored experiences.
-        
+
         Args:
             returns: List of multi-objective discounted returns
         """
@@ -135,11 +140,11 @@ class ReplayBuffer:
     def pad_states(self) -> None:
         """Pad states to same length for batch processing."""
         self.states = pad_sequence(list(self.states), batch_first=True)
-    
+
     def __len__(self) -> int:
         """Return number of stored experiences."""
         return len(self.discrete_actions)
-    
+
     def is_empty(self) -> bool:
         """Check if buffer is empty."""
         return len(self.discrete_actions) == 0

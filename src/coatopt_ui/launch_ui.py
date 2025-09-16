@@ -4,9 +4,10 @@ Launch script for the PC-HPPO-OML Training UI.
 
 Simple launcher that ensures proper imports and environment setup.
 """
-import sys
 import os
+import sys
 import traceback
+
 
 def main():
     # Add the current directory to Python path for imports
@@ -17,7 +18,7 @@ def main():
     # Import and run the training UI
     try:
         from training_ui import main
-    
+
         print("Launching PC-HPPO-OML Training Monitor...")
         print("GUI Interface for real-time training monitoring")
         print("Features:")
@@ -26,7 +27,7 @@ def main():
         print("  - Pareto front evolution visualization")
         print("  - Training progress monitoring")
         print()
-        
+
         main()
 
     except ImportError as e:
@@ -43,6 +44,7 @@ def main():
     except Exception as e:
         print(f"Error launching UI: {e}, traceback: {traceback.format_exc()}")
         sys.exit(1)
+
 
 if __name__ == "__main__":
     main()

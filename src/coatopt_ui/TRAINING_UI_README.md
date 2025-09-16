@@ -48,7 +48,7 @@ A graphical user interface for real-time monitoring of PC-HPPO-OML coating optim
 
 ###### Training Values Tab
 
- - View the values of reflectivity, absorption, thickness and thermal noise through training 
+ - View the values of reflectivity, absorption, thickness and thermal noise through training
 
 ##### Pareto Front Evolution Tab
 - **Multi-objective Visualization**: Shows Pareto front in reflectivity vs absorption space
@@ -102,7 +102,7 @@ beta_end = 0.001
 
 ### Common Issues
 
-1. **Import Errors**: 
+1. **Import Errors**:
    - Ensure all dependencies are installed: `pip install matplotlib pandas numpy pymoo`
    - Check that coatopt package is in Python path
 

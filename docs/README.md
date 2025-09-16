@@ -26,7 +26,7 @@ CoatOpt is a reinforcement learning framework for optimizing gravitational wave 
 ### Key Features
 
 - **Multi-Objective Optimization**: Simultaneously optimize reflectivity, thermal noise, and absorption
-- **Pareto Front Exploration**: Maintain and explore trade-offs between competing objectives  
+- **Pareto Front Exploration**: Maintain and explore trade-offs between competing objectives
 - **Advanced Neural Networks**: LSTM, attention, and hypernetwork architectures
 - **Flexible Configuration**: Extensive customization through INI files
 - **CLI and GUI**: Command-line and graphical user interfaces
@@ -87,7 +87,7 @@ CoatOpt Configuration
 
 ### Reward Functions
 - `default`: Standard sigmoid-based rewards
-- `log_targets`: Logarithmic minimization  
+- `log_targets`: Logarithmic minimization
 - `normed_log_targets`: Normalized log rewards
 - `hypervolume`: Hypervolume-based Pareto rewards
 - `target`, `raw`, `area`: Specialized reward types
@@ -110,7 +110,7 @@ Training produces organized outputs:
 ```
 output_directory/
 ├── states/                 # Training checkpoints
-├── network_weights/        # Model weights  
+├── network_weights/        # Model weights
 ├── plots/                  # Training visualizations
 ├── evaluation/            # Evaluation results
 ├── pareto_front.h5        # Final Pareto front
