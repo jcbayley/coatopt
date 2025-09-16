@@ -1,7 +1,7 @@
 # CoatOpt: Multi-Objective Coating Optimization
 
 A reinforcement learning framework for optimizing gravitational wave detector mirror coatings using PC-HPPO (Parameter Constrained Hybrid Proximal Policy Optimization).
-Developed ideas from https://iopscience.iop.org/article/10.1088/2632-2153/abc327, https://arxiv.org/abs/1903.01344 and
+
 ## Overview
 
 CoatOpt uses multi-objective reinforcement learning to design optimal coating stacks that simultaneously optimize:
@@ -13,51 +13,62 @@ The algorithm maintains a Pareto front of non-dominated solutions, allowing expl
 
 ## Installation
 
-Create a conda environment (tested on Python 3.11):
+CoatOpt uses **uv** as the package manager. Python 3.9+ is required.
+
+### Option 1: Using uv (Recommended)
 
 ```bash
-conda create -n coatopt python=3.11
-conda activate coatopt
+# Install uv if you don't have it
+curl -LsSf https://astral.sh/uv/install.sh | sh
+
+# Clone and set up the project
+cd coatopt
+uv sync
 ```
 
-Install the package:
+### Option 2: Traditional Setup
 
 ```bash
-pip install .
+# Create virtual environment
+python -m venv .venv
+source .venv/bin/activate  # On Windows: .venv\Scripts\activate
+
+# Install package
+pip install -e .
 ```
 
 ## Quick Start
 
-### Training a Model cli
-
-Train the PC-HPPO-OML algorithm for multi-objective Pareto optimization in the command line:
+### Training a Model (CLI)
 
 ```bash
-coatopt-cli -c src/coatopt/config/default.ini --save-plots
+# Using uv (recommended)
+uv run coatopt-train -c src/coatopt/config/default.ini --save-plots
+
+# Or with activated environment
+source .venv/bin/activate
+coatopt-train -c src/coatopt/config/default.ini --save-plots
 ```
 
-### Training a Model ui
-
-Train the PC-HPPO-OML algorithm for multi-objective Pareto optimization in the user interface, then see UI instructions:
+### Interactive GUI
 
 ```bash
-coatopt-ui
+# Launch GUI interface
+uv run coatopt-ui
 ```
 
-### Testing/Evaluation
-
-See the UI docs for the ui instructions, for the cli run :
+### Evaluation Only
 
 ```bash
-coatopt-cli -c src/coatopt/config/default.ini --evaluate -n 1000 --save-plots
+# Run evaluation on trained model
+uv run coatopt-train -c src/coatopt/config/default.ini --evaluate -n 1000 --save-plots
 ```
 
-### Continue Training
-
-Resume training is on by default, if you want to retrain or start new training run:
+### Start Fresh Training
 
 ```bash
-coatopt-cli -c src/coatopt/config/default.ini -retrain
+# Retrain from scratch (ignore existing checkpoints)
+uv run coatopt-train -c src/coatopt/config/default.ini --retrain
 ```
 
 ## Configuration
@@ -79,12 +90,20 @@ Key parameters in `default.ini`:
 - `lr_*_policy`: Learning rates for discrete/continuous policies
 - `clip_ratio`: PPO clipping parameter
 
+## Documentation
+
+For detailed usage instructions and examples:
+- **[Basic Usage Guide](docs/basic_usage.md)** - Installation and getting started
+- **[Configuration Reference](docs/default_config.md)** - All configuration parameters
+- **[Available Options](docs/available_options.md)** - Advanced features and options
+
 ## Outputs
 
 Training generates:
-- **HDF5 results**: Complete evaluation results for analysis
-- **HDF5 evaluation**: evaluation results file
-- **Plots**: plots showing training and pareto front metrics
+- **Model checkpoints**: Neural network weights
+- **Training metrics**: HDF5 files with training statistics
+- **Evaluation results**: Complete analysis data
+- **Plots**: Training progress and Pareto front visualizations
 
 ## Algorithm Details
 
@@ -95,12 +114,37 @@ PC-HPPO-OML uses:
 - **LSTM or attention pre-networks**: Sequential processing of coating layer information
 - **PPO updates**: Stable policy gradient optimization with clipping
 
+## Development
+
+### Code Quality
+
+This project includes pre-commit hooks for code formatting and linting:
+
+```bash
+# Install development dependencies
+uv sync --extra dev
+
+# Set up pre-commit hooks
+uv run pre-commit install
+```
+
+### Running Tests
+
+```bash
+# Run all tests
+uv run pytest
+
+# Run tests with coverage
+uv run pytest --cov=src --cov-report=html
+```
+
 ## Requirements
 
-Core dependencies:
-- `torch`: Neural networks
-- `numpy`, `scipy`: Numerical computation
-- `tmm`, `tmm_fast`: Transfer Matrix Method for optics
-- `matplotlib`: Visualization
-- `pandas`: Data handling
-- `pymoo`: Multi-objective optimization utilities
+Key dependencies automatically installed:
+- **torch>=2.0.0**: Neural network training
+- **numpy, scipy**: Numerical computation
+- **tmm, tmm_fast**: Transfer Matrix Method for optics
+- **matplotlib**: Visualization
+- **pandas**: Data handling
+- **pymoo**: Multi-objective optimization utilities
+- **mlflow**: Experiment tracking
