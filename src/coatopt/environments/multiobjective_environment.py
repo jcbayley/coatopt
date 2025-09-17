@@ -128,6 +128,7 @@ class MultiObjectiveEnvironment(HPPOEnvironment):
         target_reflectivity=1.0,
         objective_weights=None,
         pc_tracker=None,
+        pareto_tracker=None,
         phase_info=None,
     ):
         """Compute reward for the given state.
@@ -138,6 +139,7 @@ class MultiObjectiveEnvironment(HPPOEnvironment):
             target_reflectivity: Target reflectivity (unused, kept for compatibility)
             objective_weights: Weights for multi-objective optimization
             pc_tracker: Preference constrained tracker (passed through)
+            pareto_tracker: Pareto tracker for hypervolume calculations (passed through)
             phase_info: Phase information for preference constrained optimization (passed through)
 
         Returns:
@@ -165,6 +167,7 @@ class MultiObjectiveEnvironment(HPPOEnvironment):
             expert_constraints=getattr(self, "current_expert_constraints", None),
             env=self,
             pc_tracker=pc_tracker,
+            pareto_tracker=pareto_tracker,
             phase_info=phase_info,
         )
 
@@ -184,6 +187,9 @@ class MultiObjectiveEnvironment(HPPOEnvironment):
         **kwargs,
     ):
         """Step function simplified to work directly with CoatingState objects."""
+
+        # Extract pareto_tracker from kwargs
+        pareto_tracker = kwargs.get("pareto_tracker", None)
 
         # Use current state if none provided
         if state is None:
@@ -240,6 +246,7 @@ class MultiObjectiveEnvironment(HPPOEnvironment):
                 max_state,
                 objective_weights=objective_weights,
                 pc_tracker=pc_tracker,
+                pareto_tracker=pareto_tracker,
                 phase_info=phase_info,
             )
         elif self.use_intermediate_reward:
@@ -249,6 +256,7 @@ class MultiObjectiveEnvironment(HPPOEnvironment):
                 max_state,
                 objective_weights=objective_weights,
                 pc_tracker=pc_tracker,
+                pareto_tracker=pareto_tracker,
                 phase_info=phase_info,
             )
 

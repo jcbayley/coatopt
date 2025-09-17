@@ -319,7 +319,7 @@ class RewardCalculator:
 
         # Combine rewards using configured method
         final_reward = self.combine_rewards(
-            final_rewards, objective_weights=weights, env=env, vals=vals
+            final_rewards, objective_weights=weights, env=env, vals=vals, **extra_kwargs
         )
         final_rewards["total_reward"] = final_reward
 
@@ -422,6 +422,7 @@ class RewardCalculator:
         objective_weights: Dict[str, float] = None,
         env=None,
         vals: Dict[str, float] = None,
+        **kwargs,
     ) -> float:
         """
         Combine individual rewards into a single total reward.
@@ -464,7 +465,9 @@ class RewardCalculator:
                 )
             )
         elif self.combine == "hypervolume":
-            total_reward = self._calculate_hypervolume_reward(env, vals, rewards)
+            total_reward = self._calculate_hypervolume_reward(
+                env, vals, rewards, **kwargs
+            )
         else:
             raise ValueError(
                 f"combine must be either 'sum', 'product', 'logproduct', or 'hypervolume', not {self.combine}"
@@ -750,7 +753,7 @@ class RewardCalculator:
         return normalised_rewards
 
     def _calculate_hypervolume_reward(
-        self, env, vals: Dict[str, float], rewards: Dict[str, float]
+        self, env, vals: Dict[str, float], rewards: Dict[str, float], **kwargs
     ) -> float:
         """
         Calculate reward based on hypervolume of Pareto front including the new point.
@@ -769,21 +772,22 @@ class RewardCalculator:
             )
             return np.sum([rewards[key] for key in self.optimise_parameters])
 
-        # Check if environment has a pareto tracker
-        if (
-            env is None
-            or not hasattr(env, "pareto_tracker")
-            or env.pareto_tracker is None
-        ):
-            raise Exception(
-                "Warning: No pareto_tracker available in environment. Falling back to sum.",
-                env,
-            )
-            return np.sum([rewards[key] for key in self.optimise_parameters])
+        # Check if pareto tracker is provided via kwargs first, then try env
+        pareto_tracker = kwargs.get("pareto_tracker")
+        if pareto_tracker is None:
+            if (
+                env is None
+                or not hasattr(env, "pareto_tracker")
+                or env.pareto_tracker is None
+            ):
+                raise Exception(
+                    "Warning: No pareto_tracker available in kwargs or environment. Falling back to sum."
+                )
+            pareto_tracker = env.pareto_tracker
 
         try:
             # Get current Pareto front
-            pareto_tracker = env.pareto_tracker
+            # pareto_tracker is now obtained from above logic
 
             # Extract current objective values for the optimized parameters
             current_point = np.array(
@@ -838,9 +842,7 @@ class RewardCalculator:
             return hypervolume
 
         except Exception as e:
-            raise Exception(
-                f"Warning: Error calculating hypervolume: {e}. Falling back to sum. traceback: {e.__traceback__}"
-            )
+            print(f"Warning: Error calculating hypervolume: {e}. Falling back to sum.")
             return np.sum([rewards[key] for key in self.optimise_parameters])
 
     # ===== HYPERVOLUME CALCULATION HELPERS =====

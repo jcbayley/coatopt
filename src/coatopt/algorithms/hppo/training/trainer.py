@@ -993,6 +993,7 @@ class HPPOTrainer:
             next_state, rewards, done, finished, _, full_action, vals = self.env.step(
                 action,
                 pc_tracker=self.pc_tracker,
+                pareto_tracker=self.pareto_tracker,
                 phase_info=self.current_phase_info,
                 **step_kwargs,
             )
@@ -1201,7 +1202,10 @@ class HPPOTrainer:
 
         # Compute final state values and rewards
         _, vals, rewards = self.env.compute_reward(
-            final_state, pc_tracker=self.pc_tracker, phase_info=self.current_phase_info
+            final_state,
+            pc_tracker=self.pc_tracker,
+            phase_info=self.current_phase_info,
+            pareto_tracker=self.pareto_tracker,
         )
 
         # Store physical values
@@ -1360,6 +1364,7 @@ class HPPOTrainer:
                 env=self.env,
                 pc_tracker=self.pc_tracker,
                 phase_info={"phase": "individual", "objective": "reflectivity"},
+                pareto_tracker=self.pareto_tracker,
             )
 
             vals = [vals.get(key, 0.0) for key in self.env.get_parameter_names()]
