@@ -224,6 +224,11 @@ class PCHPPO:
 
         # Initialize policy and value networks (current and old versions)
         if use_mixture_of_experts:
+            print(f"\nINITIALIZING MIXTURE OF EXPERTS:")
+            print(f"   Number of experts: {self.moe_n_experts}")
+            print(f"   Expert specialization: {self.moe_expert_specialization}")
+            print(f"   Gating temperature: {self.moe_gate_temperature}")
+            print(f"   Load balancing weight: {self.moe_load_balancing_weight}")
             self._create_moe_networks(
                 MoEDiscretePolicy,
                 MoEContinuousPolicy,
@@ -242,6 +247,14 @@ class PCHPPO:
                 activation_function,
                 include_material_in_policy,
             )
+
+            # Log expert regions for verification
+            expert_regions = self.policy_discrete.expert_regions
+            print(f"   Expert regions configured:")
+            for i, region in enumerate(expert_regions):
+                weights_str = ", ".join([f"{w:.1f}" for w in region.tolist()])
+                print(f"      Expert {i}: [{weights_str}]")
+            print("")
         else:
             self._create_networks(
                 DiscretePolicy,

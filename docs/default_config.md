@@ -40,14 +40,46 @@ Data and environment configuration parameters.
 | `optimise_parameters` | `["reflectivity", "thermal_noise", "absorption"]` | Objectives to optimize |
 | `optimise_targets` | `{"reflectivity":1.0, "thermal_noise":1e-21, "absorption":0.01}` | Target values for optimization |
 | `design_criteria` | `{"reflectivity":0.99999, "thermal_noise":5.394e-21, "absorption":0.01}` | Design criteria thresholds |
+| `optimise_weight_ranges` | `{"reflectivity":(0.0, 1.0), "thermal_noise":(0.0, 1.0), "absorption":(0.0, 1.0)}` | Weight ranges for multi-objective optimization |
+| `objective_bounds` | `{}` | Manual bounds for reward normalization (leave empty for auto) |
+| `use_optical_thickness` | `True` | Use optical thickness (n×d) instead of physical thickness |
+| `combine` | `"logproduct"` | Method for combining multiple objectives |
 
 #### Reward Function Settings
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
-| `use_ligo_reward` | `False` | Use LIGO-specific reward function |
-| `include_random_rare_state` | `False` | Include rare state exploration |
 | `reward_function` | `"default"` | Reward function type (see Available Options) |
+
+#### Electric Field Configuration
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `include_electric_field` | `False` | Include electric field profile calculations |
+| `electric_field_points` | `50` | Number of points for field sampling |
+
+#### Reward Normalization
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `use_reward_normalisation` | `True` | Apply reward normalization for training stability |
+| `reward_normalisation_mode` | `"fixed"` | Normalization mode: "fixed" or "adaptive" |
+| `reward_normalisation_ranges` | `{}` | Manual normalization ranges (leave empty for auto) |
+| `reward_normalisation_alpha` | `0.1` | Learning rate for adaptive normalization |
+| `reward_normalisation_apply_clipping` | `True` | Clip normalized rewards to prevent extremes |
+
+#### Reward Addon System
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `apply_boundary_penalties` | `False` | Penalize solutions near parameter boundaries |
+| `apply_divergence_penalty` | `False` | Penalize solutions diverging from targets |
+| `apply_air_penalty` | `False` | Penalize excessive air layer usage |
+| `apply_pareto_improvement` | `False` | Reward Pareto front improvements |
+| `apply_preference_constraints` | `True` | Apply preference-based constraints |
+| `air_penalty_weight` | `1.0` | Weight for air layer penalties |
+| `divergence_penalty_weight` | `1.0` | Weight for divergence penalties |
+| `pareto_improvement_weight` | `1.0` | Weight for Pareto improvement bonuses |
 
 ### [Network]
 
@@ -78,6 +110,32 @@ Neural network architecture configuration.
 | `continuous_hidden_size` | `16` | Hidden size for continuous policy |
 | `discrete_hidden_size` | `16` | Hidden size for discrete policy |
 | `value_hidden_size` | `16` | Hidden size for value network |
+| `buffer_size` | `10000` | Experience replay buffer size |
+
+#### Mixture of Experts (MoE) Configuration
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `use_mixture_of_experts` | `False` | Enable Mixture of Experts architecture |
+| `moe_n_experts` | `5` | Number of expert networks |
+| `moe_expert_specialization` | `"sobol_sequence"` | Expert specialization strategy |
+| `moe_gate_hidden_dim` | `64` | Hidden dimension for gating network |
+| `moe_gate_temperature` | `1.0` | Temperature for expert selection softmax |
+| `moe_load_balancing_weight` | `0.01` | Weight for load balancing loss |
+
+#### MoE Adaptive Constraints (when moe_expert_specialization = "adaptive_constraints")
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `moe_constraint_experts_per_objective` | `2` | Number of experts per objective |
+| `moe_constraint_penalty_weight` | `100.0` | Penalty weight for constraint violations |
+| `moe_phase1_episodes` | `1000` | Episodes in phase 1 training |
+
+#### Multi-Value Rewards
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `multi_value_rewards` | `False` | Whether environment provides multi-objective rewards |
 
 ### [Training]
 
@@ -88,8 +146,8 @@ Training algorithm parameters.
 | Parameter | Default | Description |
 |-----------|---------|-------------|
 | `n_iterations` | `8000` | Total training iterations |
-| `n_episodes_per_update` | `256` | Episodes collected per update |
-| `n_epochs_per_update` | `5` | Epochs per policy update |
+| `n_updates_per_epoch` | `256` | Number of gradient updates per epoch |
+| `n_episodes_per_epoch` | `5` | Episodes collected per training epoch |
 | `batch_size` | `256` | Batch size for training |
 | `device` | `"cuda:0"` | Device for training ("cuda:0", "cpu") |
 | `model_save_interval` | `10` | Save model every N iterations |
@@ -112,6 +170,7 @@ Training algorithm parameters.
 
 #### Entropy Regularization
 
+##### General Entropy Parameters
 | Parameter | Default | Description |
 |-----------|---------|-------------|
 | `entropy_beta_start` | `1.0` | Initial entropy coefficient |
@@ -119,6 +178,14 @@ Training algorithm parameters.
 | `entropy_beta_decay_length` | `None` | Decay length for entropy |
 | `entropy_beta_decay_start` | `0` | When to start entropy decay |
 | `entropy_beta_use_restarts` | `False` | Whether to restart entropy decay like LR scheduler |
+
+##### Separate Discrete/Continuous Entropy (recommended for multi-objective)
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `entropy_beta_discrete_start` | `0.1` | Initial entropy for discrete policy |
+| `entropy_beta_discrete_end` | `0.01` | Final entropy for discrete policy |
+| `entropy_beta_continuous_start` | `0.05` | Initial entropy for continuous policy |
+| `entropy_beta_continuous_end` | `0.001` | Final entropy for continuous policy |
 
 #### Learning Rate Scheduling
 
@@ -138,9 +205,21 @@ Training algorithm parameters.
 | `final_weight_epoch` | `1` | Final weight cycling epoch |
 | `start_weight_alpha` | `1.0` | Starting weight alpha |
 | `final_weight_alpha` | `1.0` | Final weight alpha |
-| `cycle_weights` | `"smooth"` | Weight cycling method |
+| `cycle_weights` | `"preference_constrained"` | Weight cycling method |
 | `n_weight_cycles` | `1` | Number of weight cycles |
+| `transfer_fraction` | `0.25` | Fraction of experience to transfer between cycles |
 | `weight_network_save` | `False` | Save weight networks |
+
+#### Preference-Constrained Training Parameters
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `pc_phase1_epochs_per_objective` | `1000` | Epochs per objective in phase 1 |
+| `pc_phase2_epochs_per_step` | `1000` | Epochs per constraint step in phase 2 |
+| `pc_constraint_steps` | `8` | Number of constraint satisfaction steps |
+| `pc_constraint_penalty_weight` | `50.0` | Penalty weight for constraint violations |
+| `pc_constraint_margin` | `0.05` | Margin for constraint satisfaction |
+| `pc_cycle_objective_per_constraint_steps` | `False` | Cycle through objectives during constraint steps |
 
 ### [MCMC]
 
@@ -155,12 +234,33 @@ MCMC algorithm parameters (for comparison methods).
 
 Genetic algorithm parameters (for comparison methods).
 
+#### Basic Genetic Algorithm Parameters
+
 | Parameter | Default | Description |
 |-----------|---------|-------------|
-| `n_states` | `100` | Population size |
-| `states_fraction_keep` | `0.1` | Fraction of population to keep |
-| `thickness_sigma` | `1e-9` | Mutation standard deviation |
-| `num_iterations` | `1000` | Number of generations |
+| `algorithm` | `"ngsa2"` | Genetic algorithm variant (nsga2, nsga3, moead) |
+| `population_size` | `100` | Size of the genetic algorithm population |
+| `n_generations` | `1000` | Number of generations to evolve |
+| `seed` | `1234` | Random seed for reproducible results |
+| `eliminate_duplicates` | `True` | Remove duplicate solutions from population |
+
+#### Genetic Operators
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `crossover_probability` | `0.1` | Probability of crossover between parents |
+| `mutation_probability` | `0.1` | Probability of mutation for each solution |
+| `crossover_eta` | `20` | Distribution index for simulated binary crossover |
+| `mutation_eta` | `20` | Distribution index for polynomial mutation |
+| `thickness_sigma` | `1e-9` | Standard deviation for thickness mutations (meters) |
+
+#### Algorithm-Specific Parameters
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `n_neighbors` | `None` | Number of neighbors for MOEAD (auto-calculated if None) |
+| `prob_neighbor_mating` | `None` | Probability of mating within neighborhood (MOEAD) |
+| `n_partitions` | `None` | Number of partitions for reference directions (NSGA3/MOEAD) |
 
 ## Configuration Examples
 

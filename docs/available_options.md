@@ -103,7 +103,29 @@ moe_load_balancing_weight = 0.01           # Weight for load balancing auxiliary
 |----------|-------------|----------|
 | `"sobol_sequence"` | Uses Sobol quasi-random sequence to assign expert regions | Balanced coverage of objective space |
 | `"random"` | Random assignment of expert specializations | Exploration-focused |
-| `"uniform"` | Uniform distribution of experts across objectives | Simple, evenly distributed |
+| `"adaptive_constraints"` | **NEW** Adaptive constraint-based expert specialization | Dynamic expert assignment based on constraint satisfaction |
+
+### Adaptive Constraints Configuration
+
+For `moe_expert_specialization = "adaptive_constraints"`, additional parameters control the constraint-based training:
+
+```ini
+[Network]
+use_mixture_of_experts = true
+moe_expert_specialization = "adaptive_constraints"
+
+# Adaptive constraints parameters
+moe_constraint_experts_per_objective = 2      # Number of experts per objective
+moe_constraint_penalty_weight = 100.0        # Penalty weight for constraint violations
+moe_phase1_episodes = 1000                   # Episodes in phase 1 training
+```
+
+#### Adaptive Constraints Details
+
+- **Phase 1**: Experts learn basic objective optimization without constraints
+- **Phase 2**: Constraint penalties are gradually introduced
+- **Dynamic Assignment**: Experts specialize based on constraint satisfaction performance
+- **Balanced Coverage**: Ensures each objective has dedicated expert coverage
 
 ### MoE Parameters
 
@@ -120,11 +142,70 @@ CoatOpt supports reward normalization to balance objectives with different scale
 
 ```ini
 [Data]
-use_reward_normalization = true
-reward_normalization_mode = "adaptive"        # "fixed" or "adaptive"
-reward_normalization_ranges = {}              # Leave empty to auto-compute from objective bounds
-reward_normalization_alpha = 0.3              # Learning rate for adaptive mode
+use_reward_normalisation = true
+reward_normalisation_mode = "fixed"           # "fixed" or "adaptive"
+reward_normalisation_ranges = {}              # Leave empty to auto-compute from objective bounds
+reward_normalisation_alpha = 0.1              # Learning rate for adaptive mode
+reward_normalisation_apply_clipping = true    # Clip normalized rewards to prevent extremes
 ```
+
+## Reward Addon System
+
+CoatOpt includes a modular reward addon system that allows additional penalties and bonuses to be applied to the base reward function.
+
+### Available Reward Addons
+
+| Addon | Parameter | Default | Description |
+|-------|-----------|---------|-------------|
+| **Boundary Penalties** | `apply_boundary_penalties` | `False` | Penalize solutions near parameter boundaries |
+| **Divergence Penalty** | `apply_divergence_penalty` | `False` | Penalize solutions that diverge from design targets |
+| **Air Penalty** | `apply_air_penalty` | `False` | Penalize excessive use of air layers |
+| **Pareto Improvement** | `apply_pareto_improvement` | `False` | Reward solutions that improve the Pareto front |
+| **Preference Constraints** | `apply_preference_constraints` | `True` | Apply preference-based constraint handling |
+
+### Reward Addon Configuration
+
+```ini
+[Data]
+# Enable/disable specific addons
+apply_boundary_penalties = False
+apply_divergence_penalty = False
+apply_air_penalty = False
+apply_pareto_improvement = False
+apply_preference_constraints = True
+
+# Addon weights
+air_penalty_weight = 1.0
+divergence_penalty_weight = 1.0
+pareto_improvement_weight = 1.0
+```
+
+### Addon Details
+
+#### Boundary Penalties
+- **Purpose**: Prevents solutions from clustering near parameter boundaries
+- **Use Case**: When you want to encourage solutions away from thickness limits
+- **Effect**: Applies penalties to layers near `min_thickness` or `max_thickness`
+
+#### Divergence Penalty
+- **Purpose**: Penalizes solutions that stray far from design targets
+- **Use Case**: When you want to constrain solutions near specific performance goals
+- **Effect**: Increases penalty as objectives move further from `optimise_targets`
+
+#### Air Penalty
+- **Purpose**: Discourages excessive use of air layers in coating stacks
+- **Use Case**: For realistic coating designs where air layers are undesirable
+- **Effect**: Applies penalty proportional to number and thickness of air layers
+
+#### Pareto Improvement Bonus
+- **Purpose**: Rewards solutions that expand or improve the current Pareto front
+- **Use Case**: Multi-objective optimization focused on front quality
+- **Effect**: Provides bonus rewards for non-dominated solutions
+
+#### Preference Constraints
+- **Purpose**: Implements preference-based constraint handling for multi-objective optimization
+- **Use Case**: When you want to enforce design criteria while exploring trade-offs
+- **Effect**: Applies constraints based on `design_criteria` with configurable margins
 
 ### Auto-Computed Ranges
 
@@ -138,7 +219,7 @@ CoatOpt can automatically compute reward normalization ranges based on the objec
 ### Manual Ranges (Optional)
 
 ```ini
-reward_normalization_ranges = {               # Manual override (optional)
+reward_normalisation_ranges = {               # Manual override (optional)
     "reflectivity": [8, 28],
     "absorption": [8, 25]
 }
@@ -334,6 +415,40 @@ Materials are defined in JSON format:
     }
 }
 ```
+
+## Electric Field Analysis
+
+CoatOpt can optionally include electric field profile calculations in the optimization process.
+
+### Electric Field Configuration
+
+```ini
+[Data]
+include_electric_field = true    # Enable electric field calculations
+electric_field_points = 50       # Number of sampling points for field profile
+```
+
+### Electric Field Options
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `include_electric_field` | `False` | Include electric field profiles in optimization |
+| `electric_field_points` | `50` | Number of points to sample across coating stack |
+
+### Electric Field Details
+
+When enabled, electric field analysis:
+- **Field Profiles**: Calculates E-field intensity throughout the coating stack
+- **Absorption Analysis**: Enables layer-by-layer absorption calculations
+- **Thermal Analysis**: Supports detailed thermal noise modeling
+- **Performance Cost**: Increases computation time but provides richer physics
+
+### Use Cases
+
+- **Advanced Thermal Modeling**: Required for detailed thermal noise calculations
+- **Absorption Optimization**: Enables optimization of layer-specific absorption
+- **Physical Insights**: Provides detailed understanding of field localization
+- **Research Applications**: Essential for advanced coating research and analysis
 
 ## Advanced Options
 

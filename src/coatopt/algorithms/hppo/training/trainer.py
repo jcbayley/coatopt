@@ -692,7 +692,7 @@ class HPPOTrainer:
         return (
             np.max(self.context.training_metrics["reward"])
             if len(self.context.training_metrics) > 0
-            else -np.inf
+            else -1e6
         )
 
     def _handle_adaptive_moe_step(
@@ -821,7 +821,7 @@ class HPPOTrainer:
             Tuple of (metrics_dict, episode_data, best_reward, best_state)
         """
         episode_metrics = {}
-        min_episode_score = (-np.inf, 0, None, None, None)
+        min_episode_score = (-1e6, 0, None, None, None)
         means_list, stds_list, materials_list = [], [], []
 
         # Run multiple rollouts per episode
@@ -846,6 +846,11 @@ class HPPOTrainer:
         # Store best episode data
         self.best_states.append(min_episode_score)
 
+        # Ensure we have a valid final_state - use the last rollout if no best was found
+        best_final_state = min_episode_score[2]
+        if best_final_state is None:
+            best_final_state = rollout_data["final_state"]
+
         episode_data = {
             "means": means_list,
             "stds": stds_list,
@@ -855,7 +860,7 @@ class HPPOTrainer:
             ],  # Use last rollout's weights
         }
 
-        return episode_metrics, episode_data, min_episode_score[0], min_episode_score[2]
+        return episode_metrics, episode_data, min_episode_score[0], best_final_state
 
     def _run_single_rollout(self, episode: int) -> Dict[str, Any]:
         """
@@ -988,6 +993,7 @@ class HPPOTrainer:
             next_state, rewards, done, finished, _, full_action, vals = self.env.step(
                 action,
                 pc_tracker=self.pc_tracker,
+                pareto_tracker=self.pareto_tracker,
                 phase_info=self.current_phase_info,
                 **step_kwargs,
             )
@@ -1196,7 +1202,10 @@ class HPPOTrainer:
 
         # Compute final state values and rewards
         _, vals, rewards = self.env.compute_reward(
-            final_state, pc_tracker=self.pc_tracker, phase_info=self.current_phase_info
+            final_state,
+            pc_tracker=self.pc_tracker,
+            phase_info=self.current_phase_info,
+            pareto_tracker=self.pareto_tracker,
         )
 
         # Store physical values
@@ -1355,6 +1364,7 @@ class HPPOTrainer:
                 env=self.env,
                 pc_tracker=self.pc_tracker,
                 phase_info={"phase": "individual", "objective": "reflectivity"},
+                pareto_tracker=self.pareto_tracker,
             )
 
             vals = [vals.get(key, 0.0) for key in self.env.get_parameter_names()]
