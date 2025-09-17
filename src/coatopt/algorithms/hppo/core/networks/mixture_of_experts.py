@@ -107,10 +107,12 @@ class MixtureOfExpertsBase(nn.Module):
             return self._generate_random_regions()
         elif self.expert_specialization == "adaptive_constraints":
             return self._generate_adaptive_constraint_regions()
+        elif self.expert_specialization == "objectives":
+            return self._generate_objective_specialists()
         else:
             raise ValueError(
                 f"Unknown expert specialization: {self.expert_specialization}. "
-                f"Valid options are: 'sobol_sequence', 'random', 'adaptive_constraints'"
+                f"Valid options are: 'sobol_sequence', 'random', 'adaptive_constraints', 'objectives'"
             )
 
     def _generate_sobol_sequence(self) -> List[torch.Tensor]:
@@ -172,6 +174,47 @@ class MixtureOfExpertsBase(nn.Module):
         for _ in range(remaining_experts):
             weights = np.random.dirichlet(np.ones(self.n_objectives))
             regions.append(torch.tensor(weights, dtype=torch.float32))
+
+        return regions
+
+    def _generate_objective_specialists(self) -> List[torch.Tensor]:
+        """
+        Generate experts specialized for pure objective optimization.
+
+        Creates one expert per objective with pure one-hot weight vectors:
+        Expert 0: [1, 0, 0, ...] for objective 0
+        Expert 1: [0, 1, 0, ...] for objective 1
+        Expert 2: [0, 0, 1, ...] for objective 2
+        etc.
+
+        This is the cleanest approach for preference-constrained training where
+        objective weights are always pure (e.g., [1,0,0], [0,1,0], [0,0,1]).
+
+        Returns:
+            List of expert weight vectors, one per objective (up to n_experts)
+        """
+        regions = []
+
+        # Create one expert per objective, up to the number of available experts
+        n_specialist_experts = min(self.n_experts, self.n_objectives)
+
+        for i in range(n_specialist_experts):
+            weights = np.zeros(self.n_objectives)
+            weights[i] = 1.0  # Pure specialist for objective i
+            regions.append(torch.tensor(weights, dtype=torch.float32))
+
+        # If we have more experts than objectives, create additional balanced experts
+        remaining_experts = self.n_experts - n_specialist_experts
+        if remaining_experts > 0:
+            print(
+                f"Warning: {remaining_experts} extra experts beyond {self.n_objectives} objectives."
+            )
+            print(f"Creating {remaining_experts} balanced multi-objective experts.")
+
+            for _ in range(remaining_experts):
+                # Create balanced experts for multi-objective scenarios
+                weights = np.ones(self.n_objectives) / self.n_objectives
+                regions.append(torch.tensor(weights, dtype=torch.float32))
 
         return regions
 
