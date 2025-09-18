@@ -89,7 +89,7 @@ class CoatingMOO(ElementwiseProblem):
         objectives = []
         for param in self.env.optimise_parameters:
             if param in rewards:
-                objectives.append(-rewards[param])
+                objectives.append(rewards[param])
             else:
                 objectives.append(0.0)  # Default if parameter not found
 
