@@ -87,14 +87,15 @@ class CoatingMOO(ElementwiseProblem):
 
         # Create objective vector (minimization problem, so negate rewards)
         objectives = []
-        for param in self.env.optimise_parameters:
+        for param in self.env.get_parameter_names():
             if param in rewards:
                 objectives.append(rewards[param])
-            else:
-                objectives.append(0.0)  # Default if parameter not found
 
-        out["F"] = np.array(objectives)
-        out["VALS"] = vals
+        # negate as rewards are maximised and pymoo minimises
+        out["F"] = -np.array(objectives)
+        out["VALS"] = vals  # Complete vals dict
+        out["REWARDS"] = rewards  # Complete rewards dict
+        out["STATE"] = state  # The coating state
 
 
 class CheckpointCallback(Callback):
@@ -126,29 +127,23 @@ class CheckpointCallback(Callback):
         """Save checkpoint data and create plots using existing trainer methods."""
         print(f"\n--- Saving checkpoint at generation {generation} ---")
 
-        try:
-            # Create checkpoint subdirectory
-            checkpoint_subdir = os.path.join(self.checkpoint_dir, f"gen_{generation}")
-            os.makedirs(checkpoint_subdir, exist_ok=True)
+        # Create checkpoint subdirectory
+        checkpoint_subdir = os.path.join(self.checkpoint_dir, f"gen_{generation}")
+        os.makedirs(checkpoint_subdir, exist_ok=True)
 
-            # Create a Population object from current algorithm population
-            current_pop = algorithm.pop
+        # Create a Population object from current algorithm population
+        current_pop = algorithm.pop
 
-            # Use existing trainer method to process population data
-            states, results = self.trainer._process_population_data(current_pop)
+        # Use existing trainer method to process population data
+        states, results = self.trainer._process_population_data(current_pop)
 
-            # Save checkpoint data using existing methods
-            self._save_checkpoint_data(states, results, checkpoint_subdir, generation)
+        # Save checkpoint data using existing methods
+        self._save_checkpoint_data(states, results, checkpoint_subdir, generation)
 
-            # Create plots using existing methods
-            self._create_checkpoint_plots(
-                results, states, checkpoint_subdir, generation
-            )
+        # Create plots using existing methods
+        self._create_checkpoint_plots(results, states, checkpoint_subdir, generation)
 
-            print(f"Checkpoint saved to: {checkpoint_subdir}")
-
-        except Exception as e:
-            print(f"Warning: Failed to save checkpoint at generation {generation}: {e}")
+        print(f"Checkpoint saved to: {checkpoint_subdir}")
 
     def _save_checkpoint_data(self, states, results, checkpoint_dir, generation):
         """Save checkpoint data using existing trainer methods."""
@@ -170,10 +165,12 @@ class CheckpointCallback(Callback):
             f.write(f"Checkpoint Summary - Generation {generation}\n")
             f.write(f"================================\n\n")
             f.write(f"Population Size: {len(list(results.values())[0])}\n")
-            f.write(f"Objectives: {', '.join(self.trainer.env.optimise_parameters)}\n")
+            f.write(
+                f"Objectives: {', '.join(self.trainer.env.get_parameter_names())}\n"
+            )
 
             # Statistics for each objective
-            for param in self.trainer.env.optimise_parameters:
+            for param in self.trainer.env.get_parameter_names():
                 vals_key = f"{param}_vals"
                 if vals_key in results:
                     vals = results[vals_key]
@@ -346,18 +343,13 @@ class GeneticTrainer:
         print("Saving final results and creating visualizations...")
 
         # Automatically save results after training
-        try:
-            self.evaluate()
-            print("Results saved successfully")
-        except Exception as e:
-            print(f"Warning: Failed to save results: {e}")
-            # Continue execution even if saving fails
+        self.evaluate()
+        print("Results saved successfully")
+
+        # Continue execution even if saving fails
 
         # Save optimizer state
-        try:
-            self.save_optimizer_state()
-        except Exception as e:
-            print(f"Warning: Failed to save optimizer state: {e}")
+        self.save_optimizer_state()
 
     def evaluate(
         self, n_samples: Optional[int] = None
@@ -414,43 +406,23 @@ class GeneticTrainer:
 
         print(f"Processing {len(X)} population samples...")
 
-        # Convert to states (this is fast)
-        states = []
-        results = {f"{param}_vals": [] for param in self.env.optimise_parameters}
-        results.update(
-            {f"{param}_rewards": [] for param in self.env.optimise_parameters}
-        )
+        # For population data, just use F values (negated objectives) as rewards
+        # Don't store states or compute vals to save memory
+        states = []  # Empty - we don't store states for population data
+        results = {}
 
-        for i, row in enumerate(X):
-            state = self.problem.make_state_from_vars(row)
-            states.append(state)
+        # F contains negated rewards, so negate them back
+        negated_F = -F
 
-            # For efficiency, use the objective values (F) directly instead of recomputing
-            # The genetic algorithm already computed these during optimization
-            for j, param in enumerate(self.env.optimise_parameters):
-                if j < len(F[i]):
-                    # Use objective values as rewards (negated because PyMOO minimizes)
-                    results[f"{param}_rewards"].append(-F[i, j])
-
-                    # For values, we can approximate from rewards or compute only when needed
-                    # This avoids the expensive compute_state_value call for all
-                    # solutions
-                    if param == "reflectivity":
-                        # Convert reward back to reflectivity value
-                        results[f"{param}_vals"].append(1 - 10 ** (-(-F[i, j])))
-                    elif param == "absorption":
-                        # Convert reward back to absorption value
-                        results[f"{param}_vals"].append(10 ** (-(-F[i, j]) - 10))
-                    elif param == "thermal_noise":
-                        # For thermal noise, the relationship is more complex
-                        # Use a placeholder for now, or compute only for final Pareto
-                        # front
-                        results[f"{param}_vals"].append(-F[i, j])
-                    else:
-                        results[f"{param}_vals"].append(-F[i, j])
-                else:
-                    results[f"{param}_rewards"].append(0.0)
-                    results[f"{param}_vals"].append(0.0)
+        for i, param in enumerate(self.env.get_parameter_names()):
+            if i < negated_F.shape[1]:
+                results[f"{param}_rewards"] = negated_F[:, i]
+                results[f"{param}_vals"] = (
+                    np.zeros_like(negated_F[:, i]) * np.nan
+                )  # No vals for population data
+            else:
+                results[f"{param}_rewards"] = np.zeros(len(X))
+                results[f"{param}_vals"] = np.zeros(len(X)) * np.nan
 
         # Convert to numpy arrays
         for key in results:
@@ -460,52 +432,29 @@ class GeneticTrainer:
         return np.array(states), results
 
     def _process_pareto_front(self) -> Tuple[np.ndarray, Dict[str, np.ndarray]]:
-        """Process Pareto front solutions with accurate value computation."""
-        if len(self.result.X.shape) < 2:
-            X = np.array([self.result.X])
-            F = np.array([self.result.F])
-        else:
-            X = self.result.X
-            F = self.result.F
+        """Process Pareto front solutions using persisted PyMOO custom data."""
+        pareto_pop = self.result.pop
 
         print(
-            f"Processing {len(X)} Pareto front solutions with accurate value computation..."
+            f"Processing {len(pareto_pop)} Pareto front solutions using persisted data..."
         )
 
-        # Convert to states and compute accurate values for Pareto front only
-        states = []
-        results = {f"{param}_vals": [] for param in self.env.optimise_parameters}
-        results.update(
-            {f"{param}_rewards": [] for param in self.env.optimise_parameters}
-        )
+        # Get persisted data directly from population
+        states = np.array(pareto_pop.get("STATE"))
+        vals_data = pareto_pop.get("VALS")
+        rewards_data = pareto_pop.get("REWARDS")
 
-        for i, row in enumerate(X):
-            state = self.problem.make_state_from_vars(row)
-            states.append(state)
+        # Format results dictionary
+        results = {}
+        for i, param in enumerate(self.env.get_parameter_names()):
+            # Extract parameter values and rewards for all solutions
+            results[f"{param}_vals"] = np.array([vals[param] for vals in vals_data])
+            results[f"{param}_rewards"] = np.array(
+                [rewards[param] for rewards in rewards_data]
+            )
 
-            # Compute accurate values only for Pareto front (small number of solutions)
-            vals = self.env.compute_state_value(state, return_separate=True)
-            val_names = ["reflectivity", "thermal_noise", "absorption", "thickness"]
-
-            for j, param in enumerate(self.env.optimise_parameters):
-                if param in val_names:
-                    param_idx = val_names.index(param)
-                    results[f"{param}_vals"].append(vals[param_idx])
-                else:
-                    results[f"{param}_vals"].append(0.0)
-
-                # Use objective values (negated rewards)
-                if j < len(F[i]):
-                    results[f"{param}_rewards"].append(-F[i, j])
-                else:
-                    results[f"{param}_rewards"].append(0.0)
-
-        # Convert to numpy arrays
-        for key in results:
-            results[key] = np.array(results[key])
-
-        print(f"Successfully processed Pareto front with accurate values")
-        return np.array(states), results
+        print(f"Successfully processed {len(states)} Pareto front solutions")
+        return states, results
 
     def _save_results(
         self,
@@ -549,7 +498,7 @@ class GeneticTrainer:
             df[f"X{i+1}"] = var_data
 
         # Add objective values and rewards
-        for param in self.env.optimise_parameters:
+        for param in self.env.get_parameter_names():
             if f"{param}_vals" in results:
                 df[param.title()] = results[f"{param}_vals"]
             if f"{param}_rewards" in results:
@@ -578,7 +527,7 @@ class GeneticTrainer:
             meta_group.create_dataset("n_generations", data=self.config.n_generations)
             meta_group.create_dataset(
                 "objectives",
-                data=[param.encode() for param in self.env.optimise_parameters],
+                data=[param.encode() for param in self.env.get_parameter_names()],
             )
 
             # Save pareto data using consistent keys (same as HPPO)
@@ -588,7 +537,7 @@ class GeneticTrainer:
             pareto_front_rewards = []
             pareto_front_values = []
 
-            for param in self.env.optimise_parameters:
+            for param in self.env.get_parameter_names():
                 if f"{param}_rewards" in pareto_results:
                     pareto_front_rewards.append(pareto_results[f"{param}_rewards"])
                 if f"{param}_vals" in pareto_results:
@@ -620,9 +569,6 @@ class GeneticTrainer:
                         "reference_point", data=reference_point, compression="gzip"
                     )
 
-            # Note: genetic algorithms don't track all_rewards, all_values, all_states like HPPO
-            # so we don't include those keys (HPPO only)
-
     def save_optimizer_state(self):
         """Save the optimizer state including results and training history."""
         if self.result is None:
@@ -646,7 +592,7 @@ class GeneticTrainer:
             f.write(f"Algorithm: {self.config.algorithm}\n")
             f.write(f"Population Size: {self.config.population_size}\n")
             f.write(f"Generations: {self.config.n_generations}\n")
-            f.write(f"Objectives: {', '.join(self.env.optimise_parameters)}\n")
+            f.write(f"Objectives: {', '.join(self.env.get_parameter_names())}\n")
             f.write(
                 f"Total Evaluations: {len(self.result.history) * self.config.population_size}\n"
             )
@@ -734,7 +680,7 @@ class GeneticTrainer:
 
     def _create_simple_pareto_plot(self, results: Dict[str, np.ndarray]):
         """Create simple Pareto front visualization matching HPPO style."""
-        params = self.env.optimise_parameters
+        params = self.env.get_parameter_names()
         if len(params) < 2:
             return
 
@@ -861,8 +807,8 @@ class GeneticTrainer:
             vals_list.append(vals)
 
         # Create dummy weights (equal weighting)
-        weights = np.ones((len(states), len(self.env.optimise_parameters))) / len(
-            self.env.optimise_parameters
+        weights = np.ones((len(states), len(self.env.get_parameter_names))) / len(
+            self.env.get_parameter_names()
         )
 
         return np.array(states), rewards_list, weights, vals_list

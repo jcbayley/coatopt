@@ -23,37 +23,112 @@ class PositionalEncoding(torch.nn.Module):
         """
         # print(x.size())
         # print(self.pe[:x.size(1)].size())
-        x = x + torch.swapaxes(self.pe[: x.size(1)], 0, 1)
+        x = x + self.pe[: x.size(0)]
         return self.dropout(x)
 
 
 class PreNetworkAttention(torch.nn.Module):
-    def __init__(self, input_dim, output_dim, embed_dim, num_heads=2, num_layers=2):
+    def __init__(
+        self,
+        input_dim,
+        output_dim,
+        embed_dim,
+        num_heads=2,
+        num_layers=2,
+        include_layer_number=False,
+        max_layers=50,
+        use_positional_encoding=True,
+    ):
         super(PreNetworkAttention, self).__init__()
+        self.include_layer_number = include_layer_number
+        self.max_layers = max_layers
+        self.use_positional_encoding = use_positional_encoding
+        self.embed_dim = embed_dim
+
         self.embedding = torch.nn.Linear(input_dim, embed_dim)
+
+        # Add positional encoding if requested
+        if self.use_positional_encoding:
+            self.positional_encoding = PositionalEncoding(embed_dim, max_len=max_layers)
+
         encoder_layers = torch.nn.TransformerEncoderLayer(embed_dim, num_heads)
         self.transformer_encoder = torch.nn.TransformerEncoder(
             encoder_layers, num_layers
         )
-        self.fc = torch.nn.Linear(embed_dim, output_dim)
 
-    def forward(self, x, layer_number=None):
-        x = self.embedding(x)
-        x = x.permute(
-            1, 0, 2
-        )  # Change to shape (seq_len, batch_size, embed_dim) for Transformer encoder
-        x = self.transformer_encoder(x)
-        x = x.permute(1, 0, 2)  # Change back to shape (batch_size, seq_len, embed_dim)
-        x = self.fc(x)
-        if layer_number is not None:
-            # indices = layer_number.flatten().view(x.size(0), 1, 1).to(torch.int64)
-            # indices = indices.expand(x.size(0), 1, x.size(2))
-            # x = torch.gather(x, 1, indices)
-            x = torch.mean(x, dim=1)
-            # x[:, layer_number.flatten()]
+        # Adjust final layer to account for layer_number concatenation
+        final_input_dim = embed_dim + (1 if include_layer_number else 0)
+        self.fc = torch.nn.Linear(final_input_dim, output_dim)
+
+    def forward(self, x, layer_number=None, packed=False, weights=None):
+        # x shape: (B, N, I) where B=batch, N=seq_len (layers), I=input_dim
+
+        x = self.embedding(x)  # Shape: (B, N, embed_dim)
+
+        # Apply positional encoding if enabled
+        if self.use_positional_encoding:
+            x = x.permute(1, 0, 2)  # Shape: (N, B, embed_dim) for positional encoding
+            x = self.positional_encoding(x)
         else:
-            x = torch.mean(x, dim=1)  # Global average pooling
-        return x.flatten(start_dim=1)
+            x = x.permute(1, 0, 2)  # Shape: (N, B, embed_dim) for Transformer encoder
+
+        # Apply transformer encoder
+        x = self.transformer_encoder(x)  # Shape: (N, B, embed_dim)
+        x = x.permute(1, 0, 2)  # Change back to shape (B, N, embed_dim)
+
+        # Extract relevant layer output
+        if layer_number is not None:
+            # Extract specific layer outputs based on layer_number
+            # Ensure layer_number is within bounds
+            layer_indices = torch.clamp(layer_number.long(), 0, x.size(1) - 1)
+
+            # Gather outputs for specified layers
+            if layer_indices.dim() == 0:
+                # Scalar layer_number
+                layer_indices = layer_indices.unsqueeze(0).unsqueeze(
+                    -1
+                )  # Shape: (1, 1)
+                layer_indices = layer_indices.expand(x.size(0), -1)  # Shape: (B, 1)
+            elif layer_indices.dim() == 1:
+                # 1D layer_number
+                layer_indices = layer_indices.unsqueeze(-1)  # Shape: (B, 1)
+
+            # Expand indices to match embedding dimension
+            indices = layer_indices.unsqueeze(-1).expand(
+                -1, -1, self.embed_dim
+            )  # Shape: (B, 1, embed_dim)
+            out = torch.gather(x, 1, indices).squeeze(1)  # Shape: (B, embed_dim)
+        else:
+            # Global average pooling over sequence dimension
+            out = torch.mean(x, dim=1)  # Shape: (B, embed_dim)
+
+        # Add layer number information if requested (similar to LSTM implementation)
+        if self.include_layer_number and layer_number is not None:
+            # Ensure layer_number has the right shape for concatenation
+            if layer_number.dim() == 1:
+                layer_number_expanded = layer_number.unsqueeze(-1)  # Shape: (B, 1)
+            elif layer_number.dim() == 0:
+                layer_number_expanded = layer_number.unsqueeze(0).unsqueeze(
+                    -1
+                )  # Shape: (1, 1)
+                layer_number_expanded = layer_number_expanded.expand(
+                    out.size(0), -1
+                )  # Shape: (B, 1)
+            else:
+                layer_number_expanded = layer_number
+
+            # Ensure batch dimensions match
+            if layer_number_expanded.size(0) != out.size(0):
+                layer_number_expanded = layer_number_expanded.expand(out.size(0), -1)
+
+            out = torch.cat(
+                [out, layer_number_expanded.float()], dim=-1
+            )  # Shape: (B, embed_dim + 1)
+
+        # Apply final linear layer
+        out = self.fc(out)  # Shape: (B, output_dim)
+
+        return out
 
 
 class PreNetworkLinear(torch.nn.Module):

@@ -87,6 +87,7 @@ class PCHPPO:
         moe_gate_temperature: float = 0.5,
         moe_load_balancing_weight: float = 0.01,
         multi_value_rewards: bool = False,
+        max_layers: int = 50,
     ):
         """
         Initialize PC-HPPO agent.
@@ -164,6 +165,7 @@ class PCHPPO:
         self.upper_bound = upper_bound
         self.lower_bound = lower_bound
         self.include_layer_number = include_layer_number
+        self.max_layers = max_layers
         self.substrate_material_index = substrate_material_index
         self.air_material_index = air_material_index
         self.ignore_air_option = ignore_air_option
@@ -299,6 +301,8 @@ class PCHPPO:
                 hidden_size,
                 num_heads=n_heads,
                 num_layers=n_pre_layers,
+                include_layer_number=self.include_layer_number,
+                max_layers=self.max_layers,
             )
         elif pre_type == "lstm":
             return PreNetworkLSTM(
