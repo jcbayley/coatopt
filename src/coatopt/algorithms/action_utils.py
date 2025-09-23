@@ -59,6 +59,7 @@ def create_material_mask_from_coating_state(
                 coating_state.substrate_material_index,
                 ignore_air_option,
                 ignore_substrate_option,
+                layer_num,  # Pass layer number to prevent air on first layer
             )
 
             # Set mask for this sample
@@ -83,6 +84,7 @@ def create_material_mask_from_coating_state(
             coating_state.substrate_material_index,
             ignore_air_option,
             ignore_substrate_option,
+            layer_num,  # Pass layer number to prevent air on first layer
         )
 
         # Create mask
@@ -118,6 +120,7 @@ def _get_valid_material_indices(
     substrate_material_index: int,
     ignore_air_option: bool,
     ignore_substrate_option: bool,
+    layer_num: int = 0,  # Add layer number parameter
 ) -> List[int]:
     """
     Get list of valid material indices based on constraints.
@@ -129,6 +132,7 @@ def _get_valid_material_indices(
         substrate_material_index: Substrate material index
         ignore_air_option: Whether to ignore air material
         ignore_substrate_option: Whether to ignore substrate material
+        layer_num: Current layer number (0-indexed)
 
     Returns:
         List of valid material indices
@@ -145,6 +149,10 @@ def _get_valid_material_indices(
 
         # Skip substrate if ignore_substrate_option is True
         if ignore_substrate_option and material_idx == substrate_material_index:
+            continue
+
+        # PREVENT AIR ON FIRST LAYER to avoid NaN thermal noise
+        if layer_num == 0 and material_idx == air_material_index:
             continue
 
         valid_indices.append(material_idx)
@@ -325,9 +333,7 @@ def pack_state_sequence(
     return packed_input
 
 
-def validate_probabilities(
-    probabilities: torch.Tensor, name: str = "probabilities"
-) -> None:
+def validate_probabilities(probabilities: torch.Tensor, name: str) -> None:
     """
     Validate probability tensor for NaN or invalid values.
 

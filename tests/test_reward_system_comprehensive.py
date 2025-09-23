@@ -210,12 +210,35 @@ class TestRewardSystemComprehensive:
 
     def test_hypervolume_combination(self, standard_env, standard_params):
         """Test hypervolume combination method."""
-        # Set up environment with a Pareto front for hypervolume calculation
-        standard_env.pareto_front = [
-            [0.998, 6e-21, 0.006],
-            [0.999, 8e-21, 0.004],
-            [0.9999, 1e-20, 0.002],
-        ]
+        # Import ParetoTracker if available
+        try:
+            from coatopt.algorithms.hppo.training.utils.pareto_tracker import (
+                ParetoTracker,
+            )
+        except ImportError:
+            pytest.skip("ParetoTracker not available for hypervolume test")
+
+        # Create a properly mocked current_state that returns an array
+        mock_state = Mock()
+        mock_state.get_array.return_value = np.array(
+            [1, 0, 1, 0, 1] * 4
+        )  # Mock state array
+        standard_env.current_state = mock_state
+
+        # Create a mock pareto tracker with some existing points
+        pareto_tracker = ParetoTracker(update_interval=1, max_pending=10)
+
+        # Add some initial points to the Pareto front
+        pareto_tracker.add_point(
+            point=np.array([0.998, 6e-21, 0.006]),
+            values=np.array([0.998, 6e-21, 0.006]),
+            state=np.array([1, 0, 1, 0, 1] * 4),  # Mock state
+        )
+        pareto_tracker.add_point(
+            point=np.array([0.999, 8e-21, 0.004]),
+            values=np.array([0.999, 8e-21, 0.004]),
+            state=np.array([1, 1, 0, 1, 0] * 4),  # Mock state
+        )
 
         calc = RewardCalculator(
             reward_type="default",
@@ -225,7 +248,9 @@ class TestRewardSystemComprehensive:
 
         try:
             total_reward, vals, rewards = calc.calculate(
-                env=standard_env, **standard_params
+                env=standard_env,
+                pareto_tracker=pareto_tracker,  # Pass pareto_tracker as kwarg
+                **standard_params,
             )
 
             assert np.isfinite(total_reward), "Hypervolume reward is not finite"

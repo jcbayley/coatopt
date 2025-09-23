@@ -23,7 +23,7 @@ from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from matplotlib.figure import Figure
 from pymoo.util.nds.non_dominated_sorting import NonDominatedSorting
 
-from coatopt.algorithms.hppo.hppo_trainer import HPPOTrainer, create_ui_callbacks
+from coatopt.algorithms.hppo.training import HPPOTrainer, create_ui_callbacks
 from coatopt.config import read_config, read_materials
 from coatopt.config.structured_config import CoatingOptimisationConfig
 from coatopt.factories import setup_optimisation_pipeline
@@ -453,16 +453,17 @@ class TrainingMonitorUI:
                 ui_mode=True,
                 figure_size=(12, 10),
             )
+
+            # Use clean parameter names from environment instead of raw config
+            clean_param_names = self.env.get_parameter_names()
             target_list = [
-                self.config.data.optimise_targets[param]
-                for param in self.config.data.optimise_parameters
+                self.config.data.optimise_targets[param] for param in clean_param_names
             ]
             design_list = [
-                self.config.data.design_criteria[param]
-                for param in self.config.data.optimise_parameters
+                self.config.data.design_criteria[param] for param in clean_param_names
             ]
             self.plot_manager.set_objective_info(
-                self.config.data.optimise_parameters, target_list, design_list
+                clean_param_names, target_list, design_list
             )
 
             print("[DEBUG]", self.plot_manager.design_criteria)

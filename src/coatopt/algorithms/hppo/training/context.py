@@ -29,7 +29,7 @@ class TrainingContext:
     current_episode: int = 0
 
     # Performance tracking
-    best_reward: float = -np.inf
+    best_reward: float = -1e6
     best_state: Optional[np.ndarray] = None
     episode_rewards: List[float] = field(default_factory=list)
     episode_times: List[float] = field(default_factory=list)
@@ -131,7 +131,7 @@ class TrainingContext:
         self.training_metrics = pd.DataFrame()
         self.episode_rewards = []
         self.episode_times = []
-        self.best_reward = -np.inf
+        self.best_reward = -1e6
         self.best_state = None
         self.current_episode = 0
         self.best_states = []

@@ -557,6 +557,10 @@ class BaseCoatingEnvironment:
             state_array = state.get_array()
         else:
             # Backward compatibility with numpy arrays/tensors
+            if state is None:
+                raise ValueError(
+                    "State is None - this indicates a bug in the environment step method"
+                )
             if isinstance(state, torch.Tensor):
                 state_tensor = state
             else:
@@ -603,6 +607,7 @@ class BaseCoatingEnvironment:
         target_reflectivity=1.0,
         objective_weights=None,
         pc_tracker=None,
+        pareto_tracker=None,
         phase_info=None,
     ):
         """reward is the improvement of the state over the previous one
@@ -611,6 +616,7 @@ class BaseCoatingEnvironment:
             state (_type_): _description_
             action (_type_): _description_
             pc_tracker: PreferenceConstrainedTracker instance for preference-constrained optimization
+            pareto_tracker: Pareto tracker for hypervolume calculations (passed through)
             phase_info: Phase information from preference-constrained training
         """
 
@@ -635,6 +641,7 @@ class BaseCoatingEnvironment:
             expert_constraints=self.current_expert_constraints,
             env=self,
             pc_tracker=pc_tracker,
+            pareto_tracker=pareto_tracker,
             phase_info=phase_info,
         )
         return total_reward, vals, rewards
@@ -788,6 +795,7 @@ class BaseCoatingEnvironment:
         always_return_value=False,
         objective_weights=None,
         pc_tracker=None,
+        pareto_tracker=None,
         phase_info=None,
     ):
         """action[0] - thickness
@@ -869,6 +877,7 @@ class BaseCoatingEnvironment:
                 max_state,
                 objective_weights=objective_weights,
                 pc_tracker=pc_tracker,
+                pareto_tracker=pareto_tracker,
                 phase_info=phase_info,
             )
 
@@ -880,6 +889,7 @@ class BaseCoatingEnvironment:
                     max_state,
                     objective_weights=objective_weights,
                     pc_tracker=pc_tracker,
+                    pareto_tracker=pareto_tracker,
                     phase_info=phase_info,
                 )
 
