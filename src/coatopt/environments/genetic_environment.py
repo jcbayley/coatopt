@@ -1,45 +1,31 @@
-import copy
-import time
-from typing import TYPE_CHECKING, Optional
+from typing import Optional
 
-import matplotlib.pyplot as plt
 import numpy as np
 import torch
-from tmm import coh_tmm
 
 from coatopt.config.structured_config import CoatingOptimisationConfig
-from coatopt.environments.core.base_environment import BaseCoatingEnvironment
 from coatopt.environments.core.state import CoatingState
+from coatopt.environments.multiobjective_environment import MultiObjectiveEnvironment
 
 
-class GeneticCoatingStack(BaseCoatingEnvironment):
+class GeneticCoatingStack(MultiObjectiveEnvironment):
     """
     Genetic algorithm coating environment with dual initialization support.
     """
 
     def __init__(self, config: Optional[CoatingOptimisationConfig] = None, **kwargs):
         """
-        Initialize genetic environment with dual initialization support.
+        Initialize genetic environment.
 
         Args:
             config: CoatingOptimisationConfig object (new approach)
             **kwargs: Individual parameters (legacy approach), including:
                      thickness_sigma: Standard deviation for thickness mutations
         """
-        # Extract genetic-specific parameters before calling super()
-        genetic_params = {}
-        if "thickness_sigma" in kwargs:
-            genetic_params["thickness_sigma"] = kwargs.pop("thickness_sigma")
-
-        # Initialize base environment with all standard parameters
+        # Initialize multi-objective environment
         super().__init__(config, **kwargs)
 
         # Genetic-specific initialization
-        self._setup_genetic_specific_attributes(**genetic_params)
-
-    def _setup_genetic_specific_attributes(self, **kwargs):
-        """Setup genetic algorithm specific attributes."""
-        # Extract genetic-specific parameters
         self.thickness_sigma = kwargs.get("thickness_sigma", 1e-4)
 
     def sample_state_space(
@@ -110,65 +96,3 @@ class GeneticCoatingStack(BaseCoatingEnvironment):
             print(new_thickness)
 
         return np.argmax(new_material), new_thickness[0], layer_ind
-
-    def step(
-        self,
-        action,
-        max_state=0,
-        verbose=False,
-        state=None,
-        layer_index=None,
-        always_return_value=False,
-    ):
-        """action[0] - thickness
-           action[1:N] - material probability
-
-        Args:
-            action (_type_): _description_
-        """
-
-        if state is None:
-            state = self.current_state
-        else:
-            self.current_state = state
-
-        if layer_index is None:
-            layer_index = self.current_index
-        else:
-            self.current_index = layer_index
-
-        material = action[0]
-        thickness = action[
-            1
-        ]  # * self.light_wavelength /(4*self.materials[material]["n"])
-        new_state, full_action = self.update_state(np.copy(state), thickness, material)
-
-        neg_reward = -1000
-        reward = neg_reward
-
-        terminated = False
-        finished = False
-
-        reward, vals, rewards = self.compute_reward(new_state, max_state)
-
-        if (
-            np.any(np.isinf(new_state))
-            or np.any(np.isnan(new_state))
-            or np.isnan(reward)
-            or np.isinf(reward)
-            or self.min_thickness > thickness
-            or thickness > self.max_thickness
-            or not np.isfinite(thickness)
-        ):
-            # rewards["total_reward"] = neg_reward
-            reward = neg_reward
-            terminated = True
-            new_value = neg_reward
-
-        self.previous_material = material
-        # print(new_value)
-
-        self.length += 1
-        self.current_index += 1
-
-        return new_state, rewards, terminated, finished, reward, full_action

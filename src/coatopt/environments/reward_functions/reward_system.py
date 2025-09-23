@@ -315,6 +315,7 @@ class RewardCalculator:
             phase_info=phase_info,
             **extra_kwargs,
         )
+
         # print("Final rewards after addons:", final_rewards)
 
         # Combine rewards using configured method

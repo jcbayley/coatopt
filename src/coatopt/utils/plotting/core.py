@@ -1264,6 +1264,9 @@ class TrainingPlotManager:
                 ax.set_xlabel(reward_labels[i])
                 ax.set_ylabel(reward_labels[j])
 
+                # Add design criteria lines for rewards plot
+                self._add_design_criteria_multi_objective(ax, i, j)
+
                 ax.grid(True, alpha=0.3)
                 if pair_idx == 0:  # Only show legend on first subplot
                     ax.legend(fontsize=6)
@@ -1794,6 +1797,56 @@ class TrainingPlotManager:
         else:
             print(f"No objective targets set for design criteria.")
 
+    def _add_design_criteria_multi_objective(self, ax, obj_i: int, obj_j: int):
+        """Add design criteria lines to multi-objective plot for specific objective pair."""
+        if not hasattr(self, "design_criteria") or not self.design_criteria:
+            return
+
+        try:
+            # Draw vertical line for objective i if it has design criteria
+            if (
+                len(self.design_criteria) > obj_i
+                and self.design_criteria[obj_i] is not None
+            ):
+                target_x = (
+                    1 - self.design_criteria[obj_i]
+                    if obj_i < len(self.objective_labels)
+                    and self.objective_labels[obj_i] == "1 - Reflectivity"
+                    else self.design_criteria[obj_i]
+                )
+                ax.axvline(
+                    x=target_x,
+                    color="k",
+                    linestyle="--",
+                    alpha=0.7,
+                    linewidth=2,
+                    label=f'Target {self.objective_labels[obj_i] if obj_i < len(self.objective_labels) else f"Obj {obj_i+1}"}',
+                )
+
+            # Draw horizontal line for objective j if it has design criteria
+            if (
+                len(self.design_criteria) > obj_j
+                and self.design_criteria[obj_j] is not None
+            ):
+                target_y = (
+                    1 - self.design_criteria[obj_j]
+                    if obj_j < len(self.objective_labels)
+                    and self.objective_labels[obj_j] == "1 - Reflectivity"
+                    else self.design_criteria[obj_j]
+                )
+                ax.axhline(
+                    y=target_y,
+                    color="k",
+                    linestyle="--",
+                    alpha=0.7,
+                    linewidth=2,
+                    label=f'Target {self.objective_labels[obj_j] if obj_j < len(self.objective_labels) else f"Obj {obj_j+1}"}',
+                )
+        except Exception as e:
+            print(
+                f"Error plotting design criteria for objectives {obj_i}, {obj_j}: {e}"
+            )
+
     def _configure_axis_labels_and_scales(self, ax, i, j):
         """Configure axis labels and scales for objectives i and j."""
         # Set labels and scales
@@ -1895,6 +1948,9 @@ class TrainingPlotManager:
                     ax.set_xscale("log")
                 if j < len(self.objective_scales) and self.objective_scales[j] == "log":
                     ax.set_yscale("log")
+
+                # Add design criteria lines
+                self._add_design_criteria_multi_objective(ax, i, j)
 
                 ax.grid(True, alpha=0.3)
                 if pair_idx == 0:  # Only show legend on first subplot

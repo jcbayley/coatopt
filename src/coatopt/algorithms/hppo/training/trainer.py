@@ -623,6 +623,7 @@ class HPPOTrainer:
                         else 0
                     ),
                     "training_time": time.time() - self.training_start_time,
+                    "objective_weights": episode_data["objective_weights"],
                 }
                 self.callbacks.on_episode_complete(episode, episode_info)
 
@@ -657,6 +658,7 @@ class HPPOTrainer:
                             else {}
                         ),
                         "metrics": episode_metrics.copy(),
+                        "objective_weights": episode_data["objective_weights"],
                     }
 
                     # Add Pareto update for plot manager
@@ -1324,6 +1326,49 @@ class HPPOTrainer:
         fig.savefig(episode_file)
         plt.close(fig)
 
+    def _get_current_expert_usage(self, objective_weights) -> str:
+        """Get current expert usage information for logging."""
+        if (
+            not hasattr(self.agent, "use_mixture_of_experts")
+            or not self.agent.use_mixture_of_experts
+        ):
+            return ""
+
+        if objective_weights is None:
+            return "No objective weights"
+
+        try:
+            # Convert objective weights to tensor if needed
+            import torch
+
+            if not isinstance(objective_weights, torch.Tensor):
+                obj_weights = torch.FloatTensor(objective_weights).unsqueeze(0)
+            else:
+                obj_weights = objective_weights.float()
+                if obj_weights.dim() == 1:
+                    obj_weights = obj_weights.unsqueeze(0)
+
+            # Get gating weights for current objective weights
+            gate_weights, _ = self.agent.policy_discrete.gating_network(obj_weights)
+            gate_probs = (
+                gate_weights[0].detach().cpu().numpy()
+            )  # First (and likely only) batch
+
+            # Find the most active expert
+            max_expert = int(gate_probs.argmax())
+            max_prob = gate_probs[max_expert]
+
+            # Format objective weights for display
+            obj_str = "[" + ", ".join([f"{w:.1f}" for w in objective_weights]) + "]"
+
+            # Format expert probabilities
+            prob_str = "[" + ", ".join([f"{p:.2f}" for p in gate_probs]) + "]"
+
+            return f"Obj: {obj_str} -> Expert {max_expert} ({max_prob:.2f}) | Probs: {prob_str}"
+
+        except Exception as e:
+            return f"Error getting expert usage: {e}"
+
     def _save_model_checkpoint(self, episode: int) -> None:
         """Save model checkpoint to output directory."""
         print(f"Saving model checkpoint at episode {episode}")
@@ -1749,6 +1794,17 @@ def create_cli_callbacks(
             print(f"Current reward: {info['reward']:.6f}")
             print(f"Max reward so far: {info['max_reward']:.6f}")
             print(f"Training time: {info['training_time']/3600:.2f} hours")
+
+            # Add MoE expert usage logging
+            if (
+                hasattr(trainer.agent, "use_mixture_of_experts")
+                and trainer.agent.use_mixture_of_experts
+            ):
+                expert_usage = trainer._get_current_expert_usage(
+                    info.get("objective_weights")
+                )
+                if expert_usage:
+                    print(f"🔀 MoE Expert Usage: {expert_usage}")
 
             if info["pareto_front_size"] > 0:
                 print(f"Pareto front size: {info['pareto_front_size']}")
