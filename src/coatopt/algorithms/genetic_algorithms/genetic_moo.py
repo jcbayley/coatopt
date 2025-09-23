@@ -24,6 +24,7 @@ from pymoo.util.ref_dirs import get_reference_directions
 from pymoo.visualization.scatter import Scatter
 
 from coatopt.config.structured_config import GeneticConfig
+from coatopt.environments.core.state import CoatingState
 from coatopt.utils.plotting.stack import plot_stack
 
 
@@ -63,16 +64,22 @@ class CoatingMOO(ElementwiseProblem):
         Returns:
             State array with shape (max_layers, n_materials+1)
         """
-        state = np.zeros((self.env.max_layers, self.env.n_materials + 1))
+        # Create state using the proper CoatingState class for consistency
+        state = CoatingState(
+            max_layers=self.env.max_layers,
+            n_materials=self.env.n_materials,
+            air_material_index=getattr(self.env, "air_material_index", 0),
+            substrate_material_index=getattr(self.env, "substrate_material_index", 1),
+        )
+
         layer_thickness = vars[: self.env.max_layers]
         materials_inds = np.floor(vars[self.env.max_layers :]).astype(int)
 
         for i in range(self.env.max_layers):
-            state[i, 0] = layer_thickness[i]
-            # Add 2 to account for air (0) and substrate (1) indices
-            state[i, materials_inds[i] + 2] = 1
+            # Use CoatingState.set_layer() which handles indexing correctly
+            state.set_layer(i, layer_thickness[i], materials_inds[i])
 
-        return state
+        return state.get_array()
 
     def _evaluate(self, X: np.ndarray, out: dict, *args, **kwargs):
         """
@@ -130,6 +137,7 @@ class CheckpointCallback(Callback):
         # Create checkpoint subdirectory
         checkpoint_subdir = os.path.join(self.checkpoint_dir, f"gen_{generation}")
         os.makedirs(checkpoint_subdir, exist_ok=True)
+        os.makedirs(os.path.join(checkpoint_subdir, "states"), exist_ok=True)
 
         # Create a Population object from current algorithm population
         current_pop = algorithm.pop
@@ -182,32 +190,24 @@ class CheckpointCallback(Callback):
 
     def _create_checkpoint_plots(self, results, states, checkpoint_dir, generation):
         """Create plots using existing trainer methods."""
-        # Create Pareto front plot using existing method with modified output path
+        # Create Pareto front plots using existing method with modified output path
         if len(self.trainer.env.optimise_parameters) >= 2:
-            try:
-                # Temporarily modify trainer's output_dir to save to checkpoint dir
-                original_output_dir = self.trainer.output_dir
-                self.trainer.output_dir = checkpoint_dir
+            # Temporarily modify trainer's output_dir to save to checkpoint dir
+            original_output_dir = self.trainer.output_dir
+            self.trainer.output_dir = checkpoint_dir
 
-                # Use existing Pareto plot method
-                self.trainer._create_pareto_plot(results)
+            # Create values Pareto plot
+            self.trainer._create_simple_pareto_plot(
+                results, plot_type="vals", save_dir=checkpoint_dir
+            )
 
-                # Rename the generated plot to include generation number
-                original_plot_path = os.path.join(checkpoint_dir, "pareto_front.png")
-                new_plot_path = os.path.join(
-                    checkpoint_dir, f"pareto_front_gen_{generation}.png"
-                )
+            # Create rewards Pareto plot
+            self.trainer._create_simple_pareto_plot(
+                results, plot_type="rewards", save_dir=checkpoint_dir
+            )
 
-                if os.path.exists(original_plot_path):
-                    os.rename(original_plot_path, new_plot_path)
-
-                # Restore original output directory
-                self.trainer.output_dir = original_output_dir
-
-            except Exception as e:
-                print(
-                    f"Warning: Failed to create Pareto plot for gen {generation}: {e}"
-                )
+            # Restore original output directory
+            self.trainer.output_dir = original_output_dir
 
         # Create sample coating plots using existing method
         self._create_sample_coating_plots(states, checkpoint_dir, generation)
@@ -219,28 +219,22 @@ class CheckpointCallback(Callback):
         n_sample_plots = min(5, len(states))
 
         for i in range(n_sample_plots):
-            try:
-                state = states[i]
+            state = states[i]
 
-                # Calculate rewards and values for this state
-                total_reward, vals, rewards = self.trainer.env.compute_reward(state)
+            # Calculate rewards and values for this state
+            total_reward, vals, rewards = self.trainer.env.compute_reward(state)
 
-                # Use existing plotting function
-                fig, ax = plot_stack(
-                    state, self.trainer.env.materials, rewards=rewards, vals=vals
-                )
-                fig.suptitle(f"Generation {generation} - Sample {i+1}")
+            # Use existing plotting function
+            fig, ax = plot_stack(
+                state, self.trainer.env.materials, rewards=rewards, vals=vals
+            )
+            fig.suptitle(f"Generation {generation} - Sample {i+1}")
 
-                plot_path = os.path.join(
-                    checkpoint_dir, f"coating_sample_{i+1}_gen_{generation}.png"
-                )
-                fig.savefig(plot_path, dpi=300, bbox_inches="tight")
-                plt.close(fig)
-
-            except Exception as e:
-                print(
-                    f"Warning: Failed to create coating plot {i+1} for gen {generation}: {e}"
-                )
+            plot_path = os.path.join(
+                checkpoint_dir, f"coating_sample_{i+1}_gen_{generation}.png"
+            )
+            fig.savefig(plot_path, dpi=300, bbox_inches="tight")
+            plt.close(fig)
 
 
 class GeneticTrainer:
@@ -264,7 +258,6 @@ class GeneticTrainer:
 
         # Create output directories
         os.makedirs(output_dir, exist_ok=True)
-        os.makedirs(os.path.join(output_dir, "states"), exist_ok=True)
 
     def _create_algorithm(self):
         """Create PyMOO algorithm based on configuration."""
@@ -406,22 +399,20 @@ class GeneticTrainer:
 
         print(f"Processing {len(X)} population samples...")
 
-        # For population data, just use F values (negated objectives) as rewards
-        # Don't store states or compute vals to save memory
-        states = []  # Empty - we don't store states for population data
         results = {}
 
         # F contains negated rewards, so negate them back
         negated_F = -F
+        states = np.array(population.get("STATE"))
+        vals = population.get("VALS")
+        results["states"] = states
 
         for i, param in enumerate(self.env.get_parameter_names()):
             if i < negated_F.shape[1]:
                 results[f"{param}_rewards"] = negated_F[:, i]
-                results[f"{param}_vals"] = (
-                    np.zeros_like(negated_F[:, i]) * np.nan
-                )  # No vals for population data
+                results[f"{param}_vals"] = np.array([v[param] for v in vals])
             else:
-                results[f"{param}_rewards"] = np.zeros(len(X))
+                results[f"{param}_rewards"] = np.zeros(len(X)) * np.nan
                 results[f"{param}_vals"] = np.zeros(len(X)) * np.nan
 
         # Convert to numpy arrays
@@ -668,18 +659,33 @@ class GeneticTrainer:
         self, results: Dict[str, np.ndarray], states: np.ndarray
     ):
         """Create simple Pareto visualization similar to HPPO trainer."""
-        print("Creating Pareto front visualization...")
+        print("Creating Pareto front visualizations...")
 
-        # Simple Pareto front plot similar to HPPO
+        # Simple Pareto front plots similar to HPPO
         if len(self.env.optimise_parameters) >= 2:
-            self._create_simple_pareto_plot(results)
+            self._create_simple_pareto_plot(
+                results, plot_type="vals", save_dir=self.output_dir
+            )
+            self._create_simple_pareto_plot(
+                results, plot_type="rewards", save_dir=self.output_dir
+            )
 
         # Create just a few representative coating plots
         print("Creating sample coating visualizations...")
         self._create_sample_coating_plots(states, results)
 
-    def _create_simple_pareto_plot(self, results: Dict[str, np.ndarray]):
-        """Create simple Pareto front visualization matching HPPO style."""
+    def _create_simple_pareto_plot(
+        self,
+        results: Dict[str, np.ndarray],
+        plot_type: str = "vals",
+        save_dir: str = "./",
+    ):
+        """Create simple Pareto front visualization matching HPPO style.
+
+        Args:
+            results: Dictionary containing results data
+            plot_type: Either "vals" or "rewards" to specify which data to plot
+        """
         params = self.env.get_parameter_names()
         if len(params) < 2:
             return
@@ -688,38 +694,56 @@ class GeneticTrainer:
 
         fig, ax = plt.subplots(figsize=(10, 8))
 
-        # Get values for plotting
-        x_vals = results[f"{param1}_vals"]
-        y_vals = results[f"{param2}_vals"]
+        # Get data for plotting based on plot_type
+        if plot_type == "vals":
+            x_data = results[f"{param1}_vals"]
+            y_data = results[f"{param2}_vals"]
 
-        # Apply same transformations as HPPO
-        x_label = param1.replace("_", " ").title()
-        y_label = param2.replace("_", " ").title()
+            # Apply transformations for values
+            x_label = param1.replace("_", " ").title()
+            y_label = param2.replace("_", " ").title()
 
-        if param1 == "reflectivity":
-            x_vals = 1 - x_vals  # Convert to loss for minimization display
-            x_label = "1 - Reflectivity"
+            if param1 == "reflectivity":
+                x_data = 1 - x_data  # Convert to loss for minimization display
+                x_label = "1 - Reflectivity"
 
-        if param2 == "absorption":
-            y_vals = y_vals * 1e6  # Convert to ppm
-            y_label = "Absorption [ppm]"
-        elif param2 == "thermal_noise":
-            y_label = "Thermal Noise [m/√Hz]"
+            if param2 == "absorption":
+                y_data = y_data
+                y_label = "Absorption [ppm]"
+            elif param2 == "thermal_noise":
+                y_label = "Thermal Noise [m/√Hz]"
+
+            color = "red"
+            filename = "pareto_front_vals.png"
+
+        elif plot_type == "rewards":
+            x_data = results[f"{param1}_rewards"]
+            y_data = results[f"{param2}_rewards"]
+
+            # No transformations for rewards, use raw values
+            x_label = param1.replace("_", " ").title() + " Reward"
+            y_label = param2.replace("_", " ").title() + " Reward"
+
+            color = "blue"
+            filename = "pareto_front_rewards.png"
+        else:
+            raise ValueError(f"plot_type must be 'vals' or 'rewards', got {plot_type}")
 
         # Simple scatter plot
         ax.scatter(
-            x_vals, y_vals, s=20, c="red", alpha=0.6, label=f"Solutions ({len(x_vals)})"
+            x_data, y_data, s=20, c=color, alpha=0.6, label=f"Solutions ({len(x_data)})"
         )
 
         ax.set_xlabel(x_label)
         ax.set_ylabel(y_label)
-        ax.set_title(f"Pareto Front: {x_label} vs {y_label}")
+        title_suffix = "Values" if plot_type == "vals" else "Rewards"
+        ax.set_title(f"Pareto Front ({title_suffix}): {x_label} vs {y_label}")
         ax.grid(True, alpha=0.3)
         ax.legend()
 
         plt.tight_layout()
         fig.savefig(
-            os.path.join(self.output_dir, "pareto_front.png"),
+            os.path.join(save_dir, filename),
             dpi=150,
             bbox_inches="tight",
         )
