@@ -74,10 +74,21 @@ class CoatingMOO(ElementwiseProblem):
 
         layer_thickness = vars[: self.env.max_layers]
         materials_inds = np.floor(vars[self.env.max_layers :]).astype(int)
+        air_material_index = getattr(self.env, "air_material_index", 0)
 
+        # Check for air layers and enforce constraint that all layers after air must also be air
+        air_found = False
         for i in range(self.env.max_layers):
-            # Use CoatingState.set_layer() which handles indexing correctly
-            state.set_layer(i, layer_thickness[i], materials_inds[i])
+            if air_found or materials_inds[i] == air_material_index:
+                # If air was found in a previous layer or current layer is air,
+                # force all remaining layers to be air
+                air_found = True
+                state.set_layer(
+                    i, 0.0, air_material_index
+                )  # Air layers have zero thickness
+            else:
+                # Normal layer - use original thickness and material
+                state.set_layer(i, layer_thickness[i], materials_inds[i])
 
         return state.get_array()
 
