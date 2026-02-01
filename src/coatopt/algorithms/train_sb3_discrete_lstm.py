@@ -12,7 +12,8 @@ from coatopt.algorithms.train_sb3_discrete import (
     DiscreteActionPlottingCallback,
 )
 from coatopt.utils.configs import load_config
-from coatopt.utils.utils import load_materials, evaluate_model, EntropyAnnealingCallback
+from coatopt.utils.utils import load_materials, evaluate_model
+from coatopt.utils.callbacks import EntropyAnnealingCallback
 
 class LSTMFeatureExtractor(BaseFeaturesExtractor):
     """Custom LSTM feature extractor for sequential coating layer processing.

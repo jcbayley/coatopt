@@ -6,9 +6,9 @@ from sb3_contrib import MaskablePPO
 
 from coatopt.environments.environment import CoatingEnvironment
 from coatopt.utils.configs import Config, DataConfig, TrainingConfig, load_config
-from coatopt.utils.callbacks import PlottingCallback
-from coatopt.utils.utils import load_materials, evaluate_model, EntropyAnnealingCallback
-
+from coatopt.utils.callbacks import PlottingCallback, EntropyAnnealingCallback
+from coatopt.utils.utils import load_materials, evaluate_model
+from coatopt.environments.state import CoatingState
 
 class CoatOptDiscreteGymWrapper(gym.Env):
     """Gymnasium wrapper for CoatingEnvironment with discrete actions and sction masking.
@@ -428,8 +428,6 @@ class DiscreteActionPlottingCallback(PlottingCallback):
                     material_idx = mat1 if i % 2 == 0 else mat2
                     internal_state[i, 0] = avg_thickness
                     internal_state[i, 1] = material_idx
-
-                from coatopt.environments.core.state_simple import CoatingState
 
                 coating_state = CoatingState.from_array(
                     internal_state,

@@ -7,7 +7,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import torch
 
-from ..core.state import CoatingState
+from ..state import CoatingState
 
 
 def print_state(state):

@@ -11,7 +11,7 @@ from typing import Dict, List, Optional, Tuple
 import numpy as np
 import torch
 
-from ..environments.core.state import CoatingState
+from ..environments.state import CoatingState
 from ..environments.utils import coating_utils, state_utils
 
 

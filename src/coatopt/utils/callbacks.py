@@ -4,7 +4,7 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import numpy as np
 from stable_baselines3.common.callbacks import BaseCallback
-
+import math
 
 class EntropyAnnealingCallback(BaseCallback):
     """Callback to update entropy coefficient with cosine annealing schedule.
