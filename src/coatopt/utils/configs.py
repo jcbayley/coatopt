@@ -79,6 +79,7 @@ class AlgorithmConfig:
     max_grad_norm: float = 0.5
 
     # Network architecture
+    pre_network: str = "mlp"  # "mlp" or "lstm"
     net_arch_pi: list = field(default_factory=lambda: [128, 64, 32])  # Policy network
     net_arch_vf: list = field(default_factory=lambda: [128, 64, 32])  # Value network
 
@@ -160,6 +161,9 @@ def load_config(config_path: str) -> Config:
                     algorithm_kwargs[key] = ast.literal_eval(value)
                 except:
                     algorithm_kwargs[key] = value
+            # Parse string values (pre_network)
+            elif key in ('pre_network',):
+                algorithm_kwargs[key] = value.strip('"').strip("'")
             else:
                 algorithm_kwargs[key] = value
 

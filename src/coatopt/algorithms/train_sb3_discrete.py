@@ -7,13 +7,16 @@ import mlflow
 import shutil
 import warnings
 from datetime import datetime
+import torch.nn as nn
+import torch as th
+from stable_baselines3.common.torch_layers import BaseFeaturesExtractor
+from stable_baselines3.common.callbacks import CallbackList
 
 from coatopt.environments.environment import CoatingEnvironment
 from coatopt.utils.configs import Config, DataConfig, TrainingConfig, load_config
 from coatopt.utils.callbacks import PlottingCallback, EntropyAnnealingCallback
 from coatopt.utils.utils import load_materials, evaluate_model
 from coatopt.environments.state import CoatingState
-from stable_baselines3.common.callbacks import CallbackList
 
 class CoatOptDiscreteGymWrapper(gym.Env):
     """Gymnasium wrapper for CoatingEnvironment with discrete actions and sction masking.
@@ -372,6 +375,88 @@ class CoatOptDiscreteGymWrapper(gym.Env):
 
         return obs, float(total_reward), done, truncated, info
 
+class LSTMFeatureExtractor(BaseFeaturesExtractor):
+    """Custom LSTM feature extractor for sequential coating layer processing.
+
+    This processes the flattened observation (max_layers * features_per_layer)
+    by reshaping it back into a sequence and running it through an LSTM.
+
+    Args:
+        observation_space: Gym observation space
+        lstm_hidden_size: Hidden size of LSTM
+        lstm_num_layers: Number of LSTM layers
+        features_dim: Output dimension 
+        max_layers: Maximum number of coating layers
+        features_per_layer: Number of features per layer
+    """
+
+    def __init__(
+        self,
+        observation_space: gym.spaces.Box,
+        lstm_hidden_size: int = 128,
+        lstm_num_layers: int = 2,
+        features_dim: int = 128,
+        max_layers: int = 20,
+        features_per_layer: int = None,
+    ):
+        # Features dim is what we output to the policy/value networks
+        super().__init__(observation_space, features_dim)
+
+        self.max_layers = max_layers
+
+        # Calculate features per layer from observation space
+        obs_size = observation_space.shape[0]
+        if features_per_layer is None:
+            features_per_layer = obs_size // max_layers
+        self.features_per_layer = features_per_layer
+
+        # LSTM processes sequences of shape (batch, seq_len, input_size)
+        self.lstm = nn.LSTM(
+            input_size=features_per_layer,
+            hidden_size=lstm_hidden_size,
+            num_layers=lstm_num_layers,
+            batch_first=True,
+        )
+
+        # Project LSTM output + layer number to desired feature dimension
+        # +1 for layer number concatenated after LSTM
+        self.linear = nn.Linear(lstm_hidden_size + 1, features_dim)
+
+    def forward(self, observations: th.Tensor) -> th.Tensor:
+        """
+        Process observations through LSTM.
+
+        Args:
+            observations: Shape (batch_size, max_layers * features_per_layer)
+
+        Returns:
+            features: Shape (batch_size, features_dim)
+        """
+        batch_size = observations.shape[0]
+
+        # Extract layer number (last element) and sequence (everything else)
+        layer_number = observations[:, -1:]  # (batch, 1) - keep dimension
+        sequence_obs = observations[:, :-1]  # (batch, max_layers * features_per_layer)
+
+        # Reshape flat observations back to sequence
+        # (batch, max_layers * features_per_layer) -> (batch, max_layers, features_per_layer)
+        sequences = sequence_obs.view(batch_size, self.max_layers, self.features_per_layer)
+
+        # Run through LSTM
+        # lstm_out shape: (batch, max_layers, lstm_hidden_size)
+        # h_n shape: (num_layers, batch, lstm_hidden_size)
+        lstm_out, (h_n, c_n) = self.lstm(sequences)
+
+        # Use the last timestep output
+        last_output = lstm_out[:, -1, :]  # (batch, lstm_hidden_size)
+
+        # Concatenate layer number to LSTM output
+        combined = th.cat([last_output, layer_number], dim=1)  # (batch, lstm_hidden_size + 1)
+
+        # Project to features_dim
+        features = th.relu(self.linear(combined))  # (batch, features_dim)
+
+        return features
 
 class DiscreteActionPlottingCallback(PlottingCallback):
     """Extended callback with alternating materials plotting for discrete actions.
@@ -583,13 +668,34 @@ def train(config_path: str, save_dir: str = None):
 
     # Use MaskablePPO for action masking support
     algo_config = config.algorithm
-    policy_kwargs = dict(
-        net_arch=dict(
-            pi=algo_config.net_arch_pi,
-            vf=algo_config.net_arch_vf,
-        ),
-        # activation_fn=th.nn.ReLU, 
-    )
+    if algo_config.pre_network == "mlp":
+        policy_kwargs = dict(
+            net_arch=dict(
+                pi=algo_config.net_arch_pi,
+                vf=algo_config.net_arch_vf,
+            ),
+            # activation_fn=th.nn.ReLU, 
+        )
+    elif algo_config.pre_network == "lstm":
+        # LSTM-specific settings (with defaults)
+        lstm_hidden_size = parser.getint(section, 'lstm_hidden_size', fallback=128)
+        lstm_num_layers = parser.getint(section, 'lstm_num_layers', fallback=2)
+        lstm_features_dim = parser.getint(section, 'lstm_features_dim', fallback=128)
+        n_features_per_layer = 1 + env.env.n_materials + 2  # thickness + materials_onehot + n + k
+        policy_kwargs = dict(
+            features_extractor_class=LSTMFeatureExtractor,
+            features_extractor_kwargs=dict(
+                lstm_hidden_size=lstm_hidden_size,
+                lstm_num_layers=lstm_num_layers,
+                features_dim=lstm_features_dim,
+                max_layers=env.env.max_layers,
+                features_per_layer=n_features_per_layer,
+            ),
+            net_arch=dict(
+                pi=algo_config.net_arch_pi,
+                vf=algo_config.net_arch_vf,
+            ),
+        )
 
     model = MaskablePPO(
         "MlpPolicy",
