@@ -129,7 +129,7 @@ class PlottingCallback(BaseCallback):
         n_best_designs: int = 5,
         materials: dict = None,
         verbose: int = 0,
-        track_action_distributions: bool = False,
+        disable_mlflow: bool = True,
     ):
         """Initialize plotting callback.
 
@@ -141,7 +141,7 @@ class PlottingCallback(BaseCallback):
             n_best_designs: Number of best designs to track
             materials: Materials dictionary for plotting
             verbose: Verbosity level
-            track_action_distributions: Track discrete action choices (for discrete training)
+            disable_mlflow: If True, disable MLflow logging (default: True)
         """
         super().__init__(verbose)
         self.env = env
@@ -150,7 +150,7 @@ class PlottingCallback(BaseCallback):
         self.save_dir = Path(save_dir)
         self.n_best_designs = n_best_designs
         self.materials = materials or {}
-        self.track_action_distributions = track_action_distributions
+        self.disable_mlflow = disable_mlflow
 
         # Episode tracking
         self.episode_rewards = []
@@ -169,23 +169,11 @@ class PlottingCallback(BaseCallback):
         self.level_history = []
         self.entropy_coef_history = []
 
-        # Action distribution tracking (only for discrete)
-        if track_action_distributions:
-            self.material_action_history = []
-            self.thickness_bin_history = []
-
 
     def _on_step(self) -> bool:
         """Called at each step. Collect episode statistics and trigger plotting."""
         infos = self.locals.get("infos", [])
         for info in infos:
-            # Track discrete action choices (if enabled)
-            if self.track_action_distributions:
-                if "material_idx" in info:
-                    self.material_action_history.append(info["material_idx"])
-                if "thickness_bin" in info:
-                    self.thickness_bin_history.append(info["thickness_bin"])
-
             if "episode" in info:
                 if type(info["episode"]) == int:
                     continue
@@ -219,8 +207,8 @@ class PlottingCallback(BaseCallback):
                 vals = info.get("vals", {})
                 rewards = info.get("rewards", {})
 
-                # Log to MLflow
-                if mlflow.active_run():
+                # Log to MLflow (if enabled)
+                if not self.disable_mlflow and mlflow.active_run():
                     mlflow.log_metric("episode_reward", ep_reward, step=self.episode_count)
                     mlflow.log_metric("episode_length", ep_length, step=self.episode_count)
                     if hasattr(self.model, 'ent_coef'):
@@ -262,8 +250,7 @@ class PlottingCallback(BaseCallback):
 
     def _plot_training_progress(self):
         """Plot training metrics."""
-        n_rows = 3 if self.track_action_distributions else 2
-        fig, axs = plt.subplots(n_rows, 4, figsize=(20, 5 * n_rows))
+        fig, axs = plt.subplots(2, 4, figsize=(20, 10))
 
         # Get environment
         env = self.env
@@ -456,72 +443,6 @@ class PlottingCallback(BaseCallback):
         else:
             ax_pareto_reward.text(0.5, 0.5, "No episode data", ha="center", va="center")
             ax_pareto_reward.set_title("Pareto Front (Reward Space)")
-
-        # Row 3 (optional): Action distributions for discrete training
-        if self.track_action_distributions:
-            # Material action distribution
-            if hasattr(self, 'material_action_history') and self.material_action_history:
-                recent_materials = self.material_action_history[-1000:]
-                unique, counts = np.unique(recent_materials, return_counts=True)
-                axs[2, 0].bar(unique, counts, edgecolor="black", alpha=0.7)
-                axs[2, 0].set_title("Material Selection (recent 1000 steps)")
-                axs[2, 0].set_xlabel("Material Index")
-                axs[2, 0].set_ylabel("Count")
-            else:
-                axs[2, 0].text(0.5, 0.5, "No material data", ha="center", va="center")
-                axs[2, 0].set_title("Material Selection")
-
-            # Thickness bin distribution
-            if hasattr(self, 'thickness_bin_history') and self.thickness_bin_history:
-                recent_bins = self.thickness_bin_history[-1000:]
-                unique, counts = np.unique(recent_bins, return_counts=True)
-                axs[2, 1].bar(unique, counts, edgecolor="black", alpha=0.7)
-                axs[2, 1].set_title("Thickness Bin Selection (recent 1000 steps)")
-                axs[2, 1].set_xlabel("Thickness Bin Index")
-                axs[2, 1].set_ylabel("Count")
-            else:
-                axs[2, 1].text(0.5, 0.5, "No thickness data", ha="center", va="center")
-                axs[2, 1].set_title("Thickness Bin Selection")
-
-            # Material selection over time
-            if hasattr(self, 'material_action_history') and len(self.material_action_history) > 100:
-                window = 100
-                n_windows = len(self.material_action_history) // window
-                if n_windows > 1:
-                    material_over_time = []
-                    for i in range(n_windows):
-                        window_data = self.material_action_history[i*window:(i+1)*window]
-                        material_over_time.append(np.mean(window_data))
-                    axs[2, 2].plot(np.arange(n_windows) * window, material_over_time)
-                    axs[2, 2].set_title(f"Avg Material Idx (window={window})")
-                    axs[2, 2].set_xlabel("Step")
-                    axs[2, 2].set_ylabel("Avg Material Index")
-                else:
-                    axs[2, 2].text(0.5, 0.5, "Not enough data", ha="center", va="center")
-                    axs[2, 2].set_title("Material Over Time")
-            else:
-                axs[2, 2].text(0.5, 0.5, "Not enough data", ha="center", va="center")
-                axs[2, 2].set_title("Material Over Time")
-
-            # Thickness bin over time
-            if hasattr(self, 'thickness_bin_history') and len(self.thickness_bin_history) > 100:
-                window = 100
-                n_windows = len(self.thickness_bin_history) // window
-                if n_windows > 1:
-                    thickness_over_time = []
-                    for i in range(n_windows):
-                        window_data = self.thickness_bin_history[i*window:(i+1)*window]
-                        thickness_over_time.append(np.mean(window_data))
-                    axs[2, 3].plot(np.arange(n_windows) * window, thickness_over_time)
-                    axs[2, 3].set_title(f"Avg Thickness Bin (window={window})")
-                    axs[2, 3].set_xlabel("Step")
-                    axs[2, 3].set_ylabel("Avg Thickness Bin")
-                else:
-                    axs[2, 3].text(0.5, 0.5, "Not enough data", ha="center", va="center")
-                    axs[2, 3].set_title("Thickness Over Time")
-            else:
-                axs[2, 3].text(0.5, 0.5, "Not enough data", ha="center", va="center")
-                axs[2, 3].set_title("Thickness Over Time")
 
         plt.tight_layout()
         save_path = self.save_dir / "training_progress.png"

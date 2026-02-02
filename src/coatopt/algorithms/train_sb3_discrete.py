@@ -473,6 +473,7 @@ class DiscreteActionPlottingCallback(PlottingCallback):
         n_best_designs: int = 5,
         materials: dict = None,
         verbose: int = 0,
+        disable_mlflow: bool = True,
     ):
         super().__init__(
             env=env,
@@ -482,7 +483,7 @@ class DiscreteActionPlottingCallback(PlottingCallback):
             n_best_designs=n_best_designs,
             materials=materials,
             verbose=verbose,
-            track_action_distributions=True,  # Enable action distribution tracking
+            disable_mlflow=disable_mlflow,
         )
 
     def _plot_alternating_materials(self):
@@ -732,6 +733,7 @@ def train(config_path: str, save_dir: str = None):
         n_best_designs=5,
         materials=materials,
         verbose=verbose,
+        disable_mlflow=config.general.disable_mlflow,
     )
 
     print(f"\nStarting training for {total_timesteps} timesteps...")
@@ -752,27 +754,28 @@ def train(config_path: str, save_dir: str = None):
     plotting_callback.save_pareto_front_to_csv(str(pareto_csv))
 
     # Log FINAL Pareto front to MLflow (only once, not every epoch)
-    print("Logging Pareto front to MLflow.....")
+    if not config.general.disable_mlflow and mlflow.active_run():
+        print("Logging Pareto front to MLflow.....")
 
-    # Log the CSV as artifact
-    mlflow.log_artifact(str(pareto_csv))
+        # Log the CSV as artifact
+        mlflow.log_artifact(str(pareto_csv))
 
-    # Log Pareto front as a table (queryable in MLflow)
-    import pandas as pd
-    pareto_df = pd.read_csv(pareto_csv)
-    mlflow.log_table(pareto_df, artifact_file="pareto_front_table.json")
+        # Log Pareto front as a table (queryable in MLflow)
+        import pandas as pd
+        pareto_df = pd.read_csv(pareto_csv)
+        mlflow.log_table(pareto_df, artifact_file="pareto_front_table.json")
 
-    # Log summary metrics (for easy comparison)
-    mlflow.log_metric("final_pareto_size", len(pareto_df))
-    if len(pareto_df) > 0:
-        for obj in config.data.optimise_parameters:
-            if obj in pareto_df.columns:
-                mlflow.log_metric(f"pareto_best_{obj}", pareto_df[obj].max())
-                mlflow.log_metric(f"pareto_worst_{obj}", pareto_df[obj].min())
+        # Log summary metrics (for easy comparison)
+        mlflow.log_metric("final_pareto_size", len(pareto_df))
+        if len(pareto_df) > 0:
+            for obj in config.data.optimise_parameters:
+                if obj in pareto_df.columns:
+                    mlflow.log_metric(f"pareto_best_{obj}", pareto_df[obj].max())
+                    mlflow.log_metric(f"pareto_worst_{obj}", pareto_df[obj].min())
 
-    # Log Pareto plots
-    for plot_file in save_dir.glob("pareto*.png"):
-        mlflow.log_artifact(str(plot_file))
+        # Log Pareto plots
+        for plot_file in save_dir.glob("pareto*.png"):
+            mlflow.log_artifact(str(plot_file))
 
     return model
 

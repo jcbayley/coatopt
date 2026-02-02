@@ -88,12 +88,20 @@ class AlgorithmConfig:
 
 
 @dataclass
+class GeneralConfig:
+    """General configuration settings."""
+
+    disable_mlflow: bool = True  # Default: disable MLflow logging
+
+
+@dataclass
 class Config:
     """config for CoatingEnvironment (no full TrainingConfig needed)."""
 
     data: DataConfig = field(default_factory=DataConfig)
     training: TrainingConfig = field(default_factory=TrainingConfig)
     algorithm: AlgorithmConfig = field(default_factory=AlgorithmConfig)
+    general: GeneralConfig = field(default_factory=GeneralConfig)
 
 
 def load_config(config_path: str) -> Config:
@@ -107,6 +115,14 @@ def load_config(config_path: str) -> Config:
     """
     parser = configparser.ConfigParser()
     parser.read(config_path)
+
+    # Parse General section
+    general_kwargs = {}
+    if parser.has_section('General'):
+        for key, value in parser['General'].items():
+            # Parse boolean values
+            if key == 'disable_mlflow':
+                general_kwargs[key] = value.lower() == 'true'
 
     # Parse Data section
     data_kwargs = {}
@@ -170,5 +186,6 @@ def load_config(config_path: str) -> Config:
     return Config(
         data=DataConfig(**data_kwargs),
         training=TrainingConfig(**training_kwargs),
-        algorithm=AlgorithmConfig(**algorithm_kwargs)
+        algorithm=AlgorithmConfig(**algorithm_kwargs),
+        general=GeneralConfig(**general_kwargs)
     )
