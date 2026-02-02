@@ -516,12 +516,17 @@ def _train_impl(config_path: str):
     # [General] section
     base_save_dir = parser.get('General', 'save_dir')
     materials_path = parser.get('General', 'materials_path')
-    run_number = parser.getint('General', 'run_number', fallback=1)
+    run_name = parser.get('General', 'run_name', fallback='')
 
-    # Create standardized run directory: YYYYMMDD-algorithm-run###
+    # Create standardized run directory: YYYYMMDD-algorithm-runname
     date_str = datetime.now().strftime("%Y%m%d")
     algorithm_name = "sb3_discrete"
-    run_dir_name = f"{date_str}-{algorithm_name}-run{run_number:03d}"
+
+    if run_name:
+        run_dir_name = f"{date_str}-{algorithm_name}-{run_name}"
+    else:
+        run_dir_name = f"{date_str}-{algorithm_name}"
+
     save_dir = Path(base_save_dir) / run_dir_name
 
     # Check if directory exists and warn

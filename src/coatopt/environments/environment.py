@@ -60,6 +60,13 @@ class CoatingEnvironment:
         self.optimise_weight_ranges = getattr(data, "optimise_weight_ranges", {}) or {}
         self.design_criteria = getattr(data, "design_criteria", {}) or {}
 
+        # Objective directions: True = maximize, False = minimize
+        self.objective_directions = {
+            "reflectivity": True,   # Higher is better
+            "absorption": False,    # Lower is better
+            "thermal_noise": False, # Lower is better
+        }
+
         # Action space constraints
         self.ignore_air_option = getattr(data, "ignore_air_option", False)
         self.ignore_substrate_option = getattr(data, "ignore_substrate_option", False)
@@ -183,8 +190,8 @@ class CoatingEnvironment:
                 phase_info=phase_info
             )
 
-            # Update pareto front when episode finishes
-            if finished and self.use_pareto_bonus:
+            # Always update pareto front when episode finishes (for tracking and optional bonus)
+            if finished and self.multi_objective:
                 self.update_pareto_front(vals, self.current_state)
         else:
             total_reward = 0.0
@@ -569,10 +576,44 @@ class CoatingEnvironment:
             self.pareto_front.append((obj_vector, state.copy()))
 
     def _dominates(self, obj1: List[float], obj2: List[float]) -> bool:
-        """Check Pareto dominance."""
-        better_in_all = all(o1 >= o2 for o1, o2 in zip(obj1, obj2))
-        better_in_one = any(o1 > o2 for o1, o2 in zip(obj1, obj2))
-        return better_in_all and better_in_one
+        """Check if obj1 Pareto dominates obj2.
+
+        Takes into account objective directions (maximize vs minimize).
+        obj1 dominates obj2 if it's better or equal in all objectives
+        and strictly better in at least one.
+
+        Args:
+            obj1: First objective vector [val1, val2, ...]
+            obj2: Second objective vector [val1, val2, ...]
+
+        Returns:
+            True if obj1 dominates obj2
+        """
+        if len(obj1) != len(obj2) or len(obj1) != len(self.optimise_parameters):
+            return False
+
+        better_or_equal = True
+        strictly_better = False
+
+        for i, param_name in enumerate(self.optimise_parameters):
+            maximize = self.objective_directions.get(param_name, True)
+
+            if maximize:
+                # Higher is better
+                if obj1[i] < obj2[i]:
+                    better_or_equal = False
+                    break
+                elif obj1[i] > obj2[i]:
+                    strictly_better = True
+            else:
+                # Lower is better
+                if obj1[i] > obj2[i]:
+                    better_or_equal = False
+                    break
+                elif obj1[i] < obj2[i]:
+                    strictly_better = True
+
+        return better_or_equal and strictly_better
 
     def get_state(self) -> CoatingState:
         """Get current state."""
