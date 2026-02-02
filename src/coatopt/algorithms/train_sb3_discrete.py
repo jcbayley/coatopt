@@ -494,60 +494,38 @@ class DiscreteActionPlottingCallback(PlottingCallback):
         plt.close(fig)
 
 
-def train(config_path: str):
+def train(config_path: str, save_dir: str = None):
     """Train MaskablePPO with DISCRETE actions and ACTION MASKING on CoatOpt.
 
     Args:
         config_path: Path to config INI file
+        save_dir: Directory to save results (if None, will create from config)
 
     Returns:
         Trained MaskablePPO model
     """
-    return _train_impl(config_path)
-
-
-def _train_impl(config_path: str):
-    """Implementation of training (wrapped by MLflow)."""
     import configparser
 
     parser = configparser.ConfigParser()
     parser.read(config_path)
 
     # [General] section
-    base_save_dir = parser.get('General', 'save_dir')
     materials_path = parser.get('General', 'materials_path')
-    run_name = parser.get('General', 'run_name', fallback='')
 
-    # Create standardized run directory: YYYYMMDD-algorithm-runname
-    date_str = datetime.now().strftime("%Y%m%d")
-    algorithm_name = "sb3_discrete"
-
-    if run_name:
-        run_dir_name = f"{date_str}-{algorithm_name}-{run_name}"
+    # If save_dir not provided, create it (for backward compatibility)
+    if save_dir is None:
+        base_save_dir = parser.get('General', 'save_dir')
+        run_name = parser.get('General', 'run_name', fallback='')
+        date_str = datetime.now().strftime("%Y%m%d")
+        algorithm_name = "sb3_discrete"
+        if run_name:
+            run_dir_name = f"{date_str}-{algorithm_name}-{run_name}"
+        else:
+            run_dir_name = f"{date_str}-{algorithm_name}"
+        save_dir = Path(base_save_dir) / run_dir_name
+        save_dir.mkdir(parents=True, exist_ok=True)
     else:
-        run_dir_name = f"{date_str}-{algorithm_name}"
-
-    save_dir = Path(base_save_dir) / run_dir_name
-
-    # Check if directory exists and warn
-    if save_dir.exists():
-        warnings.warn(
-            f"\nWARNING: Run directory already exists: {save_dir}\n"
-            f"    This will overwrite existing results!\n",
-            UserWarning
-        )
-
-    save_dir.mkdir(parents=True, exist_ok=True)
-
-    # Copy config file to run directory
-    config_backup = save_dir / "config.ini"
-    shutil.copy(config_path, config_backup)
-
-    # Setup MLflow with matching run name
-    mlflow.set_experiment("sb3_discrete")
-    mlflow.start_run(run_name=run_dir_name)
-    mlflow.log_param("config_path", str(config_path))
-    mlflow.log_param("run_directory", str(save_dir))
+        save_dir = Path(save_dir)
 
     # [sb3_discrete] or [sb3_discrete_lstm] section (try both)
     section = 'sb3_discrete_lstm' if parser.has_section('sb3_discrete_lstm') else 'sb3_discrete'
@@ -693,9 +671,7 @@ def _train_impl(config_path: str):
     for plot_file in save_dir.glob("pareto*.png"):
         mlflow.log_artifact(str(plot_file))
 
-    # End MLflow run
-    mlflow.end_run()
-    print(f"\n✓ MLflow run completed: {run_dir_name}")
+    # Note: MLflow run is ended by run.py wrapper
 
     return model
 
