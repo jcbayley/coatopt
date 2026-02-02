@@ -13,6 +13,7 @@ from coatopt.utils.configs import Config, DataConfig, TrainingConfig, load_confi
 from coatopt.utils.callbacks import PlottingCallback, EntropyAnnealingCallback
 from coatopt.utils.utils import load_materials, evaluate_model
 from coatopt.environments.state import CoatingState
+from stable_baselines3.common.callbacks import CallbackList
 
 class CoatOptDiscreteGymWrapper(gym.Env):
     """Gymnasium wrapper for CoatingEnvironment with discrete actions and sction masking.
@@ -223,7 +224,6 @@ class CoatOptDiscreteGymWrapper(gym.Env):
             print(f"\n=== WARMUP COMPLETE ===")
             print(f"Observed value bounds (phase 1): {self.env.observed_value_bounds}")
             print(f"Best normalised rewards during warmup (phase 1): {self.env.warmup_best_rewards}")
-            print(f"\nConstraint ranges will be scaled by warmup best:")
             for obj in self.objectives:
                 print(f"  {obj}: [0.0, {self.env.warmup_best_rewards[obj]:.4f}]")
             print(f"=== STARTING CONSTRAINED PHASE ===\n")
@@ -339,8 +339,6 @@ class CoatOptDiscreteGymWrapper(gym.Env):
 
         # Only populate info at episode end
         if done:
-            # Use env_reward from env.step() (already computed by compute_reward)
-            # Note: env_reward already includes warmup tracking via _compute_training_reward
             total_reward = env_reward - consecutive_penalty
 
             # Build info only at terminal step
@@ -512,7 +510,7 @@ def train(config_path: str, save_dir: str = None):
     # [General] section
     materials_path = parser.get('General', 'materials_path')
 
-    # If save_dir not provided, create it (for backward compatibility)
+    # If save_dir not provided, create it 
     if save_dir is None:
         base_save_dir = parser.get('General', 'save_dir')
         run_name = parser.get('General', 'run_name', fallback='')
@@ -527,7 +525,7 @@ def train(config_path: str, save_dir: str = None):
     else:
         save_dir = Path(save_dir)
 
-    # [sb3_discrete] or [sb3_discrete_lstm] section (try both)
+    # [sb3_discrete] or [sb3_discrete_lstm] 
     section = 'sb3_discrete_lstm' if parser.has_section('sb3_discrete_lstm') else 'sb3_discrete'
 
     total_timesteps = parser.getint(section, 'total_timesteps')
@@ -590,7 +588,7 @@ def train(config_path: str, save_dir: str = None):
             pi=algo_config.net_arch_pi,
             vf=algo_config.net_arch_vf,
         ),
-        # activation_fn=th.nn.ReLU,  # Default, can change to Tanh, LeakyReLU, etc.
+        # activation_fn=th.nn.ReLU, 
     )
 
     model = MaskablePPO(
@@ -632,7 +630,6 @@ def train(config_path: str, save_dir: str = None):
 
     print(f"\nStarting training for {total_timesteps} timesteps...")
     # Combine callbacks
-    from stable_baselines3.common.callbacks import CallbackList
     callbacks = CallbackList([entropy_callback, plotting_callback])
     model.learn(total_timesteps=total_timesteps, callback=callbacks)
 
@@ -640,7 +637,7 @@ def train(config_path: str, save_dir: str = None):
     model.save(str(model_path))
     print(f"\nModel saved to {model_path}")
 
-    print("\nRunning final evaluation...")
+    print("\nRunning final evaluation..")
     evaluate_model(model, env, n_episodes=10, use_action_masks=True)
 
     # Save Pareto front to CSV
@@ -649,17 +646,17 @@ def train(config_path: str, save_dir: str = None):
     plotting_callback.save_pareto_front_to_csv(str(pareto_csv))
 
     # Log FINAL Pareto front to MLflow (only once, not every epoch)
-    print("Logging Pareto front to MLflow...")
+    print("Logging Pareto front to MLflow.....")
 
-    # 1. Log the CSV as artifact
+    # Log the CSV as artifact
     mlflow.log_artifact(str(pareto_csv))
 
-    # 2. Log Pareto front as a table (queryable in MLflow)
+    # Log Pareto front as a table (queryable in MLflow)
     import pandas as pd
     pareto_df = pd.read_csv(pareto_csv)
     mlflow.log_table(pareto_df, artifact_file="pareto_front_table.json")
 
-    # 3. Log summary metrics (for easy comparison)
+    # Log summary metrics (for easy comparison)
     mlflow.log_metric("final_pareto_size", len(pareto_df))
     if len(pareto_df) > 0:
         for obj in config.data.optimise_parameters:
@@ -667,11 +664,9 @@ def train(config_path: str, save_dir: str = None):
                 mlflow.log_metric(f"pareto_best_{obj}", pareto_df[obj].max())
                 mlflow.log_metric(f"pareto_worst_{obj}", pareto_df[obj].min())
 
-    # 4. Log Pareto plots
+    # Log Pareto plots
     for plot_file in save_dir.glob("pareto*.png"):
         mlflow.log_artifact(str(plot_file))
-
-    # Note: MLflow run is ended by run.py wrapper
 
     return model
 

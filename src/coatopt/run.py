@@ -6,6 +6,7 @@ import shutil
 import warnings
 from datetime import datetime
 import mlflow
+import sys
 
 
 def run_experiment(config_path: str):
@@ -37,8 +38,6 @@ def run_experiment(config_path: str):
 
     print(f"Running algorithm: {algorithm}")
 
-    # ===== Common Setup (shared across all algorithms) =====
-
     # [General] section
     base_save_dir = parser.get('General', 'save_dir')
     run_name = parser.get('General', 'run_name', fallback='')
@@ -51,20 +50,18 @@ def run_experiment(config_path: str):
     min_thickness = parser.getfloat('Data', 'min_thickness', fallback=0.1)
     max_thickness = parser.getfloat('Data', 'max_thickness', fallback=0.5)
 
-    # Auto-generate experiment name if not specified: e.g., "20layer-0.1-0.5"
     if not experiment_name:
-        experiment_name = f"{n_layers}layer-{min_thickness:.1f}-{max_thickness:.1f}"
+        experiment_name = f"{n_layers}layer-{min_thickness:.2f}-{max_thickness:.2f}"
 
-    print(f"MLflow experiment: {experiment_name}")
-
-    # Create run directory: YYYYMMDD-algorithm-runname
+    # create run dir
     date_str = datetime.now().strftime("%Y%m%d")
     if run_name:
         run_dir_name = f"{date_str}-{algorithm}-{run_name}"
     else:
         run_dir_name = f"{date_str}-{algorithm}"
 
-    save_dir = Path(base_save_dir) / run_dir_name
+    # Directory structure mirrors MLflow: runs/experiment/run
+    save_dir = Path(base_save_dir) / experiment_name / run_dir_name
 
     # Check if directory exists and warn
     if save_dir.exists():
@@ -73,6 +70,7 @@ def run_experiment(config_path: str):
             f"    This will overwrite existing results!\n",
             UserWarning
         )
+        sys.exit()
 
     save_dir.mkdir(parents=True, exist_ok=True)
 
@@ -80,7 +78,7 @@ def run_experiment(config_path: str):
     config_backup = save_dir / "config.ini"
     shutil.copy(config_path, config_backup)
 
-    # Setup MLflow: experiment = problem definition, run = algorithm attempt
+    # Setup MLflow
     mlflow.set_experiment(experiment_name)
     mlflow.start_run(run_name=run_dir_name)
     mlflow.log_param("experiment_name", experiment_name)
@@ -91,10 +89,8 @@ def run_experiment(config_path: str):
     print(f"Save directory: {save_dir}")
     print(f"MLflow run: {run_dir_name}")
 
-    # ===== Dispatch to Algorithm =====
-
     try:
-        # Dispatch to algorithm-specific training (pass save_dir, config_path, mlflow context)
+        #  algorithm-specific training 
         if algorithm == 'sb3_discrete':
             from coatopt.algorithms.train_sb3_discrete import train
             train(config_path=str(config_path), save_dir=str(save_dir))
@@ -129,8 +125,6 @@ def run_experiment(config_path: str):
     finally:
         # Always end MLflow run
         mlflow.end_run()
-        print(f"\n✓ MLflow run completed: {run_dir_name}")
-
 
 
 if __name__ == "__main__":
