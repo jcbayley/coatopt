@@ -424,7 +424,7 @@ class CoatingEnvironment:
         # Count how many pareto front points are dominated (in reward space)
         dominated_count = 0
         for pareto_reward, _ in self.pareto_front_rewards:
-            if self._dominates(current_reward, pareto_reward):
+            if self._dominates(current_reward, pareto_reward, reward_space=True):
                 dominated_count += 1
 
         return dominated_count * self.pareto_dominance_bonus
@@ -583,7 +583,7 @@ class CoatingEnvironment:
         # Check dominance in REWARD space
         dominated = False
         for existing_reward, _ in self.pareto_front_rewards:
-            if self._dominates(existing_reward, reward_vector):
+            if self._dominates(existing_reward, reward_vector, reward_space=True):
                 dominated = True
                 break
 
@@ -591,7 +591,7 @@ class CoatingEnvironment:
             # Find indices of dominated points in reward space
             dominated_indices = []
             for i, (reward, _) in enumerate(self.pareto_front_rewards):
-                if self._dominates(reward_vector, reward):
+                if self._dominates(reward_vector, reward, reward_space=True):
                     dominated_indices.append(i)
 
             # Remove dominated points from BOTH fronts (keep them in sync)
@@ -608,16 +608,13 @@ class CoatingEnvironment:
             self.pareto_front_rewards.append((reward_vector, state.copy()))
             self.pareto_front_values.append((val_vector, state.copy()))
 
-    def _dominates(self, obj1: List[float], obj2: List[float]) -> bool:
+    def _dominates(self, obj1: List[float], obj2: List[float], reward_space: bool = False) -> bool:
         """Check if obj1 Pareto dominates obj2.
-
-        Takes into account objective directions (maximize vs minimize).
-        obj1 dominates obj2 if it's better or equal in all objectives
-        and strictly better in at least one.
 
         Args:
             obj1: First objective vector [val1, val2, ...]
             obj2: Second objective vector [val1, val2, ...]
+            reward_space: If True, always maximize (reward space). If False, use objective_directions (value space).
 
         Returns:
             True if obj1 dominates obj2
@@ -629,7 +626,9 @@ class CoatingEnvironment:
         strictly_better = False
 
         for i, param_name in enumerate(self.optimise_parameters):
-            maximize = self.objective_directions.get(param_name, True)
+            # In reward space, always maximize (higher reward is better)
+            # In value space, use objective_directions
+            maximize = True if reward_space else self.objective_directions.get(param_name, True)
 
             if maximize:
                 # Higher is better
@@ -639,7 +638,7 @@ class CoatingEnvironment:
                 elif obj1[i] > obj2[i]:
                     strictly_better = True
             else:
-                # Lower is better
+                # Lower is better (only in value space)
                 if obj1[i] > obj2[i]:
                     better_or_equal = False
                     break
