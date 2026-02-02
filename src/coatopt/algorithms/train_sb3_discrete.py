@@ -3,6 +3,10 @@ from pathlib import Path
 import gymnasium as gym
 import numpy as np
 from sb3_contrib import MaskablePPO
+import mlflow
+import shutil
+import warnings
+from datetime import datetime
 
 from coatopt.environments.environment import CoatingEnvironment
 from coatopt.utils.configs import Config, DataConfig, TrainingConfig, load_config
@@ -28,7 +32,6 @@ class CoatOptDiscreteGymWrapper(gym.Env):
         materials: dict,
         n_thickness_bins: int = 20,
         constraint_penalty: float = 100.0,
-        target_constraint_bounds: dict = None,
         consecutive_material_penalty: float = 0.2,
         # Action masking settings
         mask_consecutive_materials: bool = True,
@@ -40,6 +43,8 @@ class CoatOptDiscreteGymWrapper(gym.Env):
         epochs_per_step: int = 200,
         steps_per_objective: int = 10,
         constraint_schedule: str = "interleaved",  # "interleaved" or "sequential"
+        # Pareto bonus settings
+        pareto_dominance_bonus: float = 0.0,
     ):
         super().__init__()
         self.env = CoatingEnvironment(config, materials)
@@ -64,10 +69,6 @@ class CoatOptDiscreteGymWrapper(gym.Env):
         # Multi-objective constraint settings
         self.objectives = list(config.data.optimise_parameters)
         self.constraint_penalty = constraint_penalty
-        self.target_constraint_bounds = target_constraint_bounds or {
-            "reflectivity": 0.99999999,
-            "absorption": 0.1,
-        }
 
         # Consecutive material penalty (kept as backup, but masking is primary)
         self.consecutive_material_penalty = consecutive_material_penalty
@@ -101,11 +102,15 @@ class CoatOptDiscreteGymWrapper(gym.Env):
             constraint_penalty=constraint_penalty,
         )
 
+        # Enable pareto dominance bonus if specified
+        if pareto_dominance_bonus > 0:
+            self.env.enable_pareto_bonus(bonus=pareto_dominance_bonus)
+
         # Current episode's target and constraints (synced with environment)
         self.target_objective = self.objectives[0]
         self.env.target_objective = self.target_objective
         self.target_objective_idx = 0
-        self.current_phase = 0
+        self.current_phase = -1  # Start at -1 to trigger first phase transition
         self.current_level = 1
 
         # No constraints during warmup (synced with environment)
@@ -114,7 +119,7 @@ class CoatOptDiscreteGymWrapper(gym.Env):
 
         # Observation space
         n_features = 1 + self.env.n_materials + 2
-        obs_size = self.env.max_layers * n_features
+        obs_size = self.env.max_layers * n_features + 1  # +1 for layer number
         self.observation_space = gym.spaces.Box(
             low=-np.inf, high=np.inf, shape=(obs_size,), dtype=np.float32
         )
@@ -161,9 +166,15 @@ class CoatOptDiscreteGymWrapper(gym.Env):
         return np.concatenate([material_mask, thickness_mask])
 
     def _get_obs(self, state) -> np.ndarray:
-        """Convert CoatingState to fixed-size numpy array."""
+        """Convert CoatingState to fixed-size numpy array with layer number."""
         tensor = state.get_observation_tensor(pre_type="lstm")
-        return tensor.numpy().flatten().astype(np.float32)
+        obs = tensor.numpy().flatten().astype(np.float32)
+
+        # Append normalized layer number so agent knows its position in episode
+        layer_number_normalized = self.current_layer / self.env.max_layers
+        obs_with_layer = np.append(obs, layer_number_normalized)
+
+        return obs_with_layer
 
     def _get_annealing_progress(self) -> float:
         """Get annealing progress from 0.0 (start) to 1.0 (fully annealed)."""
@@ -225,16 +236,17 @@ class CoatOptDiscreteGymWrapper(gym.Env):
         if self.constraint_schedule == "interleaved":
             # cycle between objectives every epochs_per_step
             target_idx = new_phase % self.n_objectives
-            level_cycle = (new_phase // self.n_objectives) % (self.total_levels + 1)
-            current_level = level_cycle  
+            level_cycle = (new_phase // self.n_objectives) % self.total_levels
+            current_level = level_cycle + 1  # Start at level 1 (first constraint), not 0
             constrained_idx = None  
 
         elif self.constraint_schedule == "sequential":
             # complete all levels for one objective before switching
-            cycle_length = self.total_levels * self.n_objectives  
-            cycle_phase = new_phase % cycle_length  
-            constrained_idx = cycle_phase // self.total_levels 
-            current_level = (cycle_phase % self.total_levels) + 1  
+            # Offset by 1 to alternate properly from warmup (which ends with absorption)
+            cycle_length = self.total_levels * self.n_objectives
+            cycle_phase = new_phase % cycle_length
+            constrained_idx = (cycle_phase // self.total_levels + 1) % self.n_objectives
+            current_level = (cycle_phase % self.total_levels) + 1
             target_idx = (constrained_idx + 1) % self.n_objectives
 
         else:
@@ -247,33 +259,30 @@ class CoatOptDiscreteGymWrapper(gym.Env):
             self.env.target_objective = self.target_objective
 
         # Update phase tracking and constraints when entering a new phase
-        if new_phase != self.current_phase or self.current_phase == 0:
+        if new_phase != self.current_phase:
             self.current_phase = new_phase
             self.current_level = current_level
 
             # Set constraints in normalised [0, 1] space with randomization
             self.constraints = {}
 
-            # In interleaved mode with level 0, no constraints (restart cycle)
-            if self.constraint_schedule == "interleaved" and self.current_level == 0:
-                print(f"\n=== CONSTRAINT CYCLE COMPLETE - Restarting with NO constraints (Phase {new_phase}) ===\n")
-            else:
-                for i, obj in enumerate(self.objectives):
-                    # In sequential mode: constrain the constrained_idx objective
-                    # In interleaved mode: constrain all objectives except target
-                    if self.constraint_schedule == "sequential":
-                        should_constrain = (i == constrained_idx)
-                    else:  # interleaved
-                        should_constrain = (i != target_idx)
+            for i, obj in enumerate(self.objectives):
+                # In sequential mode: constrain the constrained_idx objective
+                # In interleaved mode: constrain all objectives except target
+                if self.constraint_schedule == "sequential":
+                    should_constrain = (i == constrained_idx)
+                else:  # interleaved
+                    should_constrain = (i != target_idx)
 
-                    if should_constrain:
-                        step_fraction = min(1.0, self.current_level / self.total_levels)
-                        # Scale constraint by best achieved during warmup (phase 1)
-                        max_achievable = self.env.warmup_best_rewards[obj]
-                        max_constraint = step_fraction * max_achievable
+                if should_constrain:
+                    step_fraction = min(1.0, self.current_level / self.total_levels)
+                    # Scale constraint by best achieved during warmup (phase 1)
+                    max_achievable = self.env.warmup_best_rewards[obj]
+                    max_constraint = step_fraction * max_achievable
 
-                        # Randomize constraint between 0.0 and step threshold
-                        self.constraints[obj] = max_constraint#np.random.uniform(0.0, max_constraint)
+                    # Randomize constraint between 0.0 and step threshold
+                    self.constraints[obj] = max_constraint#np.random.uniform(0.0, max_constraint)
+                    print(f"  Constraint {obj}: threshold={max_constraint:.4f} (level {self.current_level}/{self.total_levels}, warmup_best={max_achievable:.4f})")
 
             # Sync constraints with environment
             self.env.constraints = self.constraints
@@ -316,7 +325,7 @@ class CoatOptDiscreteGymWrapper(gym.Env):
         coatopt_action[1 + material_idx] = 1.0
 
         # Step environment
-        state, rewards, terminated, finished, total_reward, _, vals = self.env.step(
+        state, rewards, terminated, finished, env_reward, _, vals = self.env.step(
             coatopt_action
         )
 
@@ -330,8 +339,9 @@ class CoatOptDiscreteGymWrapper(gym.Env):
 
         # Only populate info at episode end
         if done:
-            # Environment handles all reward computation and tracking
-            total_reward = self.env._compute_training_reward(vals) - consecutive_penalty
+            # Use env_reward from env.step() (already computed by compute_reward)
+            # Note: env_reward already includes warmup tracking via _compute_training_reward
+            total_reward = env_reward - consecutive_penalty
 
             # Build info only at terminal step
             info = {
@@ -353,9 +363,14 @@ class CoatOptDiscreteGymWrapper(gym.Env):
                 "current_layer": self.current_layer,
             }
 
-            # Debug: print episode results
-            phase_str = f"WARMUP[{self.target_objective}]" if self.is_warmup else f"CONSTR[{self.target_objective}]"
-            print(f"{phase_str} R={vals.get('reflectivity', 0):.4f}, A={vals.get('absorption', 0):.1f}, reward={total_reward:.3f}")
+            # Debug: print episode results with rewards and constraints
+            phase_str = "WARMUP" if self.is_warmup else f"P{self.current_phase}/L{self.current_level}"
+            r_reward = rewards.get('reflectivity', 0.0)
+            a_reward = rewards.get('absorption', 0.0)
+            r_constr = f"{self.constraints['reflectivity']:.3f}" if 'reflectivity' in self.constraints else "none"
+            a_constr = f"{self.constraints['absorption']:.3f}" if 'absorption' in self.constraints else "none"
+            constr_str = f"C[R≥{r_constr}, A≥{a_constr}]"
+            print(f"Ep{self.episode_count:4d} {phase_str:8s} target={self.target_objective[:4]:4s} | R_rew={r_reward:.4f} A_rew={a_reward:.4f} | {constr_str} | total={total_reward:.4f}")
 
         return obs, float(total_reward), done, truncated, info
 
@@ -442,7 +457,10 @@ class DiscreteActionPlottingCallback(PlottingCallback):
                 )
 
                 # Compute normalised rewards using environment's compute_reward
-                _, vals, rewards = self.env.env.compute_reward(coating_state)
+                # Temporarily save warmup state to prevent test designs from corrupting warmup_best
+                saved_warmup_best = self.env.env.warmup_best_rewards.copy()
+                rewards, vals = self.env.env.compute_reward(coating_state, normalised=True)
+                self.env.env.warmup_best_rewards = saved_warmup_best  # Restore
                 ref_reward = rewards.get('reflectivity', 0.0)
                 abs_reward = rewards.get('absorption', 0.0)
                 total_reward = ref_reward + abs_reward
@@ -485,27 +503,65 @@ def train(config_path: str):
     Returns:
         Trained MaskablePPO model
     """
+    return _train_impl(config_path)
+
+
+def _train_impl(config_path: str):
+    """Implementation of training (wrapped by MLflow)."""
     import configparser
 
     parser = configparser.ConfigParser()
     parser.read(config_path)
 
     # [General] section
-    save_dir = parser.get('General', 'save_dir')
+    base_save_dir = parser.get('General', 'save_dir')
     materials_path = parser.get('General', 'materials_path')
+    run_number = parser.getint('General', 'run_number', fallback=1)
 
-    # [sb3_discrete] section
-    total_timesteps = parser.getint('sb3_discrete', 'total_timesteps')
-    n_thickness_bins = parser.getint('sb3_discrete', 'n_thickness_bins')
-    verbose = parser.getint('sb3_discrete', 'verbose')
-    target_reflectivity = parser.getfloat('sb3_discrete', 'target_reflectivity')
-    target_absorption = parser.getfloat('sb3_discrete', 'target_absorption')
-    mask_consecutive_materials = parser.getboolean('sb3_discrete', 'mask_consecutive_materials')
-    mask_air_until_min_layers = parser.getboolean('sb3_discrete', 'mask_air_until_min_layers')
-    min_layers_before_air = parser.getint('sb3_discrete', 'min_layers_before_air')
-    epochs_per_step = parser.getint('sb3_discrete', 'epochs_per_step')
-    steps_per_objective = parser.getint('sb3_discrete', 'steps_per_objective')
-    tensorboard_log = parser.get('sb3_discrete', 'tensorboard_log')
+    # Create standardized run directory: YYYYMMDD-algorithm-run###
+    date_str = datetime.now().strftime("%Y%m%d")
+    algorithm_name = "sb3_discrete"
+    run_dir_name = f"{date_str}-{algorithm_name}-run{run_number:03d}"
+    save_dir = Path(base_save_dir) / run_dir_name
+
+    # Check if directory exists and warn
+    if save_dir.exists():
+        warnings.warn(
+            f"\nWARNING: Run directory already exists: {save_dir}\n"
+            f"    This will overwrite existing results!\n",
+            UserWarning
+        )
+
+    save_dir.mkdir(parents=True, exist_ok=True)
+
+    # Copy config file to run directory
+    config_backup = save_dir / "config.ini"
+    shutil.copy(config_path, config_backup)
+
+    # Setup MLflow with matching run name
+    mlflow.set_experiment("sb3_discrete")
+    mlflow.start_run(run_name=run_dir_name)
+    mlflow.log_param("config_path", str(config_path))
+    mlflow.log_param("run_directory", str(save_dir))
+
+    # [sb3_discrete] or [sb3_discrete_lstm] section (try both)
+    section = 'sb3_discrete_lstm' if parser.has_section('sb3_discrete_lstm') else 'sb3_discrete'
+
+    total_timesteps = parser.getint(section, 'total_timesteps')
+    n_thickness_bins = parser.getint(section, 'n_thickness_bins')
+    verbose = parser.getint(section, 'verbose')
+    mask_consecutive_materials = parser.getboolean(section, 'mask_consecutive_materials')
+    mask_air_until_min_layers = parser.getboolean(section, 'mask_air_until_min_layers')
+    min_layers_before_air = parser.getint(section, 'min_layers_before_air')
+    epochs_per_step = parser.getint(section, 'epochs_per_step')
+    steps_per_objective = parser.getint(section, 'steps_per_objective')
+
+    # Constraint and entropy settings (with fallbacks)
+    constraint_penalty = parser.getfloat(section, 'constraint_penalty', fallback=10.0)
+    max_entropy = parser.getfloat(section, 'max_entropy', fallback=0.2)
+    min_entropy = parser.getfloat(section, 'min_entropy', fallback=0.01)
+    pareto_dominance_bonus = parser.getfloat(section, 'pareto_dominance_bonus', fallback=0.0)
+    adaptive_entropy_to_constraints = parser.getboolean(section, 'adaptive_entropy_to_constraints', fallback=False)
 
     # [Data] section
     n_layers = parser.getint('Data', 'n_layers')
@@ -529,11 +585,7 @@ def train(config_path: str):
         config,
         materials,
         n_thickness_bins=n_thickness_bins,
-        constraint_penalty=10.0,
-        target_constraint_bounds={
-            "reflectivity": target_reflectivity,
-            "absorption": target_absorption,
-        },
+        constraint_penalty=constraint_penalty,
         # Action masking
         mask_consecutive_materials=mask_consecutive_materials,
         mask_air_until_min_layers=mask_air_until_min_layers,
@@ -542,15 +594,18 @@ def train(config_path: str):
         epochs_per_step=epochs_per_step,
         steps_per_objective=steps_per_objective,
         constraint_schedule=constraint_schedule,
+        # Pareto bonus
+        pareto_dominance_bonus=pareto_dominance_bonus,
     )
 
     tb_log = None
 
     # Use MaskablePPO for action masking support
+    algo_config = config.algorithm
     policy_kwargs = dict(
         net_arch=dict(
-            pi=[128, 64, 32],  # Actor: 3 layers
-            vf=[128, 64, 32],  # Critic: 3 layers
+            pi=algo_config.net_arch_pi,
+            vf=algo_config.net_arch_vf,
         ),
         # activation_fn=th.nn.ReLU,  # Default, can change to Tanh, LeakyReLU, etc.
     )
@@ -558,24 +613,28 @@ def train(config_path: str):
     model = MaskablePPO(
         "MlpPolicy",
         policy_kwargs=policy_kwargs,
-        learning_rate=3e-4,
-        n_steps=512,
-        batch_size=128,
-        n_epochs=20,
-        gamma=0.99,
-        gae_lambda=0.95,
-        clip_range=0.2,
-        ent_coef=0.2,  # Initial value (will be updated by callback)
+        learning_rate=algo_config.learning_rate,
+        n_steps=algo_config.n_steps,
+        batch_size=algo_config.batch_size,
+        n_epochs=algo_config.n_epochs,
+        gamma=algo_config.gamma,
+        gae_lambda=algo_config.gae_lambda,
+        clip_range=algo_config.clip_range,
+        ent_coef=algo_config.ent_coef,  # Initial value (will be updated by callback if entropy annealing is used)
+        vf_coef=algo_config.vf_coef,
+        max_grad_norm=algo_config.max_grad_norm,
         verbose=0,
         tensorboard_log=tb_log,
         env = env,
     )
 
     entropy_callback = EntropyAnnealingCallback(
-        max_ent=0.2,  # High exploration at start of each cycle
-        min_ent=0.01,  # Low exploration at end of each cycle
+        max_ent=max_entropy,  # High exploration at start of each cycle
+        min_ent=min_entropy,  # Low exploration at end of each cycle
         epochs_per_step=epochs_per_step,  # Reset annealing every N episodes
         verbose=0,
+        adaptive_to_constraints=adaptive_entropy_to_constraints,
+        constraint_window=50,  # Track last 50 episodes
     )
 
     plotting_callback = DiscreteActionPlottingCallback(
@@ -603,7 +662,35 @@ def train(config_path: str):
 
     # Save Pareto front to CSV
     print("\nSaving Pareto front...")
-    plotting_callback.save_pareto_front_to_csv("pareto_front.csv")
+    pareto_csv = save_dir / "pareto_front.csv"
+    plotting_callback.save_pareto_front_to_csv(str(pareto_csv))
+
+    # Log FINAL Pareto front to MLflow (only once, not every epoch)
+    print("Logging Pareto front to MLflow...")
+
+    # 1. Log the CSV as artifact
+    mlflow.log_artifact(str(pareto_csv))
+
+    # 2. Log Pareto front as a table (queryable in MLflow)
+    import pandas as pd
+    pareto_df = pd.read_csv(pareto_csv)
+    mlflow.log_table(pareto_df, artifact_file="pareto_front_table.json")
+
+    # 3. Log summary metrics (for easy comparison)
+    mlflow.log_metric("final_pareto_size", len(pareto_df))
+    if len(pareto_df) > 0:
+        for obj in config.data.optimise_parameters:
+            if obj in pareto_df.columns:
+                mlflow.log_metric(f"pareto_best_{obj}", pareto_df[obj].max())
+                mlflow.log_metric(f"pareto_worst_{obj}", pareto_df[obj].min())
+
+    # 4. Log Pareto plots
+    for plot_file in save_dir.glob("pareto*.png"):
+        mlflow.log_artifact(str(plot_file))
+
+    # End MLflow run
+    mlflow.end_run()
+    print(f"\n✓ MLflow run completed: {run_dir_name}")
 
     return model
 
@@ -628,9 +715,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--save-dir", type=str, default="./sb3_discrete_output", help="Output directory"
     )
-    parser.add_argument(
-        "--tensorboard", type=str, default="./sb3_discrete_logs", help="Tensorboard log dir"
-    )
+
     parser.add_argument("--verbose", type=int, default=1, help="Verbosity level")
     parser.add_argument(
         "--target-reflectivity", type=float, default=0.99,
@@ -676,9 +761,7 @@ if __name__ == "__main__":
         n_thickness_bins=args.thickness_bins,
         materials_path=args.materials,
         save_dir=args.save_dir,
-        tensorboard_log=args.tensorboard,
         verbose=args.verbose,
-        target_reflectivity=args.target_reflectivity,
         target_absorption=args.target_absorption,
         # Action masking
         mask_consecutive_materials=not args.no_mask_consecutive,

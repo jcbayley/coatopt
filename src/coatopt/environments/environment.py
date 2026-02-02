@@ -92,6 +92,10 @@ class CoatingEnvironment:
         self.constraints = {}
         self.constraint_penalty = 10.0
 
+        # Pareto dominance reward bonus
+        self.pareto_dominance_bonus = 0.0  # Bonus reward for dominating pareto front
+        self.use_pareto_bonus = False  # Enable pareto dominance bonus
+
         # Environment state
         self.current_state = None
         self.current_index = 0
@@ -172,12 +176,16 @@ class CoatingEnvironment:
 
         # Calculate reward
         if finished or self.use_intermediate_reward:
-            total_reward, vals, reward_components = self.compute_reward(
+            total_reward, vals, reward_components = self.compute_training_reward(
                 self.current_state,
                 objective_weights=objective_weights,
                 pc_tracker=pc_tracker,
                 phase_info=phase_info
             )
+
+            # Update pareto front when episode finishes
+            if finished and self.use_pareto_bonus:
+                self.update_pareto_front(vals, self.current_state)
         else:
             total_reward = 0.0
             vals = {}
@@ -199,15 +207,21 @@ class CoatingEnvironment:
     def compute_reward(
         self,
         state,  # Can be CoatingState or numpy array
-        objective_weights: Optional[Dict[str, float]] = None,
-        pc_tracker=None,
-        pareto_tracker=None,
-        phase_info=None,
-    ) -> Tuple[float, Dict, Dict]:
-        """Main reward computation - selects appropriate reward function based on training mode.
+        normalised: bool = True,
+    ) -> Tuple[Dict[str, float], Dict[str, float]]:
+        """Compute base rewards for all objectives (no modifiers).
+
+        This is the core reward function that computes rewards for each objective.
+        Use this for evaluation or when you want base rewards without training modifiers.
+
+        Args:
+            state: CoatingState or numpy array
+            normalised: If True, scale rewards to [0, 1]. If False, return raw log-based rewards.
 
         Returns:
-            Tuple of (total_reward, vals, individual_rewards)
+            Tuple of (individual_rewards, vals)
+            - individual_rewards: Dict mapping objective names to their rewards
+            - vals: Dict of physics values (reflectivity, thermal_noise, etc.)
         """
         # Convert numpy array to CoatingState if needed
         if isinstance(state, np.ndarray):
@@ -231,32 +245,10 @@ class CoatingEnvironment:
             "absorption": absorption,
         }
 
-        # Compute individual rewards (normalised in constrained mode, raw otherwise)
-        individual_rewards = {}
-        for param in self.optimise_parameters:
-            val = vals.get(param)
-            if val is not None:
-                if self.use_constrained_training:
-                    # Use normalised rewards [0, 1] for constrained training
-                    individual_rewards[param] = self._compute_normalised_reward(param, val)
-                else:
-                    # Use raw rewards for standard training
-                    individual_rewards[param] = self._compute_raw_reward(param, val)
+        # Compute base rewards for all objectives
+        individual_rewards = self.compute_objective_rewards(vals, normalised=normalised)
 
-        # Compute total reward based on training mode
-        if self.use_constrained_training:
-            # Constrained training mode (warmup or constrained phase)
-            total_reward = self._compute_training_reward(vals)
-        else:
-            # Standard mode: weighted sum of raw rewards
-            if objective_weights is None:
-                objective_weights = self.objective_weights
-            total_reward = sum(
-                individual_rewards.get(param, 0.0) * objective_weights.get(param, 1.0)
-                for param in self.optimise_parameters
-            )
-
-        return total_reward, vals, individual_rewards
+        return individual_rewards, vals
 
     def _initialize_reward_bounds(self):
         """Initialize reward bounds from objective_bounds config."""
@@ -265,9 +257,10 @@ class CoatingEnvironment:
                 bounds = self.objective_bounds[obj]
                 if isinstance(bounds, (list, tuple)) and len(bounds) >= 2:
                     min_val, max_val = float(bounds[0]), float(bounds[1])
-                    # Compute rewards at bounds
-                    min_reward = self._compute_raw_reward(obj, min_val)
-                    max_reward = self._compute_raw_reward(obj, max_val)
+                    # Compute raw rewards at bounds
+                    target = self.optimise_targets.get(obj, 0.0)
+                    min_reward = -np.log(np.abs(min_val - target) + 1e-30)
+                    max_reward = -np.log(np.abs(max_val - target) + 1e-30)
                     self.reward_bounds[obj] = [
                         min(min_reward, max_reward),
                         max(min_reward, max_reward)
@@ -288,9 +281,10 @@ class CoatingEnvironment:
 
     def update_warmup_best(self, objective: str, normalised_reward: float):
         """Update best normalised reward seen during warmup."""
-        self.warmup_best_rewards[objective] = max(
-            self.warmup_best_rewards[objective], normalised_reward
-        )
+        old_best = self.warmup_best_rewards[objective]
+        if normalised_reward > old_best:
+            print(f"    WARMUP: New best {objective}={normalised_reward:.4f} (was {old_best:.4f})")
+        self.warmup_best_rewards[objective] = max(old_best, normalised_reward)
 
     def enable_constrained_training(
         self,
@@ -313,70 +307,180 @@ class CoatingEnvironment:
         self.total_levels = steps_per_objective
         self.total_phases = self.total_levels * len(self.optimise_parameters)
 
+    def enable_pareto_bonus(self, bonus: float = 1.0):
+        """Enable pareto dominance bonus reward.
+
+        Args:
+            bonus: Reward bonus per dominated pareto front point
+        """
+        self.use_pareto_bonus = True
+        self.pareto_dominance_bonus = bonus
+
     # ========================================================================
-    # REWARD FUNCTIONS (3 types: raw, normalised, constrained)
+    # REWARD COMPUTATION
     # ========================================================================
 
-    def _compute_raw_reward(self, objective: str, value: float) -> float:
-        """1. Raw reward: log-based, unbounded."""
-        target = self.optimise_targets.get(objective, 0.0)
-        return -np.log(np.abs(value - target) + 1e-30)
-        #return 1./np.abs(value - target)
+    def compute_objective_rewards(
+        self, vals: dict, normalised: bool = True
+    ) -> Dict[str, float]:
+        """Compute base rewards for all objectives.
 
-    def _compute_normalised_reward(self, objective: str, value: float) -> float:
-        """2. normalised reward: scales raw reward to [0, 1]."""
-        raw_reward = self._compute_raw_reward(objective, value)
-        bounds = self.reward_bounds.get(objective, [-100, 0])
-        min_reward, max_reward = bounds[0], bounds[1]
+        This is the main reward function that computes rewards for each objective.
 
-        if max_reward <= min_reward:
-            return 0.5
+        Args:
+            vals: Dictionary of objective values (reflectivity, thermal_noise, etc.)
+            normalised: If True, scale rewards to [0, 1]. If False, return raw log-based rewards.
 
-        normalised = (raw_reward - min_reward) / (max_reward - min_reward)
-        return normalised
+        Returns:
+            Dictionary mapping objective names to their rewards
+        """
+        rewards = {}
 
-    def _compute_constrained_reward(self, vals: dict) -> float:
-        """3. Constrained reward: normalised reward with constraint penalties."""
-        target_val = vals.get(self.target_objective)
-        if target_val is None or np.isnan(target_val):
-            return 0.0
+        for objective in self.optimise_parameters:
+            val = vals.get(objective)
+            if val is None or np.isnan(val):
+                rewards[objective] = 0.0
+                continue
 
-        # Get normalised reward for target objective
-        reward = self._compute_normalised_reward(self.target_objective, target_val)
+            # Compute raw log-based reward
+            target = self.optimise_targets.get(objective, 0.0)
+            raw_reward = -np.log(np.abs(val - target) + 1e-30)
 
-        # Apply constraint penalties
+            if normalised:
+                # Scale to [0, 1] using reward bounds
+                bounds = self.reward_bounds.get(objective, [-100, 0])
+                min_reward, max_reward = bounds[0], bounds[1]
+
+                if max_reward <= min_reward:
+                    rewards[objective] = 0.5
+                else:
+                    rewards[objective] = (raw_reward - min_reward) / (max_reward - min_reward)
+            else:
+                rewards[objective] = raw_reward
+
+        return rewards
+
+    # ========================================================================
+    # REWARD MODIFIERS (applied on top of base rewards)
+    # ========================================================================
+
+    def _compute_constraint_penalty(self, vals: dict, base_rewards: Dict[str, float]) -> float:
+        """Compute constraint violation penalty.
+
+        Args:
+            vals: Dictionary of objective values
+            base_rewards: Dictionary of normalised base rewards for each objective
+
+        Returns:
+            Penalty value (positive number to subtract from reward)
+        """
         penalty = 0.0
+
         for obj, threshold in self.constraints.items():
             val = vals.get(obj)
             if val is None or np.isnan(val):
                 penalty += 1.0
                 continue
 
-            norm_reward = self._compute_normalised_reward(obj, val)
+            norm_reward = base_rewards.get(obj, 0.0)
 
             if norm_reward < threshold:
                 violation = threshold - norm_reward
                 penalty += violation * self.constraint_penalty
 
-        return reward - penalty
+        return penalty
 
-    def _compute_training_reward(self, vals: dict) -> float:
-        """Compute reward based on training phase (warmup or constrained)."""
-        # Update observed bounds
-        self.update_observed_bounds(vals)
+    def _compute_pareto_dominance_bonus(self, vals: dict) -> float:
+        """Compute pareto dominance bonus.
 
-        if self.is_warmup:
-            # Phase 1 (Warmup): Optimize single objective, track best
-            target_val = vals.get(self.target_objective)
-            if target_val is None or np.isnan(target_val):
-                return 0.0
+        This is a reward modifier that gives extra reward if the current point
+        dominates points on the pareto front.
 
-            reward = self._compute_normalised_reward(self.target_objective, target_val)
-            self.update_warmup_best(self.target_objective, reward)
-            return reward
+        Args:
+            vals: Dictionary of objective values
+
+        Returns:
+            Bonus reward (number of dominated points * bonus weight)
+        """
+        if not self.use_pareto_bonus or not self.multi_objective:
+            return 0.0
+
+        # Build objective vector for current point
+        current_obj = [vals.get(param, 0.0) for param in self.optimise_parameters]
+
+        # Count how many pareto front points are dominated
+        dominated_count = 0
+        for pareto_obj, _ in self.pareto_front:
+            if self._dominates(current_obj, pareto_obj):
+                dominated_count += 1
+
+        return dominated_count * self.pareto_dominance_bonus
+
+    def compute_training_reward(
+        self,
+        state,  # Can be CoatingState or numpy array
+        objective_weights: Optional[Dict[str, float]] = None,
+        pc_tracker=None,
+        pareto_tracker=None,
+        phase_info=None,
+    ) -> Tuple[float, Dict[str, float], Dict[str, float]]:
+        """Compute reward for training (base rewards + modifiers).
+
+        This method:
+        1. Calls compute_reward() to get base rewards
+        2. Computes total reward based on training mode
+        3. Adds modifiers: constraint penalty, pareto bonus
+
+        Args:
+            state: CoatingState or numpy array
+            objective_weights: Weights for each objective (used in standard mode)
+            pc_tracker: Optional progress tracker
+            pareto_tracker: Optional pareto front tracker
+            phase_info: Optional phase information
+
+        Returns:
+            Tuple of (total_reward, vals, individual_rewards)
+        """
+        # Get base rewards (normalised for constrained training, raw otherwise)
+        normalised = self.use_constrained_training
+        individual_rewards, vals = self.compute_reward(state, normalised=normalised)
+
+        # Update observed bounds (for constrained training)
+        if self.use_constrained_training:
+            self.update_observed_bounds(vals)
+
+        # Compute total reward based on training mode
+        if self.use_constrained_training:
+            # Constrained training mode
+            if self.is_warmup:
+                # Phase 1 (Warmup): Optimize single objective
+                total_reward = individual_rewards.get(self.target_objective, 0.0)
+                self.update_warmup_best(self.target_objective, total_reward)
+            else:
+                # Phase 2 (Constrained): Optimize target objective with constraints
+                total_reward = individual_rewards.get(self.target_objective, 0.0)
+
+                # Add constraint penalty modifier
+                penalty = self._compute_constraint_penalty(vals, individual_rewards)
+                total_reward -= penalty
+                individual_rewards["constraint_penalty"] = -penalty
         else:
-            # Phase 2 (Constrained): Optimize target with constraints
-            return self._compute_constrained_reward(vals)
+            # Standard mode: weighted sum of base rewards
+            if objective_weights is None:
+                objective_weights = self.objective_weights
+
+            total_reward = sum(
+                individual_rewards.get(param, 0.0) * objective_weights.get(param, 1.0)
+                for param in self.optimise_parameters
+            )
+
+        # Add pareto dominance bonus modifier (for both modes)
+        if self.use_pareto_bonus:
+            pareto_bonus = self._compute_pareto_dominance_bonus(vals)
+            total_reward += pareto_bonus
+            individual_rewards["pareto_bonus"] = pareto_bonus
+
+        return total_reward, vals, individual_rewards
 
     def compute_state_value(
         self, state: CoatingState, return_field_data: bool = False

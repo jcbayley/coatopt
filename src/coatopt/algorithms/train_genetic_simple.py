@@ -10,6 +10,7 @@ from pymoo.algorithms.moo.nsga2 import NSGA2
 from pymoo.algorithms.moo.nsga3 import NSGA3
 from pymoo.algorithms.moo.moead import MOEAD
 from pymoo.core.problem import ElementwiseProblem
+from pymoo.core.repair import Repair
 from pymoo.operators.crossover.sbx import SBX
 from pymoo.operators.mutation.pm import PM
 from pymoo.operators.sampling.rnd import FloatRandomSampling
@@ -17,9 +18,10 @@ from pymoo.optimize import minimize
 from pymoo.util.ref_dirs import get_reference_directions
 
 from coatopt.environments.environment import CoatingEnvironment
-from coatopt.environments.core.state import CoatingState
+from coatopt.environments.state import CoatingState
 from coatopt.utils.configs import Config, DataConfig, TrainingConfig, load_config
 from coatopt.utils.utils import load_materials
+from coatopt.environments.state import CoatingState
 
 
 class CoatingOptimizationProblem(ElementwiseProblem):
@@ -77,18 +79,60 @@ class CoatingOptimizationProblem(ElementwiseProblem):
             else:
                 state.set_layer(i, thicknesses[i], material_indices[i])
 
-        # Compute values using environment's method
-        _, vals, _ = self.env.compute_reward(state)
+        # Compute base rewards using environment's method (normalised=True)
+        normalised_rewards, vals = self.env.compute_reward(state, normalised=True)
 
-        # Compute normalised rewards explicitly 
+        # Build objectives from normalised rewards
         objectives = []
         for param in self.env.optimise_parameters:
-            val = vals.get(param, 0.0)
-            # Use normalised reward for optimization
-            normalised_reward = self.env._compute_normalised_reward(param, val)
+            normalised_reward = normalised_rewards.get(param, 0.0)
             objectives.append(-normalised_reward)  # Negate for PyMOO minimization
 
         out["F"] = np.array(objectives)
+
+
+class CoatingRepair(Repair):
+    """Repair operator to enforce coating design constraints.
+
+    Constraints:
+    1. No consecutive layers can have the same material (except air)
+    2. All layers after first air layer must be air
+    """
+
+    def __init__(self, env: CoatingEnvironment):
+        super().__init__()
+        self.env = env
+
+    def _do(self, problem, X, **kwargs):
+        """Repair population X to satisfy constraints."""
+        # X shape: (population_size, n_var)
+        for i in range(X.shape[0]):
+            X[i] = self._repair_individual(X[i])
+        return X
+
+    def _repair_individual(self, x: np.ndarray) -> np.ndarray:
+        """Repair a single individual to prevent consecutive same materials.
+
+        Note: Air layer handling is done in _evaluate, not here.
+        """
+        materials_continuous = x[self.env.max_layers:].copy()
+        materials_idx = np.floor(materials_continuous).astype(int)
+
+        # Fix consecutive same materials (excluding air)
+        for j in range(1, len(materials_idx)):
+            if (materials_idx[j] == materials_idx[j-1] and
+                materials_idx[j] != self.env.air_material_index):
+                # Change to a different random material
+                available = [m for m in range(self.env.n_materials)
+                           if m != materials_idx[j-1]]
+                if available:
+                    materials_idx[j] = np.random.choice(available)
+
+        # Write back repaired material indices
+        # Convert to continuous representation (add 0.5 so floor gives correct int)
+        x[self.env.max_layers:] = materials_idx + 0.5
+
+        return x
 
 
 def train_genetic(config_path: str):
@@ -134,11 +178,18 @@ def train_genetic(config_path: str):
     config = load_config(config_path)
     config.data.n_layers = n_layers
 
+    n_partitions = None
+    n_neighbors = 20
+    prob_neighbor_mating = 0.7
+
     # Create environment
     env = CoatingEnvironment(config, materials)
 
     # Create problem
     problem = CoatingOptimizationProblem(env)
+
+    # Create repair operator
+    repair = CoatingRepair(env)
 
     # Create algorithm
     if mutation_prob is None:
@@ -150,6 +201,7 @@ def train_genetic(config_path: str):
             sampling=FloatRandomSampling(),
             crossover=SBX(prob=crossover_prob, eta=crossover_eta),
             mutation=PM(prob=mutation_prob, eta=mutation_eta),
+            repair=repair,
             eliminate_duplicates=True,
         )
     elif algorithm == "NSGA3":
@@ -164,6 +216,7 @@ def train_genetic(config_path: str):
             sampling=FloatRandomSampling(),
             crossover=SBX(prob=crossover_prob, eta=crossover_eta),
             mutation=PM(prob=mutation_prob, eta=mutation_eta),
+            repair=repair,
             eliminate_duplicates=True,
         )
     elif algorithm == "MOEAD":
@@ -179,6 +232,7 @@ def train_genetic(config_path: str):
             sampling=FloatRandomSampling(),
             crossover=SBX(prob=crossover_prob, eta=crossover_eta),
             mutation=PM(prob=mutation_prob, eta=mutation_eta),
+            repair=repair,
         )
     else:
         raise ValueError(f"Unknown algorithm: {algorithm}")
@@ -232,8 +286,6 @@ def save_results(result, env, materials, save_dir: Path, verbose: bool = True):
             row[f"thickness_{j}"] = thicknesses[j]
             row[f"material_{j}"] = materials_idx[j]
 
-        # Re-evaluate design to get actual values and rewards (consistent with environment)
-        from coatopt.environments.core.state_simple import CoatingState
 
         state = CoatingState(
             max_layers=env.max_layers,
@@ -252,15 +304,14 @@ def save_results(result, env, materials, save_dir: Path, verbose: bool = True):
             else:
                 state.set_layer(k, thicknesses[k], materials_idx[k])
 
-        # Get values from environment
-        _, vals, _ = env.compute_reward(state)
+        # Get base rewards and values from environment (normalised=True)
+        normalised_rewards, vals = env.compute_reward(state, normalised=True)
 
         # Store values and normalised rewards
         for param in env.optimise_parameters:
             val = vals.get(param, 0.0)
             row[f"{param}_val"] = val
-            # Compute normalised reward explicitly
-            row[f"{param}_reward"] = env._compute_normalised_reward(param, val)
+            row[f"{param}_reward"] = normalised_rewards.get(param, 0.0)
 
         data.append(row)
 

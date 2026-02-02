@@ -7,6 +7,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
+from coatopt.environments.state import CoatingState
+
 
 def load_pareto_front(directory: Path, label: Optional[str] = None) -> Tuple[Optional[pd.DataFrame], Optional[pd.DataFrame], str]:
     """Load Pareto fronts (value and reward space) from a directory.
@@ -60,7 +62,6 @@ def create_reference_data(env, materials: dict, n_layers: int = 20) -> Tuple[pd.
     Returns:
         Tuple of (values_df, rewards_df)
     """
-    from coatopt.environments.core.state_simple import CoatingState
 
     n_high_index = n_layers // 2
     values_list = []
@@ -102,14 +103,12 @@ def create_reference_data(env, materials: dict, n_layers: int = 20) -> Tuple[pd.
         reflectivity, thermal_noise, absorption, total_thickness = env.compute_state_value(coating_state)
         print(reflectivity, absorption)
 
-        rewards = {}
-        for param in ["reflectivity", "absorption"]:
-            vals = {
-                "reflectivity": reflectivity,
-                "absorption": absorption,
-            }
-            val = vals.get(param)
-            rewards[param] = env._compute_normalised_reward(param, val)
+        vals = {
+            "reflectivity": reflectivity,
+            "absorption": absorption,
+        }
+        # Use new compute_objective_rewards method with normalised=True
+        rewards = env.compute_objective_rewards(vals, normalised=True)
 
         values_list.append({
             'reflectivity': reflectivity,
@@ -674,9 +673,9 @@ Examples:
     if args.add_reference:
         print(f"\nCreating reference designs with {args.reference_layers} layers...")
         
-        from coatopt.environments.environment_simple import CoatingEnvironment
-        from coatopt.experiments.configs import load_config
-        from coatopt.experiments.utils import load_materials
+        from coatopt.environments.environment import CoatingEnvironment
+        from coatopt.utils.configs import load_config
+        from coatopt.utils.utils import load_materials
         import configparser
 
         # Try to find config file

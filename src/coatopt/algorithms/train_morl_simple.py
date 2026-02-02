@@ -130,7 +130,9 @@ class CoatOptMOGymWrapper(gym.Env):
         # Vector reward (MO-Gymnasium API)
         if done:
             # Final episode reward based on actual objective values
-            vec_reward = self.env._normalise_rewards(vals)
+            # Get normalised rewards for all objectives
+            normalised_rewards = self.env.compute_objective_rewards(vals, normalised=True)
+            vec_reward = np.array([normalised_rewards.get(obj, 0.0) for obj in self.objectives], dtype=np.float32)
             # Apply consecutive penalty to all objectives
             vec_reward = vec_reward - consecutive_penalty
             info["state_array"] = state.get_array()

@@ -58,8 +58,9 @@ class LSTMFeatureExtractor(BaseFeaturesExtractor):
             batch_first=True,
         )
 
-        # Project LSTM output to desired feature dimension
-        self.linear = nn.Linear(lstm_hidden_size, features_dim)
+        # Project LSTM output + layer number to desired feature dimension
+        # +1 for layer number concatenated after LSTM
+        self.linear = nn.Linear(lstm_hidden_size + 1, features_dim)
 
     def forward(self, observations: th.Tensor) -> th.Tensor:
         """
@@ -73,9 +74,13 @@ class LSTMFeatureExtractor(BaseFeaturesExtractor):
         """
         batch_size = observations.shape[0]
 
+        # Extract layer number (last element) and sequence (everything else)
+        layer_number = observations[:, -1:]  # (batch, 1) - keep dimension
+        sequence_obs = observations[:, :-1]  # (batch, max_layers * features_per_layer)
+
         # Reshape flat observations back to sequence
         # (batch, max_layers * features_per_layer) -> (batch, max_layers, features_per_layer)
-        sequences = observations.view(batch_size, self.max_layers, self.features_per_layer)
+        sequences = sequence_obs.view(batch_size, self.max_layers, self.features_per_layer)
 
         # Run through LSTM
         # lstm_out shape: (batch, max_layers, lstm_hidden_size)
@@ -85,8 +90,11 @@ class LSTMFeatureExtractor(BaseFeaturesExtractor):
         # Use the last timestep output
         last_output = lstm_out[:, -1, :]  # (batch, lstm_hidden_size)
 
+        # Concatenate layer number to LSTM output
+        combined = th.cat([last_output, layer_number], dim=1)  # (batch, lstm_hidden_size + 1)
+
         # Project to features_dim
-        features = th.relu(self.linear(last_output))  # (batch, features_dim)
+        features = th.relu(self.linear(combined))  # (batch, features_dim)
 
         return features
 
@@ -114,14 +122,11 @@ def train(config_path: str):
     total_timesteps = parser.getint(section, 'total_timesteps')
     n_thickness_bins = parser.getint(section, 'n_thickness_bins')
     verbose = parser.getint(section, 'verbose')
-    target_reflectivity = parser.getfloat(section, 'target_reflectivity')
-    target_absorption = parser.getfloat(section, 'target_absorption')
     mask_consecutive_materials = parser.getboolean(section, 'mask_consecutive_materials')
     mask_air_until_min_layers = parser.getboolean(section, 'mask_air_until_min_layers')
     min_layers_before_air = parser.getint(section, 'min_layers_before_air')
     epochs_per_step = parser.getint(section, 'epochs_per_step')
     steps_per_objective = parser.getint(section, 'steps_per_objective')
-    tensorboard_log = parser.get(section, 'tensorboard_log')
 
     # LSTM-specific settings (with defaults)
     lstm_hidden_size = parser.getint(section, 'lstm_hidden_size', fallback=128)
@@ -131,6 +136,12 @@ def train(config_path: str):
     # [Data] section
     n_layers = parser.getint('Data', 'n_layers')
     constraint_schedule = parser.get('Data', 'constraint_schedule', fallback='interleaved').strip('"').strip("'")
+
+    constraint_penalty = parser.getfloat(section, 'constraint_penalty', fallback=10.0)
+    max_entropy = parser.getfloat(section, 'max_entropy', fallback=0.2)
+    min_entropy = parser.getfloat(section, 'min_entropy', fallback=0.01)
+    pareto_dominance_bonus = parser.getfloat(section, 'pareto_dominance_bonus', fallback=0.0)
+    adaptive_entropy_to_constraints = parser.getboolean(section, 'adaptive_entropy_to_constraints', fallback=False)
 
     save_dir = Path(save_dir)
     save_dir.mkdir(parents=True, exist_ok=True)
@@ -151,17 +162,14 @@ def train(config_path: str):
         config,
         materials,
         n_thickness_bins=n_thickness_bins,
-        constraint_penalty=10.0,
-        target_constraint_bounds={
-            "reflectivity": target_reflectivity,
-            "absorption": target_absorption,
-        },
+        constraint_penalty=constraint_penalty,
         mask_consecutive_materials=mask_consecutive_materials,
         mask_air_until_min_layers=mask_air_until_min_layers,
         min_layers_before_air=min_layers_before_air,
         epochs_per_step=epochs_per_step,
         steps_per_objective=steps_per_objective,
         constraint_schedule=constraint_schedule,
+        pareto_dominance_bonus=pareto_dominance_bonus,
     )
 
 
@@ -171,6 +179,7 @@ def train(config_path: str):
     n_features_per_layer = 1 + env.env.n_materials + 2  # thickness + materials_onehot + n + k
 
     # Custom policy with LSTM feature extractor
+    algo_config = config.algorithm
     policy_kwargs = dict(
         features_extractor_class=LSTMFeatureExtractor,
         features_extractor_kwargs=dict(
@@ -181,8 +190,8 @@ def train(config_path: str):
             features_per_layer=n_features_per_layer,
         ),
         net_arch=dict(
-            pi=[64, 64],  # Policy network after LSTM
-            vf=[64, 64],  # Value network after LSTM
+            pi=algo_config.net_arch_pi,
+            vf=algo_config.net_arch_vf,
         ),
     )
 
@@ -192,24 +201,28 @@ def train(config_path: str):
         "MlpPolicy",  # Use MlpPolicy with custom feature extractor
         env=env,
         policy_kwargs=policy_kwargs,
-        learning_rate=3e-4,
-        n_steps=512,
-        batch_size=128,
-        n_epochs=20,
-        gamma=0.99,
-        gae_lambda=0.95,
-        clip_range=0.2,
-        ent_coef=0.15,  # Initial value (will be updated by callback)
+        learning_rate=algo_config.learning_rate,
+        n_steps=algo_config.n_steps,
+        batch_size=algo_config.batch_size,
+        n_epochs=algo_config.n_epochs,
+        gamma=algo_config.gamma,
+        gae_lambda=algo_config.gae_lambda,
+        clip_range=algo_config.clip_range,
+        ent_coef=algo_config.ent_coef,  # Initial value (will be updated by callback if entropy annealing is used)
+        vf_coef=algo_config.vf_coef,
+        max_grad_norm=algo_config.max_grad_norm,
         verbose=0,
         tensorboard_log=tb_log,
     )
 
-    # Create entropy annealing callback 
+    # Create entropy annealing callback
     entropy_callback = EntropyAnnealingCallback(
-        max_ent=0.15,  # High exploration at start of each cycle
-        min_ent=0.01,  # Low exploration at end of each cycle
+        max_ent=max_entropy,  # High exploration at start of each cycle
+        min_ent=min_entropy,  # Low exploration at end of each cycle
         epochs_per_step=epochs_per_step,  # Reset annealing every N episodes
         verbose=0,
+        adaptive_to_constraints=adaptive_entropy_to_constraints,
+        constraint_window=50,  # Track last 50 episodes
     )
 
     # Set up callbacks

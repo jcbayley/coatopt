@@ -20,6 +20,7 @@ dependencies = [
     "pymoo>=0.6.0",
     "h5py>=3.0.0",
     "sb3-contrib>=2.7.1",
+    "morl-baselines>=1.2.0",
 ]
 
 [tool.setuptools.packages.find]

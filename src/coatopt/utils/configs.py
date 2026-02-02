@@ -63,11 +63,36 @@ class TrainingConfig:
 
 
 @dataclass
+class AlgorithmConfig:
+    """Configuration for RL algorithm hyperparameters (e.g., PPO)."""
+
+    # PPO hyperparameters
+    learning_rate: float = 3e-4
+    n_steps: int = 128
+    batch_size: int = 32
+    n_epochs: int = 10
+    gamma: float = 0.99
+    gae_lambda: float = 0.95
+    clip_range: float = 0.2
+    ent_coef: float = 0.0
+    vf_coef: float = 0.5
+    max_grad_norm: float = 0.5
+
+    # Network architecture
+    net_arch_pi: list = field(default_factory=lambda: [128, 64, 32])  # Policy network
+    net_arch_vf: list = field(default_factory=lambda: [128, 64, 32])  # Value network
+
+    # LSTM parameters (for LSTM policies)
+    lstm_hidden_size: int = 128
+
+
+@dataclass
 class Config:
     """config for CoatingEnvironment (no full TrainingConfig needed)."""
 
     data: DataConfig = field(default_factory=DataConfig)
     training: TrainingConfig = field(default_factory=TrainingConfig)
+    algorithm: AlgorithmConfig = field(default_factory=AlgorithmConfig)
 
 
 def load_config(config_path: str) -> Config:
@@ -118,7 +143,28 @@ def load_config(config_path: str) -> Config:
             else:
                 training_kwargs[key] = value
 
+    # Parse Algorithm section (PPO hyperparameters)
+    algorithm_kwargs = {}
+    if parser.has_section('Algorithm'):
+        for key, value in parser['Algorithm'].items():
+            # Parse int values
+            if key in ('n_steps', 'batch_size', 'n_epochs', 'lstm_hidden_size'):
+                algorithm_kwargs[key] = int(value)
+            # Parse float values
+            elif key in ('learning_rate', 'gamma', 'gae_lambda', 'clip_range',
+                        'ent_coef', 'vf_coef', 'max_grad_norm'):
+                algorithm_kwargs[key] = float(value)
+            # Parse lists (net_arch)
+            elif key in ('net_arch_pi', 'net_arch_vf'):
+                try:
+                    algorithm_kwargs[key] = ast.literal_eval(value)
+                except:
+                    algorithm_kwargs[key] = value
+            else:
+                algorithm_kwargs[key] = value
+
     return Config(
         data=DataConfig(**data_kwargs),
-        training=TrainingConfig(**training_kwargs)
+        training=TrainingConfig(**training_kwargs),
+        algorithm=AlgorithmConfig(**algorithm_kwargs)
     )

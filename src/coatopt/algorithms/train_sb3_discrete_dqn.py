@@ -224,7 +224,7 @@ class CoatOptDQNGymWrapper(gym.Env):
 
         # Only populate info at episode end
         if done:
-            total_reward = self.env._compute_training_reward(vals)
+            total_reward, _, _ = self.env.compute_training_reward(state)
             info = {
                 "rewards": rewards,
                 "vals": vals,

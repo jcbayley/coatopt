@@ -5,6 +5,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 from stable_baselines3.common.callbacks import BaseCallback
 import math
+import mlflow
 
 class EntropyAnnealingCallback(BaseCallback):
     """Callback to update entropy coefficient with cosine annealing schedule.
@@ -18,6 +19,8 @@ class EntropyAnnealingCallback(BaseCallback):
         min_ent: float = 0.01,
         epochs_per_step: int = None,
         verbose: int = 0,
+        adaptive_to_constraints: bool = False,
+        constraint_window: int = 50,
     ):
         """Initialize entropy annealing callback.
 
@@ -27,20 +30,43 @@ class EntropyAnnealingCallback(BaseCallback):
             epochs_per_step: If provided, reset annealing every N episodes (for cycling).
                             If None, anneal once over entire training.
             verbose: Verbosity level
+            adaptive_to_constraints: If True, increase entropy when constraint violations are high
+            constraint_window: Number of recent episodes to track for constraint violations
         """
         super().__init__(verbose)
         self.max_ent = max_ent
         self.min_ent = min_ent
         self.epochs_per_step = epochs_per_step
         self.episode_count = 0
+        self.adaptive_to_constraints = adaptive_to_constraints
+        self.constraint_window = constraint_window
+        self.recent_constraint_violations = []
 
     def _on_step(self) -> bool:
         """Update entropy coefficient at each step."""
-        # Track episodes
+        # Track episodes and constraint violations
         infos = self.locals.get("infos", [])
         for info in infos:
             if "episode" in info and isinstance(info["episode"], dict):
                 self.episode_count += 1
+
+                # Track constraint violations if adaptive mode is enabled
+                if self.adaptive_to_constraints:
+                    # Check if episode had constraint violations
+                    constraints = info.get("constraints", {})
+                    rewards = info.get("rewards", {})
+
+                    if constraints and rewards:
+                        # Calculate total constraint violation
+                        violation = 0.0
+                        for obj, threshold in constraints.items():
+                            reward = rewards.get(obj, 0.0)
+                            if reward < threshold:
+                                violation += (threshold - reward)
+
+                        self.recent_constraint_violations.append(violation)
+                        if len(self.recent_constraint_violations) > self.constraint_window:
+                            self.recent_constraint_violations.pop(0)
 
         # Compute current entropy coefficient
         if self.epochs_per_step is not None:
@@ -51,17 +77,28 @@ class EntropyAnnealingCallback(BaseCallback):
             # Single annealing mode: use training progress
             progress = 1.0 - (self.num_timesteps / self.model._total_timesteps)
 
-        # Cosine annealing formula
-        ent_coef = self.min_ent + 0.5 * (self.max_ent - self.min_ent) * (
+        # Cosine annealing formula (base entropy)
+        base_ent_coef = self.min_ent + 0.5 * (self.max_ent - self.min_ent) * (
             1 + math.cos(math.pi * progress)
         )
+
+        # Apply adaptive boost based on constraint violations
+        ent_coef = base_ent_coef
+        if self.adaptive_to_constraints and len(self.recent_constraint_violations) > 0:
+            avg_violation = sum(self.recent_constraint_violations) / len(self.recent_constraint_violations)
+            # Scale entropy boost by violation magnitude (0 violation = no boost, high violation = up to 2x boost)
+            boost_factor = 1.0 + min(avg_violation, 1.0)  # Cap at 2x
+            ent_coef = min(base_ent_coef * boost_factor, self.max_ent * 2.0)  # Allow going above max_ent
+
+            if self.verbose > 0 and self.episode_count % 100 == 0:
+                print(f"  Avg constraint violation: {avg_violation:.4f}, boost factor: {boost_factor:.2f}x")
 
         # Update model's entropy coefficient
         self.model.ent_coef = ent_coef
 
         # Log to tensorboard if available
         if self.verbose > 0 and self.episode_count % 100 == 0:
-            print(f"Episode {self.episode_count}: ent_coef = {ent_coef:.4f}")
+            print(f"Episode {self.episode_count}: ent_coef = {ent_coef:.4f} (base: {base_ent_coef:.4f})")
 
         return True
 
@@ -136,6 +173,7 @@ class PlottingCallback(BaseCallback):
         self.target_objective_history = []
         self.phase_history = []
         self.level_history = []
+        self.entropy_coef_history = []
 
         # Action distribution tracking (only for discrete)
         if track_action_distributions:
@@ -203,6 +241,25 @@ class PlottingCallback(BaseCallback):
                     self.phase_history.append(info["phase"])
                 if "level" in info:
                     self.level_history.append(info["level"])
+
+                # Track entropy coefficient
+                if hasattr(self.model, 'ent_coef'):
+                    self.entropy_coef_history.append(float(self.model.ent_coef))
+
+                # Log to MLflow
+                if mlflow.active_run():
+                    mlflow.log_metric("episode_reward", ep_reward, step=self.episode_count)
+                    mlflow.log_metric("episode_length", ep_length, step=self.episode_count)
+                    if hasattr(self.model, 'ent_coef'):
+                        mlflow.log_metric("entropy_coef", float(self.model.ent_coef), step=self.episode_count)
+                    if vals:
+                        for obj_name, obj_val in vals.items():
+                            mlflow.log_metric(f"value_{obj_name}", obj_val, step=self.episode_count)
+                    if rewards:
+                        for obj_name, obj_val in rewards.items():
+                            mlflow.log_metric(f"reward_{obj_name}", obj_val, step=self.episode_count)
+                    if "annealing_progress" in info:
+                        mlflow.log_metric("annealing_progress", info["annealing_progress"], step=self.episode_count)
 
                 # Update Pareto fronts (both value and reward space)
                 vals = info.get("vals", {})
@@ -419,16 +476,16 @@ class PlottingCallback(BaseCallback):
             ax_constraints.text(0.5, 0.5, "No constraint data", ha="center", va="center")
             ax_constraints.set_title("Constraint Thresholds")
 
-        # Reward distribution (recent episodes)
-        if len(self.episode_rewards) > 10:
-            recent = self.episode_rewards[-100:]
-            axs[1, 1].hist(recent, bins=20, edgecolor="black", alpha=0.7)
-            axs[1, 1].set_title(f"Recent Reward Distribution (last {len(recent)})")
-            axs[1, 1].set_xlabel("Reward")
-            axs[1, 1].set_ylabel("Count")
+        # Entropy coefficient over time
+        if self.entropy_coef_history:
+            axs[1, 1].plot(self.entropy_coef_history, alpha=0.8, linewidth=1.5)
+            axs[1, 1].set_title("Entropy Coefficient")
+            axs[1, 1].set_xlabel("Episode")
+            axs[1, 1].set_ylabel("Entropy Coef")
+            axs[1, 1].grid(True, alpha=0.3)
         else:
-            axs[1, 1].text(0.5, 0.5, "Not enough data", ha="center", va="center")
-            axs[1, 1].set_title("Reward Distribution")
+            axs[1, 1].text(0.5, 0.5, "No entropy data", ha="center", va="center")
+            axs[1, 1].set_title("Entropy Coefficient")
 
         # Pareto front in VALUE space (objective space)
         ax_pareto = axs[1, 2]

@@ -1203,7 +1203,7 @@ class HPPOTrainer:
         episode_metrics["reward"] = episode_reward
 
         # Compute final state values and rewards
-        _, vals, rewards = self.env.compute_reward(
+        _, vals, rewards = self.env.compute_training_reward(
             final_state,
             pc_tracker=self.pc_tracker,
             phase_info=self.current_phase_info,
