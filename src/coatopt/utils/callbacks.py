@@ -88,7 +88,7 @@ class EntropyAnnealingCallback(BaseCallback):
             avg_violation = sum(self.recent_constraint_violations) / len(self.recent_constraint_violations)
             # Scale entropy boost by violation magnitude (0 violation = no boost, high violation = up to 2x boost)
             boost_factor = 1.0 + min(avg_violation, 1.0)  # Cap at 2x
-            ent_coef = min(base_ent_coef * boost_factor, self.max_ent * 2.0)  # Allow going above max_ent
+            ent_coef = min(base_ent_coef * boost_factor * 5, self.max_ent * 2.0)  # Allow going above max_ent
 
             if self.verbose > 0 and self.episode_count % 100 == 0:
                 print(f"  Avg constraint violation: {avg_violation:.4f}, boost factor: {boost_factor:.2f}x")
@@ -169,6 +169,9 @@ class PlottingCallback(BaseCallback):
         self.level_history = []
         self.entropy_coef_history = []
 
+        # Hypervolume tracking
+        self.hypervolume_history = []  # List of (episode, hypervolume) tuples
+
 
     def _on_step(self) -> bool:
         """Called at each step. Collect episode statistics and trigger plotting."""
@@ -227,6 +230,21 @@ class PlottingCallback(BaseCallback):
                     ref_reward = rewards.get('reflectivity', 0.0)
                     abs_reward = rewards.get('absorption', 0.0)
                     self.all_episode_rewards.append((ref_reward, abs_reward))
+
+                # Compute and track hypervolume
+                env = self.env
+                if hasattr(env, 'env'):
+                    env = env.env
+                if hasattr(env, 'compute_hypervolume'):
+                    try:
+                        hv = env.compute_hypervolume(space="reward")
+                        self.hypervolume_history.append((self.episode_count, hv))
+                        # Log to MLflow if enabled
+                        if not self.disable_mlflow and mlflow.active_run():
+                            mlflow.log_metric("hypervolume", hv, step=self.episode_count)
+                    except Exception as e:
+                        # If hypervolume computation fails, skip it
+                        pass
 
                 # Plot designs periodically
                 if self.episode_count % self.design_plot_freq == 0:
@@ -338,15 +356,24 @@ class PlottingCallback(BaseCallback):
             axs[0, 2].text(0.5, 0.5, "No annealing data", ha="center", va="center")
             axs[0, 2].set_title("Annealing Progress")
 
-        # Training loss
-        if self.losses:
-            axs[0, 3].plot(self.losses)
-            axs[0, 3].set_title("Training Loss")
-            axs[0, 3].set_xlabel("Update Step")
-            axs[0, 3].set_ylabel("Loss")
+        # Hypervolume over time
+        if self.hypervolume_history:
+            episodes, hvs = zip(*self.hypervolume_history)
+            axs[0, 3].plot(episodes, hvs, linewidth=2, color='green')
+            axs[0, 3].set_title("Hypervolume (Reward Space)")
+            axs[0, 3].set_xlabel("Episode")
+            axs[0, 3].set_ylabel("Hypervolume")
+            axs[0, 3].grid(True, alpha=0.3)
+            # Add text annotation with latest value
+            if hvs:
+                latest_hv = hvs[-1]
+                axs[0, 3].text(0.98, 0.98, f"Latest: {latest_hv:.4f}",
+                              transform=axs[0, 3].transAxes,
+                              ha='right', va='top',
+                              bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
         else:
-            axs[0, 3].text(0.5, 0.5, "No loss data", ha="center", va="center")
-            axs[0, 3].set_title("Training Loss")
+            axs[0, 3].text(0.5, 0.5, "No hypervolume data", ha="center", va="center")
+            axs[0, 3].set_title("Hypervolume (Reward Space)")
 
         # Row 2: Constraints and Pareto fronts
 

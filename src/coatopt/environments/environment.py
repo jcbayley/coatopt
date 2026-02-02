@@ -13,6 +13,12 @@ import torch
 
 from ..environments.state import CoatingState
 from ..environments.utils import coating_utils, state_utils
+from ..utils.metrics import (
+    update_pareto_front,
+    update_pareto_front_mixed,
+    compute_hypervolume,
+    compute_hypervolume_mixed,
+)
 
 
 class CoatingEnvironment:
@@ -99,9 +105,10 @@ class CoatingEnvironment:
         self.constraints = {}
         self.constraint_penalty = 10.0
 
-        # Pareto dominance reward bonus
-        self.pareto_dominance_bonus = 0.0  # Bonus reward for dominating pareto front
+        # Pareto dominance reward bonus (based on hypervolume improvement)
+        self.pareto_dominance_bonus = 0.0  # Bonus weight for hypervolume improvement
         self.use_pareto_bonus = False  # Enable pareto dominance bonus
+        self.max_hypervolume = 0.0  # Track maximum hypervolume achieved
 
         # Environment state
         self.current_state = None
@@ -318,10 +325,13 @@ class CoatingEnvironment:
         self.total_phases = self.total_levels * len(self.optimise_parameters)
 
     def enable_pareto_bonus(self, bonus: float = 1.0):
-        """Enable pareto dominance bonus reward.
+        """Enable pareto dominance bonus reward based on hypervolume improvement.
 
         Args:
-            bonus: Reward bonus per dominated pareto front point
+            bonus: Weight for hypervolume improvement bonus.
+                   Since hypervolume improvements are typically small (0-0.1),
+                   you may need larger values than the old dominated-count method.
+                   Suggested range: 1.0-100.0 depending on desired bonus magnitude.
         """
         self.use_pareto_bonus = True
         self.pareto_dominance_bonus = bonus
@@ -401,10 +411,10 @@ class CoatingEnvironment:
         return penalty
 
     def _compute_pareto_dominance_bonus(self, vals: dict) -> float:
-        """Compute pareto dominance bonus.
+        """Compute pareto dominance bonus based on hypervolume improvement.
 
-        This is a reward modifier that gives extra reward if the current point
-        dominates points on the pareto front.
+        This is a reward modifier that gives extra reward proportional to how much
+        the current point improves the Pareto front hypervolume.
 
         IMPORTANT: Uses REWARD space Pareto front for calculations.
 
@@ -412,22 +422,43 @@ class CoatingEnvironment:
             vals: Dictionary of objective values
 
         Returns:
-            Bonus reward (number of dominated points * bonus weight)
+            Bonus reward (hypervolume improvement * bonus weight)
         """
         if not self.use_pareto_bonus or not self.multi_objective:
             return 0.0
 
+        from ..utils.metrics import compute_hypervolume, update_pareto_front
+
         # Build reward vector for current point (normalised rewards)
         reward_dict = self.compute_objective_rewards(vals, normalised=True)
-        current_reward = [reward_dict.get(param, 0.0) for param in self.optimise_parameters]
+        current_reward = np.array([reward_dict.get(param, 0.0) for param in self.optimise_parameters])
 
-        # Count how many pareto front points are dominated (in reward space)
-        dominated_count = 0
-        for pareto_reward, _ in self.pareto_front_rewards:
-            if self._dominates(current_reward, pareto_reward, reward_space=True):
-                dominated_count += 1
+        # Get current Pareto front reward vectors
+        current_front = [np.array(r) for r, _ in self.pareto_front_rewards]
 
-        return dominated_count * self.pareto_dominance_bonus
+        # Compute current hypervolume
+        if len(current_front) == 0:
+            hv_old = 0.0
+        else:
+            ref_point = np.zeros(len(self.optimise_parameters))
+            hv_old = compute_hypervolume(current_front, ref_point, maximize=True)
+
+        # Compute what the front would be with the new point
+        new_front = update_pareto_front(current_front, current_reward, maximize=True)
+
+        # Compute new hypervolume
+        ref_point = np.zeros(len(self.optimise_parameters))
+        hv_new = compute_hypervolume(new_front, ref_point, maximize=True)
+
+        # Compute hypervolume improvement
+        hv_improvement = max(0.0, hv_new - hv_old)
+
+        # Update max hypervolume tracking
+        if hv_new > self.max_hypervolume:
+            self.max_hypervolume = hv_new
+
+        # Return bonus proportional to hypervolume improvement
+        return hv_improvement * self.pareto_dominance_bonus
 
     def compute_training_reward(
         self,
@@ -574,78 +605,57 @@ class CoatingEnvironment:
             return
 
         # Get value vector
-        val_vector = [objectives.get(param, 0.0) for param in self.optimise_parameters]
+        val_vector = np.array([objectives.get(param, 0.0) for param in self.optimise_parameters])
 
         # Get reward vector (normalised rewards)
         reward_dict = self.compute_objective_rewards(objectives, normalised=True)
-        reward_vector = [reward_dict.get(param, 0.0) for param in self.optimise_parameters]
+        reward_vector = np.array([reward_dict.get(param, 0.0) for param in self.optimise_parameters])
 
-        # Check dominance in REWARD space
-        dominated = False
-        for existing_reward, _ in self.pareto_front_rewards:
-            if self._dominates(existing_reward, reward_vector, reward_space=True):
-                dominated = True
-                break
+        # Check for duplicates FIRST (before dominance check)
+        # This prevents the same solution from being added multiple times
+        for existing_reward_vec, _ in self.pareto_front_rewards:
+            if np.allclose(reward_vector, existing_reward_vec, rtol=1e-6, atol=1e-9):
+                return  # Duplicate found, don't add it
 
-        if not dominated:
-            # Find indices of dominated points in reward space
-            dominated_indices = []
-            for i, (reward, _) in enumerate(self.pareto_front_rewards):
-                if self._dominates(reward_vector, reward, reward_space=True):
-                    dominated_indices.append(i)
+        # Extract existing reward vectors for dominance check
+        existing_reward_vectors = [np.array(r) for r, _ in self.pareto_front_rewards]
 
-            # Remove dominated points from BOTH fronts (keep them in sync)
-            self.pareto_front_rewards = [
-                (reward, s) for i, (reward, s) in enumerate(self.pareto_front_rewards)
-                if i not in dominated_indices
-            ]
-            self.pareto_front_values = [
-                (val, s) for i, (val, s) in enumerate(self.pareto_front_values)
-                if i not in dominated_indices
-            ]
+        # Update reward front using utility function (all objectives maximized in reward space)
+        updated_reward_vectors = update_pareto_front(
+            existing_reward_vectors,
+            reward_vector,
+            maximize=True
+        )
 
-            # Add new point to BOTH fronts
-            self.pareto_front_rewards.append((reward_vector, state.copy()))
-            self.pareto_front_values.append((val_vector, state.copy()))
+        # If the front size didn't change and new point wasn't added, it was dominated
+        if len(updated_reward_vectors) == len(existing_reward_vectors):
+            # Check if new point is in updated front
+            new_point_added = any(np.allclose(v, reward_vector) for v in updated_reward_vectors)
+            if not new_point_added:
+                return  # New point was dominated, don't add it
 
-    def _dominates(self, obj1: List[float], obj2: List[float], reward_space: bool = False) -> bool:
-        """Check if obj1 Pareto dominates obj2.
+        # Rebuild fronts with states, keeping only non-dominated points
+        new_reward_front = []
+        new_value_front = []
 
-        Args:
-            obj1: First objective vector [val1, val2, ...]
-            obj2: Second objective vector [val1, val2, ...]
-            reward_space: If True, always maximize (reward space). If False, use objective_directions (value space).
-
-        Returns:
-            True if obj1 dominates obj2
-        """
-        if len(obj1) != len(obj2) or len(obj1) != len(self.optimise_parameters):
-            return False
-
-        better_or_equal = True
-        strictly_better = False
-
-        for i, param_name in enumerate(self.optimise_parameters):
-            # In reward space, always maximize (higher reward is better)
-            # In value space, use objective_directions
-            maximize = True if reward_space else self.objective_directions.get(param_name, True)
-
-            if maximize:
-                # Higher is better
-                if obj1[i] < obj2[i]:
-                    better_or_equal = False
+        for updated_vec in updated_reward_vectors:
+            # Find which original point this corresponds to (if any)
+            found = False
+            for i, (orig_vec, orig_state) in enumerate(self.pareto_front_rewards):
+                if np.allclose(updated_vec, orig_vec):
+                    new_reward_front.append((orig_vec, orig_state))
+                    new_value_front.append(self.pareto_front_values[i])
+                    found = True
                     break
-                elif obj1[i] > obj2[i]:
-                    strictly_better = True
-            else:
-                # Lower is better (only in value space)
-                if obj1[i] > obj2[i]:
-                    better_or_equal = False
-                    break
-                elif obj1[i] < obj2[i]:
-                    strictly_better = True
 
-        return better_or_equal and strictly_better
+            # If not found, it's the new point
+            if not found and np.allclose(updated_vec, reward_vector):
+                new_reward_front.append((list(reward_vector), state.copy()))
+                new_value_front.append((list(val_vector), state.copy()))
+
+        self.pareto_front_rewards = new_reward_front
+        self.pareto_front_values = new_value_front
+
 
     def get_state(self) -> CoatingState:
         """Get current state."""
@@ -668,6 +678,48 @@ class CoatingEnvironment:
             return self.pareto_front_values.copy()
         else:
             return self.pareto_front_rewards.copy()
+
+    def compute_hypervolume(self, space: str = "reward", ref_point: List[float] = None) -> float:
+        """Compute hypervolume of the Pareto front.
+
+        Args:
+            space: "reward" for reward space (used for calculations), "value" for value space
+            ref_point: Reference point for hypervolume computation. If None, uses [0, 0, ...] for reward space
+                      or worst-case bounds for value space.
+
+        Returns:
+            Hypervolume value (float). Returns 0.0 if Pareto front is empty or if pymoo is not available.
+        """
+        pareto_front = self.get_pareto_front(space=space)
+        if not pareto_front:
+            return 0.0
+
+        # Extract objective vectors
+        objective_vectors = np.array([vec for vec, _ in pareto_front])
+
+        # Set reference point
+        if ref_point is None:
+            if space == "reward":
+                # In reward space, all objectives are maximized (higher is better)
+                # Reference point should be worse than all points (e.g., [0, 0])
+                ref_point = np.zeros(len(self.optimise_parameters))
+            else:
+                # In value space, use objective bounds
+                ref_point = []
+                for param in self.optimise_parameters:
+                    bounds = self.objective_bounds.get(param, [0.0, 1.0])
+                    # Use worst-case value as reference
+                    ref_point.append(bounds[0])
+                ref_point = np.array(ref_point)
+
+        # Use utility function for hypervolume computation
+        if space == "reward":
+            # Reward space: all objectives maximized
+            return compute_hypervolume(objective_vectors, ref_point, maximize=True)
+        else:
+            # Value space: mixed objectives (use objective_directions)
+            objective_dirs = [self.objective_directions.get(param, True) for param in self.optimise_parameters]
+            return compute_hypervolume_mixed(objective_vectors, ref_point, objective_dirs)
 
     def get_parameter_names(self) -> List[str]:
         """Get list of optimization parameter names."""

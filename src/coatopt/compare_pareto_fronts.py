@@ -8,6 +8,37 @@ import numpy as np
 import pandas as pd
 
 from coatopt.environments.state import CoatingState
+from coatopt.utils.metrics import compute_hypervolume
+
+
+def compute_hypervolume_from_df(df: pd.DataFrame, space: str = "reward") -> float:
+    """Compute hypervolume from a Pareto front DataFrame.
+
+    Args:
+        df: DataFrame with either value space (reflectivity, absorption) or
+            reward space (reflectivity_reward, absorption_reward) columns
+        space: "reward" or "value"
+
+    Returns:
+        Hypervolume value (float)
+    """
+    if space == "reward":
+        if 'reflectivity_reward' not in df.columns or 'absorption_reward' not in df.columns:
+            return 0.0
+        points = df[['absorption_reward', 'reflectivity_reward']].values
+        ref_point = np.array([0.0, 0.0])  # Worst case in reward space
+        return compute_hypervolume(points, ref_point, maximize=True)
+    else:
+        if 'reflectivity' not in df.columns or 'absorption' not in df.columns:
+            return 0.0
+        points = df[['absorption', 'reflectivity']].values
+        # For value space with mixed objectives: absorption minimize, reflectivity maximize
+        # Use a reference point that's worse than all points
+        ref_point = np.array([np.max(points[:, 0]) * 1.1, 0.0])  # Worst absorption, worst reflectivity
+        # Transform for mixed objectives
+        from coatopt.utils.metrics import compute_hypervolume_mixed
+        objective_directions = [False, True]  # absorption: minimize, reflectivity: maximize
+        return compute_hypervolume_mixed(points, ref_point, objective_directions)
 
 
 def load_pareto_front(directory: Path, label: Optional[str] = None) -> Tuple[Optional[pd.DataFrame], Optional[pd.DataFrame], str]:
@@ -15,7 +46,7 @@ def load_pareto_front(directory: Path, label: Optional[str] = None) -> Tuple[Opt
 
     Args:
         directory: Path to directory containing pareto_front_values.csv and pareto_front_rewards.csv
-        label: Optional custom label 
+        label: Optional custom label
 
     Returns:
         Tuple of (values_df, rewards_df, label)
@@ -150,6 +181,10 @@ def plot_both_spaces_comparison(
             print(f"Warning: {label} missing value space data, skipping value plot")
             continue
 
+        # Compute hypervolume for value space
+        hv_value = compute_hypervolume_from_df(values_df, space="value")
+        label_with_hv = f"{label} (HV: {hv_value:.4f})" if hv_value > 0 else label
+
         x = values_df['absorption'].values
         y = values_df['reflectivity'].values
 
@@ -168,7 +203,7 @@ def plot_both_spaces_comparison(
         x_sorted, y_loss_sorted = x[sorted_idx], y_loss[sorted_idx]
 
         ax_values.scatter(x, y_loss, color=colors[i], s=80, alpha=0.7,
-                         edgecolor='black', linewidth=0.5, label=label, zorder=10+i)
+                         edgecolor='black', linewidth=0.5, label=label_with_hv, zorder=10+i)
         ax_values.plot(x_sorted, y_loss_sorted, color=colors[i], alpha=0.4,
                       linewidth=2, linestyle='--', zorder=5+i)
 
@@ -196,6 +231,10 @@ def plot_both_spaces_comparison(
             print(f"Warning: {label} missing reward space data, skipping reward plot")
             continue
 
+        # Compute hypervolume for reward space
+        hv_reward = compute_hypervolume_from_df(rewards_df, space="reward")
+        label_with_hv = f"{label} (HV: {hv_reward:.4f})" if hv_reward > 0 else label
+
         x = rewards_df['absorption_reward'].values
         y = rewards_df['reflectivity_reward'].values
 
@@ -211,7 +250,7 @@ def plot_both_spaces_comparison(
         x_sorted, y_sorted = x[sorted_idx], y[sorted_idx]
 
         ax_rewards.scatter(x, y, color=colors[i], s=80, alpha=0.7,
-                          edgecolor='black', linewidth=0.5, label=label, zorder=10+i)
+                          edgecolor='black', linewidth=0.5, label=label_with_hv, zorder=10+i)
         ax_rewards.plot(x_sorted, y_sorted, color=colors[i], alpha=0.4,
                        linewidth=2, linestyle='--', zorder=5+i)
 
@@ -507,8 +546,10 @@ def print_statistics_both_spaces(pareto_fronts: List[Tuple[Optional[pd.DataFrame
 
         # VALUE SPACE statistics
         if values_df is not None:
+            hv_value = compute_hypervolume_from_df(values_df, space="value")
             print(f"  VALUE SPACE:")
             print(f"    Number of points: {len(values_df)}")
+            print(f"    Hypervolume: {hv_value:.6f}")
             for col in ["reflectivity", "absorption", "thermal_noise"]:
                 if col in values_df.columns:
                     values = values_df[col].dropna()
@@ -522,8 +563,10 @@ def print_statistics_both_spaces(pareto_fronts: List[Tuple[Optional[pd.DataFrame
 
         # REWARD SPACE statistics
         if rewards_df is not None:
+            hv_reward = compute_hypervolume_from_df(rewards_df, space="reward")
             print(f"  REWARD SPACE:")
             print(f"    Number of points: {len(rewards_df)}")
+            print(f"    Hypervolume: {hv_reward:.6f}")
             for col in ["reflectivity_reward", "absorption_reward"]:
                 if col in rewards_df.columns:
                     values = rewards_df[col].dropna()
@@ -546,6 +589,9 @@ Examples:
   # Compare two runs
   python compare_pareto_fronts.py --dirs nsga2_output discrete_output
 
+  # Auto-discover and plot all subdirectories
+  python compare_pareto_fronts.py --alldirs runs/
+
   # Custom labels
   python compare_pareto_fronts.py --dirs run1 run2 --labels "NSGA-II" "Discrete PPO"
 
@@ -560,8 +606,13 @@ Examples:
     parser.add_argument(
         "--dirs",
         nargs="+",
-        required=True,
         help="Directories containing pareto_front.csv files",
+    )
+    parser.add_argument(
+        "--alldirs",
+        type=str,
+        default=None,
+        help="Parent directory - automatically plots all subdirectories containing Pareto fronts",
     )
     parser.add_argument(
         "--labels",
@@ -637,15 +688,47 @@ Examples:
 
     args = parser.parse_args()
 
+    # Determine which directories to process
+    if args.alldirs:
+        # Auto-discover subdirectories
+        parent_dir = Path(args.alldirs)
+        if not parent_dir.exists():
+            parser.error(f"Parent directory {parent_dir} does not exist")
+
+        # Find all subdirectories that contain Pareto front files
+        discovered_dirs = []
+        for subdir in sorted(parent_dir.iterdir()):
+            if subdir.is_dir():
+                # Check if directory contains any pareto front files
+                has_pareto = (
+                    (subdir / "pareto_front_values.csv").exists() or
+                    (subdir / "pareto_front_rewards.csv").exists() or
+                    (subdir / "pareto_front.csv").exists()
+                )
+                if has_pareto:
+                    discovered_dirs.append(str(subdir))
+
+        if not discovered_dirs:
+            parser.error(f"No subdirectories with Pareto fronts found in {parent_dir}")
+
+        directories = discovered_dirs
+        print(f"Auto-discovered {len(directories)} directories with Pareto fronts:")
+        for d in directories:
+            print(f"  - {Path(d).name}")
+    elif args.dirs:
+        directories = args.dirs
+    else:
+        parser.error("Either --dirs or --alldirs must be specified")
+
     # Validate inputs
-    if args.labels and len(args.labels) != len(args.dirs):
-        parser.error(f"Number of labels ({len(args.labels)}) must match number of directories ({len(args.dirs)})")
+    if args.labels and len(args.labels) != len(directories):
+        parser.error(f"Number of labels ({len(args.labels)}) must match number of directories ({len(directories)})")
 
     # Load Pareto fronts (both value and reward space)
     pareto_fronts = []
     pareto_fronts_values_only = []  # For legacy single-space plots
 
-    for i, dir_path in enumerate(args.dirs):
+    for i, dir_path in enumerate(directories):
         directory = Path(dir_path)
         if not directory.exists():
             print(f"Warning: Directory {directory} does not exist, skipping")

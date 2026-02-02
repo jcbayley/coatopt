@@ -95,10 +95,6 @@ def run_experiment(config_path: str):
             from coatopt.algorithms.train_sb3_discrete import train
             train(config_path=str(config_path), save_dir=str(save_dir))
 
-        elif algorithm == 'sb3_discrete_lstm':
-            from coatopt.algorithms.train_sb3_discrete_lstm import train
-            train(config_path=str(config_path), save_dir=str(save_dir))
-
         elif algorithm == 'sb3_dqn':
             from coatopt.algorithms.train_sb3_discrete_dqn import train
             train(config_path=str(config_path), save_dir=str(save_dir))
