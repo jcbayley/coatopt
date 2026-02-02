@@ -97,11 +97,13 @@ class CoatingRepair(Repair):
     Constraints:
     1. No consecutive layers can have the same material (except air)
     2. All layers after first air layer must be air
+    3. Air cannot be selected until min_layers_before_air is reached
     """
 
-    def __init__(self, env: CoatingEnvironment):
+    def __init__(self, env: CoatingEnvironment, min_layers_before_air: int = 0):
         super().__init__()
         self.env = env
+        self.min_layers_before_air = min_layers_before_air
 
     def _do(self, problem, X, **kwargs):
         """Repair population X to satisfy constraints."""
@@ -128,6 +130,15 @@ class CoatingRepair(Repair):
                 if available:
                     materials_idx[j] = np.random.choice(available)
 
+        # Prevent air in first N layers
+        if self.min_layers_before_air > 0:
+            for j in range(min(self.min_layers_before_air, len(materials_idx))):
+                if materials_idx[j] == self.env.air_material_index:
+                    # Replace with random non-air material
+                    available = [m for m in range(self.env.n_materials) if m != self.env.air_material_index]
+                    if available:
+                        materials_idx[j] = np.random.choice(available)
+
         # Write back repaired material indices
         # Convert to continuous representation (add 0.5 so floor gives correct int)
         x[self.env.max_layers:] = materials_idx + 0.5
@@ -135,11 +146,12 @@ class CoatingRepair(Repair):
         return x
 
 
-def train_genetic(config_path: str):
+def train_genetic(config_path: str, save_dir: Optional[str] = None):
     """Train genetic algorithm on CoatOpt environment.
 
     Args:
         config_path: Path to config INI file
+        save_dir: Directory to save results. If None, reads from config file.
 
     Returns:
         PyMOO result object
@@ -150,7 +162,8 @@ def train_genetic(config_path: str):
     parser.read(config_path)
 
     # [General] section
-    save_dir = parser.get('General', 'save_dir')
+    if save_dir is None:
+        save_dir = parser.get('General', 'save_dir')
     materials_path = parser.get('General', 'materials_path')
 
     # [nsga2] section
@@ -162,6 +175,7 @@ def train_genetic(config_path: str):
     crossover_eta = parser.getfloat('nsga2', 'crossover_eta')
     mutation_prob = parser.getfloat('nsga2', 'mutation_probability')
     mutation_eta = parser.getfloat('nsga2', 'mutation_eta')
+    min_layers_before_air = parser.getint('nsga2', 'min_layers_before_air', fallback=0)
     verbose = True
 
     # [Data] section
@@ -189,7 +203,7 @@ def train_genetic(config_path: str):
     problem = CoatingOptimizationProblem(env)
 
     # Create repair operator
-    repair = CoatingRepair(env)
+    repair = CoatingRepair(env, min_layers_before_air=min_layers_before_air)
 
     # Create algorithm
     if mutation_prob is None:

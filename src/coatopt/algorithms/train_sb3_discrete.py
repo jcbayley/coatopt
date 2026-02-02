@@ -14,7 +14,7 @@ from stable_baselines3.common.callbacks import CallbackList
 
 from coatopt.environments.environment import CoatingEnvironment
 from coatopt.utils.configs import Config, DataConfig, TrainingConfig, load_config
-from coatopt.utils.callbacks import PlottingCallback, EntropyAnnealingCallback
+from coatopt.utils.callbacks import PlottingCallback, EntropyAnnealingCallback, PolicyResetCallback
 from coatopt.utils.utils import load_materials, evaluate_model
 from coatopt.environments.state import CoatingState
 
@@ -629,6 +629,7 @@ def train(config_path: str, save_dir: str = None):
     min_entropy = parser.getfloat(section, 'min_entropy', fallback=0.01)
     pareto_dominance_bonus = parser.getfloat(section, 'pareto_dominance_bonus', fallback=0.0)
     adaptive_entropy_to_constraints = parser.getboolean(section, 'adaptive_entropy_to_constraints', fallback=False)
+    reset_policy_each_phase = parser.getboolean(section, 'reset_policy_each_phase', fallback=False)
 
     # [Data] section
     n_layers = parser.getint('Data', 'n_layers')
@@ -738,8 +739,11 @@ def train(config_path: str, save_dir: str = None):
 
     print(f"\nStarting training for {total_timesteps} timesteps...")
     # Combine callbacks
-    callbacks = CallbackList([entropy_callback, plotting_callback])
-    model.learn(total_timesteps=total_timesteps, callback=callbacks)
+    callbacks = [entropy_callback, plotting_callback]
+    if reset_policy_each_phase:
+        print("Policy reset enabled: weights will be reset at each phase transition")
+        callbacks.append(PolicyResetCallback(verbose=verbose))
+    model.learn(total_timesteps=total_timesteps, callback=CallbackList(callbacks))
 
     model_path = save_dir / "coatopt_ppo_discrete"
     model.save(str(model_path))

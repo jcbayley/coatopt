@@ -6,6 +6,7 @@ import numpy as np
 from stable_baselines3.common.callbacks import BaseCallback
 import math
 import mlflow
+import torch
 
 class EntropyAnnealingCallback(BaseCallback):
     """Callback to update entropy coefficient with cosine annealing schedule.
@@ -100,6 +101,26 @@ class EntropyAnnealingCallback(BaseCallback):
         if self.verbose > 0 and self.episode_count % 100 == 0:
             print(f"Episode {self.episode_count}: ent_coef = {ent_coef:.4f} (base: {base_ent_coef:.4f})")
 
+        return True
+
+
+class PolicyResetCallback(BaseCallback):
+    """Reset policy weights at each phase transition."""
+
+    def __init__(self, verbose=1):
+        super().__init__(verbose)
+        self.current_phase = None
+
+    def _on_step(self):
+        for info in self.locals.get("infos", []):
+            if "phase" in info and info.get("phase") != self.current_phase and not info.get("is_warmup", True):
+                if self.current_phase is not None:  # Skip first transition from warmup
+                    for module in self.model.policy.modules():
+                        if hasattr(module, 'reset_parameters'):
+                            module.reset_parameters()
+                    if self.verbose:
+                        print(f"\n→ Phase {self.current_phase} → {info['phase']}: Policy weights reset\n")
+                self.current_phase = info["phase"]
         return True
 
 
@@ -620,8 +641,9 @@ class PlottingCallback(BaseCallback):
         if hasattr(env, 'env'):
             env = env.env
 
-        # Use value space for CSV output (actual objective values)
+        # Get both value and reward space Pareto fronts
         pareto_front_values = env.get_pareto_front(space="value") if hasattr(env, 'get_pareto_front') else []
+        pareto_front_rewards = env.get_pareto_front(space="reward") if hasattr(env, 'get_pareto_front') else []
 
         if not pareto_front_values:
             print("No Pareto front data to save")
@@ -662,5 +684,24 @@ class PlottingCallback(BaseCallback):
         elif "reflectivity" in df.columns:
             df = df.sort_values("reflectivity", ascending=False)
 
-        df.to_csv(filepath, index=False)
-        print(f"Saved Pareto front ({len(df)} designs) to {filepath}")
+        # Save value space
+        values_path = filepath.parent / "pareto_front_values.csv"
+        df.to_csv(values_path, index=False)
+
+        # Save reward space
+        data_rewards = []
+        for obj_vector, state in pareto_front_rewards:
+            row = {}
+            if hasattr(env, 'optimise_parameters'):
+                for i, param_name in enumerate(env.optimise_parameters):
+                    if i < len(obj_vector):
+                        row[f"{param_name}_reward"] = obj_vector[i]
+            data_rewards.append(row)
+
+        if data_rewards:
+            df_rewards = pd.DataFrame(data_rewards)
+            rewards_path = filepath.parent / "pareto_front_rewards.csv"
+            df_rewards.to_csv(rewards_path, index=False)
+            print(f"Saved Pareto front ({len(df)} designs) to {values_path} and {rewards_path}")
+        else:
+            print(f"Saved Pareto front ({len(df)} designs) to {values_path}")

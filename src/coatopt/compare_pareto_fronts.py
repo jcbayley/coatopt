@@ -785,6 +785,10 @@ Examples:
     # Determine output path
     if args.output:
         output_path = Path(args.output)
+    elif args.alldirs:
+        # Save to the alldirs directory
+        parent_dir = Path(args.alldirs)
+        output_path = parent_dir / "pareto_comparison.png"
     else:
         output_path = Path("pareto_comparison.png")
 

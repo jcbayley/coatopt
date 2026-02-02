@@ -99,7 +99,7 @@ The framework organizes results to mirror MLflow's experiment/run hierarchy:
 
 ```
 runs/
-  └── {experiment_name}/          # Problem definition (e.g., "20layer-0.1-0.5")
+  └── {experiment_name}/          
       ├── 20240202-sb3_discrete-test1/    # Run 1: PPO discrete
       ├── 20240202-genetic-baseline/      # Run 2: NSGA-II
       └── 20240203-moead-tuned/           # Run 3: MOEA/D
@@ -107,7 +107,6 @@ runs/
 
 Each run directory contains:
 - `config.ini` - Config file backup
-- `coatopt_ppo_discrete/` - Trained model (for RL)
 - `pareto_front.csv` - Pareto-optimal solutions
 - `*.png` - Training plots and visualizations
 
@@ -126,22 +125,6 @@ uv run mlflow ui
 - **Experiment** = Problem definition (e.g., "20layer-0.1-0.5")
 - **Run** = Algorithm attempt (e.g., "20240202-sb3_discrete-test1")
 
-This makes it easy to compare different algorithms solving the same problem.
-
-## Available Algorithms
-
-Select algorithm by adding the corresponding section to your config:
-
-| Algorithm | Config Section | Description |
-|-----------|---------------|-------------|
-| PPO (Discrete) | `[sb3_discrete]` | Masked PPO with discrete actions |
-| PPO (Continuous) | `[sb3_simple]` | Standard PPO with continuous actions |
-| DQN | `[sb3_dqn]` | Deep Q-Network |
-| MORL | `[morl]` | Multi-Objective RL |
-| NSGA-II | `[nsga2]` | Non-dominated Sorting Genetic Algorithm |
-| MOEA/D | `[moead]` | Multi-Objective Evolutionary Algorithm |
-
-See `experiments/` directory for example configs for each algorithm.
 
 ## Example: Comparing Algorithms
 
@@ -156,44 +139,5 @@ uv run python -m coatopt.run --config experiments/config_genetic.ini
 uv run mlflow ui
 ```
 
-## Configuration Reference
-
-### [General]
-- `save_dir`: Base directory for saving results (default: `./runs`)
-- `materials_path`: Path to materials JSON file
-- `run_name`: Optional run identifier
-- `experiment_name`: Optional experiment name (auto-generated from data config if not set)
-
-### [Data]
-- `n_layers`: Number of coating layers
-- `min_thickness`, `max_thickness`: Layer thickness bounds (meters or optical thickness)
-- `optimise_parameters`: Comma-separated objectives (reflectivity, absorption, thermal_noise)
-- `optimise_targets`: Target values for each objective (JSON dict)
-- `objective_bounds`: Value bounds for reward normalization (JSON dict)
-
 ### Algorithm-Specific Sections
 See example configs in `experiments/` for algorithm-specific parameters.
-
-## Development
-
-```bash
-# Install development dependencies
-uv sync --extra dev
-
-# Run tests
-uv run pytest
-
-# Format code
-uv run black src/
-uv run ruff check src/
-```
-
-## Requirements
-
-Key dependencies (automatically installed with `uv sync`):
-- **stable-baselines3**: RL algorithms (PPO, DQN)
-- **pymoo**: Evolutionary algorithms
-- **torch**: Neural network backend
-- **mlflow**: Experiment tracking
-- **numpy, scipy**: Numerical computation
-- **matplotlib**: Visualization
