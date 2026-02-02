@@ -109,7 +109,10 @@ class CoatingEnvironment:
         self.done = False
 
         # Multi-objective tracking
-        self.pareto_front = []
+        # IMPORTANT: Reward space Pareto front is used for all calculations
+        # Value space Pareto front is only for visual diagnostics
+        self.pareto_front_rewards = []  # List of (reward_vector, state) - used for calculations
+        self.pareto_front_values = []   # List of (value_vector, state) - used for plotting
         self.all_points = []
 
         # Observation space shape
@@ -403,6 +406,8 @@ class CoatingEnvironment:
         This is a reward modifier that gives extra reward if the current point
         dominates points on the pareto front.
 
+        IMPORTANT: Uses REWARD space Pareto front for calculations.
+
         Args:
             vals: Dictionary of objective values
 
@@ -412,13 +417,14 @@ class CoatingEnvironment:
         if not self.use_pareto_bonus or not self.multi_objective:
             return 0.0
 
-        # Build objective vector for current point
-        current_obj = [vals.get(param, 0.0) for param in self.optimise_parameters]
+        # Build reward vector for current point (normalised rewards)
+        reward_dict = self.compute_objective_rewards(vals, normalised=True)
+        current_reward = [reward_dict.get(param, 0.0) for param in self.optimise_parameters]
 
-        # Count how many pareto front points are dominated
+        # Count how many pareto front points are dominated (in reward space)
         dominated_count = 0
-        for pareto_obj, _ in self.pareto_front:
-            if self._dominates(current_obj, pareto_obj):
+        for pareto_reward, _ in self.pareto_front_rewards:
+            if self._dominates(current_reward, pareto_reward):
                 dominated_count += 1
 
         return dominated_count * self.pareto_dominance_bonus
@@ -555,25 +561,52 @@ class CoatingEnvironment:
         return action
 
     def update_pareto_front(self, objectives: Dict[str, float], state: CoatingState):
-        """Update Pareto front (for multi-objective)."""
+        """Update both reward and value space Pareto fronts.
+
+        IMPORTANT: Dominance checks use REWARD space, not value space.
+        Value space is only for visual diagnostics.
+
+        Args:
+            objectives: Dictionary of objective values (reflectivity, absorption, etc.)
+            state: Current coating state
+        """
         if not self.multi_objective:
             return
 
-        obj_vector = [objectives.get(param, 0.0) for param in self.optimise_parameters]
+        # Get value vector
+        val_vector = [objectives.get(param, 0.0) for param in self.optimise_parameters]
 
+        # Get reward vector (normalised rewards)
+        reward_dict = self.compute_objective_rewards(objectives, normalised=True)
+        reward_vector = [reward_dict.get(param, 0.0) for param in self.optimise_parameters]
+
+        # Check dominance in REWARD space
         dominated = False
-        for existing_obj, _ in self.pareto_front:
-            if self._dominates(existing_obj, obj_vector):
+        for existing_reward, _ in self.pareto_front_rewards:
+            if self._dominates(existing_reward, reward_vector):
                 dominated = True
                 break
 
         if not dominated:
-            self.pareto_front = [
-                (obj, s)
-                for obj, s in self.pareto_front
-                if not self._dominates(obj_vector, obj)
+            # Find indices of dominated points in reward space
+            dominated_indices = []
+            for i, (reward, _) in enumerate(self.pareto_front_rewards):
+                if self._dominates(reward_vector, reward):
+                    dominated_indices.append(i)
+
+            # Remove dominated points from BOTH fronts (keep them in sync)
+            self.pareto_front_rewards = [
+                (reward, s) for i, (reward, s) in enumerate(self.pareto_front_rewards)
+                if i not in dominated_indices
             ]
-            self.pareto_front.append((obj_vector, state.copy()))
+            self.pareto_front_values = [
+                (val, s) for i, (val, s) in enumerate(self.pareto_front_values)
+                if i not in dominated_indices
+            ]
+
+            # Add new point to BOTH fronts
+            self.pareto_front_rewards.append((reward_vector, state.copy()))
+            self.pareto_front_values.append((val_vector, state.copy()))
 
     def _dominates(self, obj1: List[float], obj2: List[float]) -> bool:
         """Check if obj1 Pareto dominates obj2.
@@ -623,9 +656,19 @@ class CoatingEnvironment:
         """Set current state."""
         self.current_state = state.copy()
 
-    def get_pareto_front(self) -> List[Tuple[List[float], CoatingState]]:
-        """Get Pareto front."""
-        return self.pareto_front.copy()
+    def get_pareto_front(self, space: str = "reward") -> List[Tuple[List[float], CoatingState]]:
+        """Get Pareto front.
+
+        Args:
+            space: "reward" for reward space (used for calculations), "value" for value space (visual diagnostics)
+
+        Returns:
+            List of (vector, state) tuples
+        """
+        if space == "value":
+            return self.pareto_front_values.copy()
+        else:
+            return self.pareto_front_rewards.copy()
 
     def get_parameter_names(self) -> List[str]:
         """Get list of optimization parameter names."""

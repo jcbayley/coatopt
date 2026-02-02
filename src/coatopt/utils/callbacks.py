@@ -260,58 +260,45 @@ class PlottingCallback(BaseCallback):
 
         return True
 
-    def get_pareto_front_from_env(self):
-        """Get Pareto front from environment."""
-        if self.env is None:
-            return []
-
-        # Get from wrapped environment if using wrapper
-        env = self.env
-        if hasattr(env, 'env'):
-            env = env.env
-
-        if hasattr(env, 'get_pareto_front'):
-            return env.get_pareto_front()
-        return []
-
-
     def _plot_training_progress(self):
         """Plot training metrics."""
         n_rows = 3 if self.track_action_distributions else 2
         fig, axs = plt.subplots(n_rows, 4, figsize=(20, 5 * n_rows))
 
-        # Get Pareto front from environment
-        pareto_front = self.get_pareto_front_from_env()
+        # Get environment
+        env = self.env
+        if hasattr(env, 'env'):
+            env = env.env
 
-        # Process Pareto front into plotting format
+        # Get both Pareto fronts from environment
+        pareto_front_rewards = env.get_pareto_front(space="reward") if hasattr(env, 'get_pareto_front') else []
+        pareto_front_values = env.get_pareto_front(space="value") if hasattr(env, 'get_pareto_front') else []
+
+        # Process for plotting
         pareto_designs = []
-        if pareto_front:
-            env = self.env
-            if hasattr(env, 'env'):
-                env = env.env
+        for i, (reward_vector, state) in enumerate(pareto_front_rewards):
+            # Get corresponding value vector
+            val_vector = pareto_front_values[i][0] if i < len(pareto_front_values) else reward_vector
 
-            for obj_vector, state in pareto_front:
-                # Extract objective values
-                vals = {}
-                if hasattr(env, 'optimise_parameters'):
-                    for i, param_name in enumerate(env.optimise_parameters):
-                        if i < len(obj_vector):
-                            vals[param_name] = obj_vector[i]
+            # Build dicts
+            vals = {}
+            reward_vals = {}
+            if hasattr(env, 'optimise_parameters'):
+                for j, param_name in enumerate(env.optimise_parameters):
+                    if j < len(val_vector):
+                        vals[param_name] = val_vector[j]
+                    if j < len(reward_vector):
+                        reward_vals[param_name] = reward_vector[j]
 
-                # Get reward values from environment if available
-                reward_vals = {}
-                if hasattr(env, 'normalised_reward'):
-                    reward_vals = env.normalised_reward(vals)
+            # Count active layers
+            state_array = state.get_array()
+            n_layers = np.sum(state_array[:, 0] > 1e-12)
 
-                # Count active layers
-                state_array = state.get_array()
-                n_layers = np.sum(state_array[:, 0] > 1e-12)
-
-                pareto_designs.append({
-                    'vals': vals,
-                    'reward_vals': reward_vals,
-                    'n_layers': n_layers
-                })
+            pareto_designs.append({
+                'vals': vals,
+                'reward_vals': reward_vals,
+                'n_layers': n_layers
+            })
 
         # Episode rewards
         axs[0, 0].plot(self.episode_rewards, alpha=0.6)
@@ -556,18 +543,19 @@ class PlottingCallback(BaseCallback):
 
     def _plot_best_designs(self):
         """Plot coating stack structure for Pareto front designs."""
-        pareto_front = self.get_pareto_front_from_env()
-        if not pareto_front:
+        # Get environment
+        env = self.env
+        if hasattr(env, 'env'):
+            env = env.env
+
+        # Use value space for plotting (visual diagnostics)
+        pareto_front_values = env.get_pareto_front(space="value") if hasattr(env, 'get_pareto_front') else []
+        if not pareto_front_values:
             return
 
-        # Convert pareto_front to design format for plotting
+        # Convert to design format for plotting
         designs_with_state = []
-        for obj_vector, state in pareto_front:
-            # Get environment to know parameter names
-            env = self.env
-            if hasattr(env, 'env'):
-                env = env.env
-
+        for obj_vector, state in pareto_front_values:
             vals = {}
             if hasattr(env, 'optimise_parameters'):
                 for i, param_name in enumerate(env.optimise_parameters):
@@ -575,7 +563,6 @@ class PlottingCallback(BaseCallback):
                         vals[param_name] = obj_vector[i]
 
             state_array = state.get_array()
-            # Count active layers (thickness > 0)
             n_layers = np.sum(state_array[:, 0] > 1e-12)
 
             design = {
@@ -680,32 +667,31 @@ class PlottingCallback(BaseCallback):
         if not filepath.is_absolute():
             filepath = self.save_dir / filename
 
-        # Get Pareto front from environment
-        pareto_front = self.get_pareto_front_from_env()
+        # Get environment
+        env = self.env
+        if hasattr(env, 'env'):
+            env = env.env
 
-        if not pareto_front:
+        # Use value space for CSV output (actual objective values)
+        pareto_front_values = env.get_pareto_front(space="value") if hasattr(env, 'get_pareto_front') else []
+
+        if not pareto_front_values:
             print("No Pareto front data to save")
             return
 
-        # Convert Pareto front to CSV format
-        # pareto_front is a list of (objective_vector, CoatingState) tuples
+        # Convert to CSV format
         data = []
-        for obj_vector, state in pareto_front:
+        for obj_vector, state in pareto_front_values:
             row = {}
 
             # Add objective values
-            # Get environment to know parameter names
-            env = self.env
-            if hasattr(env, 'env'):
-                env = env.env
-
             if hasattr(env, 'optimise_parameters'):
                 for i, param_name in enumerate(env.optimise_parameters):
                     if i < len(obj_vector):
                         row[param_name] = obj_vector[i]
 
             # Add state information
-            state_array = state.get_array()  # (n_layers, 2) - thickness, material_idx
+            state_array = state.get_array()
             thicknesses = state_array[:, 0]
             material_indices = state_array[:, 1].astype(int)
 
