@@ -1,14 +1,11 @@
 """Utility functions for multi-objective optimization metrics."""
 
-from typing import List, Tuple, Optional, Dict
+from typing import Dict, List, Optional, Tuple
+
 import numpy as np
 
 
-def dominates(
-    obj1: np.ndarray,
-    obj2: np.ndarray,
-    maximize: bool = True
-) -> bool:
+def dominates(obj1: np.ndarray, obj2: np.ndarray, maximize: bool = True) -> bool:
     """Check if obj1 Pareto dominates obj2.
 
     Args:
@@ -46,9 +43,7 @@ def dominates(
 
 
 def dominates_mixed(
-    obj1: np.ndarray,
-    obj2: np.ndarray,
-    objective_directions: List[bool]
+    obj1: np.ndarray, obj2: np.ndarray, objective_directions: List[bool]
 ) -> bool:
     """Check if obj1 Pareto dominates obj2 with mixed objectives.
 
@@ -86,9 +81,7 @@ def dominates_mixed(
 
 
 def update_pareto_front(
-    pareto_front: List[np.ndarray],
-    new_point: np.ndarray,
-    maximize: bool = True
+    pareto_front: List[np.ndarray], new_point: np.ndarray, maximize: bool = True
 ) -> List[np.ndarray]:
     """Update Pareto front with a new point.
 
@@ -121,7 +114,7 @@ def update_pareto_front(
 def update_pareto_front_mixed(
     pareto_front: List[np.ndarray],
     new_point: np.ndarray,
-    objective_directions: List[bool]
+    objective_directions: List[bool],
 ) -> List[np.ndarray]:
     """Update Pareto front with mixed objectives.
 
@@ -150,9 +143,7 @@ def update_pareto_front_mixed(
 
 
 def compute_hypervolume(
-    points: np.ndarray,
-    ref_point: np.ndarray,
-    maximize: bool = True
+    points: np.ndarray, ref_point: np.ndarray, maximize: bool = True
 ) -> float:
     """Compute hypervolume indicator for a set of points.
 
@@ -190,9 +181,7 @@ def compute_hypervolume(
 
 
 def compute_hypervolume_mixed(
-    points: np.ndarray,
-    ref_point: np.ndarray,
-    objective_directions: List[bool]
+    points: np.ndarray, ref_point: np.ndarray, objective_directions: List[bool]
 ) -> float:
     """Compute hypervolume with mixed objectives (some maximize, some minimize).
 

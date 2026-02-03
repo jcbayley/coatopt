@@ -1,16 +1,19 @@
 #!/usr/bin/env python3
 import argparse
 import configparser
-from pathlib import Path
 import tempfile
+from pathlib import Path
+
+import mlflow
 import optuna
 from optuna.integration.mlflow import MLflowCallback
-import mlflow
 
 from coatopt.run import run_experiment
 
 
-def create_trial_config(base_config_path: str, trial: optuna.Trial, sweep_params: dict) -> str:
+def create_trial_config(
+    base_config_path: str, trial: optuna.Trial, sweep_params: dict
+) -> str:
     """Create a temporary config with trial parameters.
 
     Args:
@@ -26,41 +29,49 @@ def create_trial_config(base_config_path: str, trial: optuna.Trial, sweep_params
 
     # Suggest parameters based on sweep config
     for param_name, param_config in sweep_params.items():
-        section, key = param_name.rsplit('.', 1)
-        param_type = param_config['type']
+        section, key = param_name.rsplit(".", 1)
+        param_type = param_config["type"]
 
-        if param_type == 'float':
+        if param_type == "float":
             value = trial.suggest_float(
                 param_name,
-                param_config['min'],
-                param_config['max'],
-                log=param_config.get('log', False)
+                param_config["min"],
+                param_config["max"],
+                log=param_config.get("log", False),
             )
-        elif param_type == 'int':
-            value = trial.suggest_int(param_name, param_config['min'], param_config['max'])
-        elif param_type == 'categorical':
-            value = trial.suggest_categorical(param_name, param_config['choices'])
+        elif param_type == "int":
+            value = trial.suggest_int(
+                param_name, param_config["min"], param_config["max"]
+            )
+        elif param_type == "categorical":
+            value = trial.suggest_categorical(param_name, param_config["choices"])
         else:
             raise ValueError(f"Unknown parameter type: {param_type}")
 
         parser.set(section, key, str(value))
 
     # Update run_name to include trial number
-    if parser.has_option('general', 'run_name'):
-        base_run_name = parser.get('general', 'run_name')
-        parser.set('general', 'run_name', f"{base_run_name}_trial{trial.number}")
+    if parser.has_option("general", "run_name"):
+        base_run_name = parser.get("general", "run_name")
+        parser.set("general", "run_name", f"{base_run_name}_trial{trial.number}")
     else:
-        parser.set('general', 'run_name', f"trial{trial.number}")
+        parser.set("general", "run_name", f"trial{trial.number}")
 
     # Save trial config to temporary file
-    with tempfile.NamedTemporaryFile(mode='w', suffix='.ini', delete=False) as f:
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".ini", delete=False) as f:
         parser.write(f)
         trial_config_path = f.name
 
     return trial_config_path
 
 
-def objective(trial: optuna.Trial, base_config_path: str, sweep_params: dict, metric: str, direction: str):
+def objective(
+    trial: optuna.Trial,
+    base_config_path: str,
+    sweep_params: dict,
+    metric: str,
+    direction: str,
+):
     """Optuna objective function.
 
     Args:
@@ -83,11 +94,15 @@ def objective(trial: optuna.Trial, base_config_path: str, sweep_params: dict, me
         # Get metric from MLflow
         client = mlflow.tracking.MlflowClient()
         runs = client.search_runs(
-            experiment_ids=[mlflow.get_experiment_by_name(
-                client.get_run(mlflow.last_active_run().info.run_id).info.experiment_id
-            ).experiment_id],
+            experiment_ids=[
+                mlflow.get_experiment_by_name(
+                    client.get_run(
+                        mlflow.last_active_run().info.run_id
+                    ).info.experiment_id
+                ).experiment_id
+            ],
             order_by=[f"attributes.start_time DESC"],
-            max_results=1
+            max_results=1,
         )
 
         if not runs:
@@ -135,25 +150,29 @@ def run_sweep(config_path: str, n_trials: int = 50, study_name: str = None):
     parser = configparser.ConfigParser()
     parser.read(config_path)
 
-    if 'sweep' not in parser.sections():
-        raise ValueError("Config must have a [sweep] section. See example in config_sb3_simple.ini")
+    if "sweep" not in parser.sections():
+        raise ValueError(
+            "Config must have a [sweep] section. See example in config_sb3_simple.ini"
+        )
 
     # Parse sweep parameters
     sweep_params = {}
-    for key, value in parser['sweep'].items():
-        if key.startswith('param_'):
-            param_name = key.replace('param_', '', 1)
+    for key, value in parser["sweep"].items():
+        if key.startswith("param_"):
+            param_name = key.replace("param_", "", 1)
             try:
                 sweep_params[param_name] = eval(value)
             except Exception as e:
                 raise ValueError(f"Error parsing sweep parameter '{key}': {e}")
 
     if not sweep_params:
-        raise ValueError("No sweep parameters defined. Add 'param_*' entries to [Sweep] section.")
+        raise ValueError(
+            "No sweep parameters defined. Add 'param_*' entries to [Sweep] section."
+        )
 
     # Get sweep configuration
-    metric = parser.get('sweep', 'metric', fallback='eval/mean_reward')
-    direction = parser.get('sweep', 'direction', fallback='maximize')
+    metric = parser.get("sweep", "metric", fallback="eval/mean_reward")
+    direction = parser.get("sweep", "direction", fallback="maximize")
 
     if study_name is None:
         study_name = f"sweep_{config_path.stem}"
@@ -170,36 +189,43 @@ def run_sweep(config_path: str, n_trials: int = 50, study_name: str = None):
     study = optuna.create_study(
         direction=direction,
         study_name=study_name,
-        load_if_exists=True  # Allow resuming studies
+        load_if_exists=True,  # Allow resuming studies
     )
 
     # Run optimization
     mlflow_callback = MLflowCallback(
-        tracking_uri=mlflow.get_tracking_uri(),
-        metric_name=metric
+        tracking_uri=mlflow.get_tracking_uri(), metric_name=metric
     )
 
     study.optimize(
-        lambda trial: objective(trial, str(config_path), sweep_params, metric, direction),
+        lambda trial: objective(
+            trial, str(config_path), sweep_params, metric, direction
+        ),
         n_trials=n_trials,
         callbacks=[mlflow_callback],
-        show_progress_bar=True
+        show_progress_bar=True,
     )
 
     # Print results
-    print("\n" + "="*80)
+    print("\n" + "=" * 80)
     print("SWEEP RESULTS")
-    print("="*80)
+    print("=" * 80)
     print(f"Best trial: {study.best_trial.number}")
     print(f"Best {metric}: {study.best_value:.6f}")
     print("\nBest parameters:")
     for param, value in study.best_params.items():
         print(f"  {param}: {value}")
     print("\nTop 5 trials:")
-    for i, trial in enumerate(sorted(study.trials, key=lambda t: t.value or float('-inf'), reverse=(direction=='maximize'))[:5]):
+    for i, trial in enumerate(
+        sorted(
+            study.trials,
+            key=lambda t: t.value or float("-inf"),
+            reverse=(direction == "maximize"),
+        )[:5]
+    ):
         if trial.value is not None:
             print(f"  {i+1}. Trial {trial.number}: {trial.value:.6f}")
-    print("="*80)
+    print("=" * 80)
 
 
 if __name__ == "__main__":
@@ -211,19 +237,16 @@ if __name__ == "__main__":
         "--config",
         type=str,
         required=True,
-        help="Path to base configuration file with [Sweep] section"
+        help="Path to base configuration file with [Sweep] section",
     )
     parser.add_argument(
-        "--n-trials",
-        type=int,
-        default=50,
-        help="Number of trials to run (default: 50)"
+        "--n-trials", type=int, default=50, help="Number of trials to run (default: 50)"
     )
     parser.add_argument(
         "--study-name",
         type=str,
         default=None,
-        help="Optional study name (default: sweep_<config_name>)"
+        help="Optional study name (default: sweep_<config_name>)",
     )
 
     args = parser.parse_args()

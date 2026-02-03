@@ -14,10 +14,10 @@ import torch
 from ..environments.state import CoatingState
 from ..environments.utils import coating_utils, state_utils
 from ..utils.metrics import (
-    update_pareto_front,
-    update_pareto_front_mixed,
     compute_hypervolume,
     compute_hypervolume_mixed,
+    update_pareto_front,
+    update_pareto_front_mixed,
 )
 
 
@@ -68,9 +68,9 @@ class CoatingEnvironment:
 
         # Objective directions: True = maximize, False = minimize
         self.objective_directions = {
-            "reflectivity": True,   # Higher is better
-            "absorption": False,    # Lower is better
-            "thermal_noise": False, # Lower is better
+            "reflectivity": True,  # Higher is better
+            "absorption": False,  # Lower is better
+            "thermal_noise": False,  # Lower is better
         }
 
         # Action space constraints
@@ -118,8 +118,12 @@ class CoatingEnvironment:
         # Multi-objective tracking
         # IMPORTANT: Reward space Pareto front is used for all calculations
         # Value space Pareto front is only for visual diagnostics
-        self.pareto_front_rewards = []  # List of (reward_vector, state) - used for calculations
-        self.pareto_front_values = []   # List of (value_vector, state) - used for plotting
+        self.pareto_front_rewards = (
+            []
+        )  # List of (reward_vector, state) - used for calculations
+        self.pareto_front_values = (
+            []
+        )  # List of (value_vector, state) - used for plotting
         self.all_points = []
 
         # Observation space shape
@@ -197,7 +201,7 @@ class CoatingEnvironment:
                 self.current_state,
                 objective_weights=objective_weights,
                 pc_tracker=pc_tracker,
-                phase_info=phase_info
+                phase_info=phase_info,
             )
 
             # Always update pareto front when episode finishes (for tracking and optional bonus)
@@ -280,7 +284,7 @@ class CoatingEnvironment:
                     max_reward = -np.log(np.abs(max_val - target) + 1e-30)
                     self.reward_bounds[obj] = [
                         min(min_reward, max_reward),
-                        max(min_reward, max_reward)
+                        max(min_reward, max_reward),
                     ]
 
     def update_observed_bounds(self, vals: dict):
@@ -300,7 +304,9 @@ class CoatingEnvironment:
         """Update best normalised reward seen during warmup."""
         old_best = self.warmup_best_rewards[objective]
         if normalised_reward > old_best:
-            print(f"    WARMUP: New best {objective}={normalised_reward:.4f} (was {old_best:.4f})")
+            print(
+                f"    WARMUP: New best {objective}={normalised_reward:.4f} (was {old_best:.4f})"
+            )
         self.warmup_best_rewards[objective] = max(old_best, normalised_reward)
 
     def enable_constrained_training(
@@ -317,7 +323,9 @@ class CoatingEnvironment:
         """
         self.use_constrained_training = True
         self.warmup_episodes_per_objective = warmup_episodes_per_objective
-        self.total_warmup_episodes = warmup_episodes_per_objective * len(self.optimise_parameters)
+        self.total_warmup_episodes = warmup_episodes_per_objective * len(
+            self.optimise_parameters
+        )
         self.steps_per_objective = steps_per_objective
         self.epochs_per_step = epochs_per_step
         self.constraint_penalty = constraint_penalty
@@ -374,7 +382,9 @@ class CoatingEnvironment:
                 if max_reward <= min_reward:
                     rewards[objective] = 0.5
                 else:
-                    rewards[objective] = np.exp((raw_reward - min_reward) / (max_reward - min_reward))
+                    rewards[objective] = np.exp(
+                        (raw_reward - min_reward) / (max_reward - min_reward)
+                    )
             else:
                 rewards[objective] = raw_reward
 
@@ -384,7 +394,9 @@ class CoatingEnvironment:
     # REWARD MODIFIERS (applied on top of base rewards)
     # ========================================================================
 
-    def _compute_constraint_penalty(self, vals: dict, base_rewards: Dict[str, float]) -> float:
+    def _compute_constraint_penalty(
+        self, vals: dict, base_rewards: Dict[str, float]
+    ) -> float:
         """Compute constraint violation penalty.
 
         Args:
@@ -431,7 +443,9 @@ class CoatingEnvironment:
 
         # Build reward vector for current point (normalised rewards)
         reward_dict = self.compute_objective_rewards(vals, normalised=True)
-        current_reward = np.array([reward_dict.get(param, 0.0) for param in self.optimise_parameters])
+        current_reward = np.array(
+            [reward_dict.get(param, 0.0) for param in self.optimise_parameters]
+        )
 
         # Get current Pareto front reward vectors
         current_front = [np.array(r) for r, _ in self.pareto_front_rewards]
@@ -605,11 +619,15 @@ class CoatingEnvironment:
             return
 
         # Get value vector
-        val_vector = np.array([objectives.get(param, 0.0) for param in self.optimise_parameters])
+        val_vector = np.array(
+            [objectives.get(param, 0.0) for param in self.optimise_parameters]
+        )
 
         # Get reward vector (normalised rewards)
         reward_dict = self.compute_objective_rewards(objectives, normalised=True)
-        reward_vector = np.array([reward_dict.get(param, 0.0) for param in self.optimise_parameters])
+        reward_vector = np.array(
+            [reward_dict.get(param, 0.0) for param in self.optimise_parameters]
+        )
 
         # Check for duplicates FIRST (before dominance check)
         # This prevents the same solution from being added multiple times
@@ -622,15 +640,15 @@ class CoatingEnvironment:
 
         # Update reward front using utility function (all objectives maximized in reward space)
         updated_reward_vectors = update_pareto_front(
-            existing_reward_vectors,
-            reward_vector,
-            maximize=True
+            existing_reward_vectors, reward_vector, maximize=True
         )
 
         # If the front size didn't change and new point wasn't added, it was dominated
         if len(updated_reward_vectors) == len(existing_reward_vectors):
             # Check if new point is in updated front
-            new_point_added = any(np.allclose(v, reward_vector) for v in updated_reward_vectors)
+            new_point_added = any(
+                np.allclose(v, reward_vector) for v in updated_reward_vectors
+            )
             if not new_point_added:
                 return  # New point was dominated, don't add it
 
@@ -656,7 +674,6 @@ class CoatingEnvironment:
         self.pareto_front_rewards = new_reward_front
         self.pareto_front_values = new_value_front
 
-
     def get_state(self) -> CoatingState:
         """Get current state."""
         return self.current_state
@@ -665,7 +682,9 @@ class CoatingEnvironment:
         """Set current state."""
         self.current_state = state.copy()
 
-    def get_pareto_front(self, space: str = "reward") -> List[Tuple[List[float], CoatingState]]:
+    def get_pareto_front(
+        self, space: str = "reward"
+    ) -> List[Tuple[List[float], CoatingState]]:
         """Get Pareto front.
 
         Args:
@@ -679,7 +698,9 @@ class CoatingEnvironment:
         else:
             return self.pareto_front_rewards.copy()
 
-    def compute_hypervolume(self, space: str = "reward", ref_point: List[float] = None) -> float:
+    def compute_hypervolume(
+        self, space: str = "reward", ref_point: List[float] = None
+    ) -> float:
         """Compute hypervolume of the Pareto front.
 
         Args:
@@ -718,8 +739,13 @@ class CoatingEnvironment:
             return compute_hypervolume(objective_vectors, ref_point, maximize=True)
         else:
             # Value space: mixed objectives (use objective_directions)
-            objective_dirs = [self.objective_directions.get(param, True) for param in self.optimise_parameters]
-            return compute_hypervolume_mixed(objective_vectors, ref_point, objective_dirs)
+            objective_dirs = [
+                self.objective_directions.get(param, True)
+                for param in self.optimise_parameters
+            ]
+            return compute_hypervolume_mixed(
+                objective_vectors, ref_point, objective_dirs
+            )
 
     def get_parameter_names(self) -> List[str]:
         """Get list of optimization parameter names."""

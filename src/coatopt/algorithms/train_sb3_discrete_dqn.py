@@ -1,18 +1,19 @@
 #!/usr/bin/env python3
+import time
 from pathlib import Path
+
 import gymnasium as gym
 import numpy as np
 from stable_baselines3 import DQN
 
 from coatopt.environments.environment import CoatingEnvironment
-from coatopt.utils.configs import load_config
 from coatopt.utils.callbacks import PlottingCallback
+from coatopt.utils.configs import load_config
 from coatopt.utils.utils import load_materials, save_run_metadata
-import time
+
 
 class CoatOptDQNGymWrapper(gym.Env):
-    """Gymnasium wrapper for CoatingEnvironment with flattened discrete actions for DQN.
-    """
+    """Gymnasium wrapper for CoatingEnvironment with flattened discrete actions for DQN."""
 
     metadata = {"render_modes": []}
 
@@ -43,9 +44,7 @@ class CoatOptDQNGymWrapper(gym.Env):
 
         # Precompute thickness bins
         self.thickness_bins = np.linspace(
-            self.env.min_thickness,
-            self.env.max_thickness,
-            n_thickness_bins
+            self.env.min_thickness, self.env.max_thickness, n_thickness_bins
         )
 
         # Multi-objective settings
@@ -55,7 +54,9 @@ class CoatOptDQNGymWrapper(gym.Env):
         # Training schedule
         self.epochs_per_step = epochs_per_step
         self.warmup_episodes_per_objective = epochs_per_step
-        self.total_warmup_episodes = self.warmup_episodes_per_objective * len(self.objectives)
+        self.total_warmup_episodes = self.warmup_episodes_per_objective * len(
+            self.objectives
+        )
         self.steps_per_objective = steps_per_objective
         self.n_objectives = len(self.objectives)
         self.total_levels = self.steps_per_objective
@@ -124,8 +125,12 @@ class CoatOptDQNGymWrapper(gym.Env):
         # === PHASE 1: WARMUP ===
         if self.episode_count <= self.total_warmup_episodes:
             self.is_warmup = True
-            self.warmup_objective_idx = (self.episode_count - 1) // self.warmup_episodes_per_objective
-            self.warmup_objective_idx = min(self.warmup_objective_idx, self.n_objectives - 1)
+            self.warmup_objective_idx = (
+                self.episode_count - 1
+            ) // self.warmup_episodes_per_objective
+            self.warmup_objective_idx = min(
+                self.warmup_objective_idx, self.n_objectives - 1
+            )
             self.target_objective = self.objectives[self.warmup_objective_idx]
             self.env.target_objective = self.target_objective
             self.constraints = {}
@@ -155,8 +160,12 @@ class CoatOptDQNGymWrapper(gym.Env):
             # Interleaved: alternate objectives, both constraints tighten together
             # After all levels complete, restart with no constraints
             target_idx = new_phase % self.n_objectives
-            level_cycle = (new_phase // self.n_objectives) % (self.total_levels + 1)  # Cycle through 0-10
-            current_level = level_cycle  # 0 means no constraints, 1-10 are constraint levels
+            level_cycle = (new_phase // self.n_objectives) % (
+                self.total_levels + 1
+            )  # Cycle through 0-10
+            current_level = (
+                level_cycle  # 0 means no constraints, 1-10 are constraint levels
+            )
             constrained_idx = None  # Not used in interleaved mode
 
         elif self.constraint_schedule == "sequential":
@@ -165,7 +174,9 @@ class CoatOptDQNGymWrapper(gym.Env):
             # Phases 10-19: Constrain A (levels 1-10), Opt R
             cycle_length = self.total_levels * self.n_objectives
             cycle_phase = new_phase % cycle_length
-            constrained_idx = cycle_phase // self.total_levels  # Which objective is CONSTRAINED
+            constrained_idx = (
+                cycle_phase // self.total_levels
+            )  # Which objective is CONSTRAINED
             current_level = (cycle_phase % self.total_levels) + 1
             # Target to optimize is the OPPOSITE of what's constrained
             target_idx = (constrained_idx + 1) % self.n_objectives
@@ -178,7 +189,9 @@ class CoatOptDQNGymWrapper(gym.Env):
         if new_target != self.target_objective:
             self.target_objective = new_target
             self.env.target_objective = self.target_objective
-            print(f"\n=== TARGET OBJECTIVE CHANGED TO: {self.target_objective} (Phase {new_phase}) ===\n")
+            print(
+                f"\n=== TARGET OBJECTIVE CHANGED TO: {self.target_objective} (Phase {new_phase}) ===\n"
+            )
 
         # Update phase tracking and constraints when entering a new phase
         if new_phase != self.current_phase or self.current_phase == 0:
@@ -190,15 +203,17 @@ class CoatOptDQNGymWrapper(gym.Env):
 
             # In interleaved mode with level 0, no constraints (restart cycle)
             if self.constraint_schedule == "interleaved" and self.current_level == 0:
-                print(f"\n=== CONSTRAINT CYCLE COMPLETE - Restarting with NO constraints (Phase {new_phase}) ===\n")
+                print(
+                    f"\n=== CONSTRAINT CYCLE COMPLETE - Restarting with NO constraints (Phase {new_phase}) ===\n"
+                )
             else:
                 for i, obj in enumerate(self.objectives):
                     # In sequential mode: constrain the constrained_idx objective
                     # In interleaved mode: constrain all objectives except target
                     if self.constraint_schedule == "sequential":
-                        should_constrain = (i == constrained_idx)
+                        should_constrain = i == constrained_idx
                     else:  # interleaved
-                        should_constrain = (i != target_idx)
+                        should_constrain = i != target_idx
 
                     if should_constrain:
                         step_fraction = min(1.0, self.current_level / self.total_levels)
@@ -223,7 +238,10 @@ class CoatOptDQNGymWrapper(gym.Env):
 
         # Apply action masking rules (modify invalid actions)
         # Rule 1: Block consecutive same material
-        if self.mask_consecutive_materials and material_idx == self.previous_material_idx:
+        if (
+            self.mask_consecutive_materials
+            and material_idx == self.previous_material_idx
+        ):
             # Find a different material
             for alt_mat in range(self.env.n_materials):
                 if alt_mat != self.previous_material_idx:
@@ -231,7 +249,10 @@ class CoatOptDQNGymWrapper(gym.Env):
                     break
 
         # Rule 2: Block air until minimum layers reached
-        if self.mask_air_until_min_layers and self.current_layer < self.min_layers_before_air:
+        if (
+            self.mask_air_until_min_layers
+            and self.current_layer < self.min_layers_before_air
+        ):
             if material_idx == self.air_material_idx:
                 # Choose first non-air material
                 material_idx = 1 if self.env.n_materials > 1 else 0
@@ -242,7 +263,9 @@ class CoatOptDQNGymWrapper(gym.Env):
         coatopt_action[1 + material_idx] = 1.0
 
         # Step environment
-        state, rewards, terminated, finished, total_reward, _, vals = self.env.step(coatopt_action)
+        state, rewards, terminated, finished, total_reward, _, vals = self.env.step(
+            coatopt_action
+        )
 
         # Track previous material for next step
         self.previous_material_idx = material_idx
@@ -265,12 +288,18 @@ class CoatOptDQNGymWrapper(gym.Env):
                 "constraints": self.constraints,
                 "state_array": state.get_array(),
                 "constrained_reward": total_reward,
-                "episode": {'r': total_reward, 'l': self.current_layer, 't': 0},
+                "episode": {"r": total_reward, "l": self.current_layer, "t": 0},
                 "is_warmup": self.is_warmup,
             }
 
-            phase_str = f"WARMUP[{self.target_objective}]" if self.is_warmup else f"CONSTR[{self.target_objective}]"
-            print(f"{phase_str} R={vals.get('reflectivity', 0):.4f}, A={vals.get('absorption', 0):.1f}, reward={total_reward:.3f}")
+            phase_str = (
+                f"WARMUP[{self.target_objective}]"
+                if self.is_warmup
+                else f"CONSTR[{self.target_objective}]"
+            )
+            print(
+                f"{phase_str} R={vals.get('reflectivity', 0):.4f}, A={vals.get('absorption', 0):.1f}, reward={total_reward:.3f}"
+            )
 
         return obs, float(total_reward), done, truncated, info
 
@@ -294,45 +323,63 @@ def train(config_path: str, save_dir: str):
     parser.read(config_path)
 
     # [General] section
-    materials_path = parser.get('general', 'materials_path')
+    materials_path = parser.get("general", "materials_path")
 
     # [sb3_dqn] section
-    section = 'sb3_dqn'
-    total_timesteps = parser.getint(section, 'total_timesteps')
-    n_thickness_bins = parser.getint(section, 'n_thickness_bins')
-    verbose = parser.getint(section, 'verbose')
-    epochs_per_step = parser.getint(section, 'epochs_per_step')
-    steps_per_objective = parser.getint(section, 'steps_per_objective')
+    section = "sb3_dqn"
+    total_timesteps = parser.getint(section, "total_timesteps")
+    n_thickness_bins = parser.getint(section, "n_thickness_bins")
+    verbose = parser.getint(section, "verbose")
+    epochs_per_step = parser.getint(section, "epochs_per_step")
+    steps_per_objective = parser.getint(section, "steps_per_objective")
 
     # Action masking settings
-    mask_consecutive_materials = parser.getboolean(section, 'mask_consecutive_materials', fallback=True)
-    mask_air_until_min_layers = parser.getboolean(section, 'mask_air_until_min_layers', fallback=True)
-    min_layers_before_air = parser.getint(section, 'min_layers_before_air', fallback=4)
+    mask_consecutive_materials = parser.getboolean(
+        section, "mask_consecutive_materials", fallback=True
+    )
+    mask_air_until_min_layers = parser.getboolean(
+        section, "mask_air_until_min_layers", fallback=True
+    )
+    min_layers_before_air = parser.getint(section, "min_layers_before_air", fallback=4)
 
     # Constraint settings
-    constraint_penalty = parser.getfloat(section, 'constraint_penalty', fallback=10.0)
-    pareto_dominance_bonus = parser.getfloat(section, 'pareto_dominance_bonus', fallback=0.0)
+    constraint_penalty = parser.getfloat(section, "constraint_penalty", fallback=10.0)
+    pareto_dominance_bonus = parser.getfloat(
+        section, "pareto_dominance_bonus", fallback=0.0
+    )
 
     # DQN hyperparameters
-    learning_rate = parser.getfloat(section, 'learning_rate', fallback=1e-4)
-    buffer_size = parser.getint(section, 'buffer_size', fallback=50000)
-    learning_starts = parser.getint(section, 'learning_starts', fallback=300)
-    batch_size = parser.getint(section, 'batch_size', fallback=128)
-    gamma = parser.getfloat(section, 'gamma', fallback=0.99)
-    train_freq = parser.getint(section, 'train_freq', fallback=4)
-    gradient_steps = parser.getint(section, 'gradient_steps', fallback=1)
-    target_update_interval = parser.getint(section, 'target_update_interval', fallback=100)
-    exploration_fraction = parser.getfloat(section, 'exploration_fraction', fallback=0.3)
-    exploration_initial_eps = parser.getfloat(section, 'exploration_initial_eps', fallback=1.0)
-    exploration_final_eps = parser.getfloat(section, 'exploration_final_eps', fallback=0.05)
+    learning_rate = parser.getfloat(section, "learning_rate", fallback=1e-4)
+    buffer_size = parser.getint(section, "buffer_size", fallback=50000)
+    learning_starts = parser.getint(section, "learning_starts", fallback=300)
+    batch_size = parser.getint(section, "batch_size", fallback=128)
+    gamma = parser.getfloat(section, "gamma", fallback=0.99)
+    train_freq = parser.getint(section, "train_freq", fallback=4)
+    gradient_steps = parser.getint(section, "gradient_steps", fallback=1)
+    target_update_interval = parser.getint(
+        section, "target_update_interval", fallback=100
+    )
+    exploration_fraction = parser.getfloat(
+        section, "exploration_fraction", fallback=0.3
+    )
+    exploration_initial_eps = parser.getfloat(
+        section, "exploration_initial_eps", fallback=1.0
+    )
+    exploration_final_eps = parser.getfloat(
+        section, "exploration_final_eps", fallback=0.05
+    )
 
     # Network architecture
-    net_arch_str = parser.get(section, 'net_arch', fallback='[64, 64]')
+    net_arch_str = parser.get(section, "net_arch", fallback="[64, 64]")
     net_arch = eval(net_arch_str)  # Parse list from string
 
     # [Data] section
-    n_layers = parser.getint('data', 'n_layers')
-    constraint_schedule = parser.get('data', 'constraint_schedule', fallback='interleaved').strip('"').strip("'")
+    n_layers = parser.getint("data", "n_layers")
+    constraint_schedule = (
+        parser.get("data", "constraint_schedule", fallback="interleaved")
+        .strip('"')
+        .strip("'")
+    )
 
     save_dir = Path(save_dir)
     save_dir.mkdir(parents=True, exist_ok=True)
@@ -369,9 +416,13 @@ def train(config_path: str, save_dir: str):
 
     print(f"\nConstraint schedule: {constraint_schedule}")
     if constraint_schedule == "interleaved":
-        print(f"  Pattern: Alternate objectives every {epochs_per_step} episodes, both constraints tighten together")
+        print(
+            f"  Pattern: Alternate objectives every {epochs_per_step} episodes, both constraints tighten together"
+        )
     elif constraint_schedule == "sequential":
-        print(f"  Pattern: Complete all {steps_per_objective} constraint levels for each objective before switching")
+        print(
+            f"  Pattern: Complete all {steps_per_objective} constraint levels for each objective before switching"
+        )
 
     tb_log = None
 
@@ -431,6 +482,7 @@ def train(config_path: str, save_dir: str):
 
     # Get Pareto front size
     import pandas as pd
+
     pareto_csv = save_dir / "pareto_front_values.csv"
     pareto_size = 0
     if pareto_csv.exists():
@@ -455,7 +507,7 @@ def train(config_path: str, save_dir: str):
             "buffer_size": buffer_size,
             "batch_size": batch_size,
             "gamma": gamma,
-        }
+        },
     )
 
     return model
@@ -469,8 +521,7 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser(description="Train SB3 DQN on CoatOpt")
     parser.add_argument(
-        "--config", type=str, required=True,
-        help="Path to config INI file"
+        "--config", type=str, required=True, help="Path to config INI file"
     )
 
     args = parser.parse_args()

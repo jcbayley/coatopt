@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 import argparse
 import configparser
-from pathlib import Path
 import shutil
+import sys
 import warnings
 from datetime import datetime
+from pathlib import Path
+
 import mlflow
-import sys
 
 
 def run_experiment(config_path: str):
@@ -26,7 +27,15 @@ def run_experiment(config_path: str):
     parser.read(config_path)
 
     # Determine algorithm from section names
-    algorithm_sections = {'sb3_discrete', 'sb3_discrete_lstm', 'sb3_dqn', 'sb3_simple', 'morl', 'nsga2', 'hppo'}
+    algorithm_sections = {
+        "sb3_discrete",
+        "sb3_discrete_lstm",
+        "sb3_dqn",
+        "sb3_simple",
+        "morl",
+        "nsga2",
+        "hppo",
+    }
     algorithm = None
     for section in parser.sections():
         if section.lower() in algorithm_sections:
@@ -34,21 +43,23 @@ def run_experiment(config_path: str):
             break
 
     if algorithm is None:
-        raise ValueError(f"Config must have one of these algorithm sections: {algorithm_sections}")
+        raise ValueError(
+            f"Config must have one of these algorithm sections: {algorithm_sections}"
+        )
 
     print(f"Running algorithm: {algorithm}")
 
     # [General] section
-    base_save_dir = parser.get('general', 'save_dir')
-    run_name = parser.get('general', 'run_name', fallback='')
+    base_save_dir = parser.get("general", "save_dir")
+    run_name = parser.get("general", "run_name", fallback="")
 
     # Get or generate experiment name (problem definition)
-    experiment_name = parser.get('general', 'experiment_name', fallback=None)
+    experiment_name = parser.get("general", "experiment_name", fallback=None)
 
     # [Data] section - read for experiment name generation
-    n_layers = parser.getint('data', 'n_layers')
-    min_thickness = parser.getfloat('data', 'min_thickness', fallback=0.1)
-    max_thickness = parser.getfloat('data', 'max_thickness', fallback=0.5)
+    n_layers = parser.getint("data", "n_layers")
+    min_thickness = parser.getfloat("data", "min_thickness", fallback=0.1)
+    max_thickness = parser.getfloat("data", "max_thickness", fallback=0.5)
 
     if not experiment_name:
         experiment_name = f"{n_layers}layer-{min_thickness:.2f}-{max_thickness:.2f}"
@@ -68,7 +79,7 @@ def run_experiment(config_path: str):
         warnings.warn(
             f"\nWARNING: Run directory already exists: {save_dir}\n"
             f"    This will overwrite existing results!\n",
-            UserWarning
+            UserWarning,
         )
         sys.exit()
 
@@ -90,33 +101,41 @@ def run_experiment(config_path: str):
     print(f"MLflow run: {run_dir_name}")
 
     try:
-        #  algorithm-specific training 
-        if algorithm == 'sb3_discrete':
+        #  algorithm-specific training
+        if algorithm == "sb3_discrete":
             from coatopt.algorithms.train_sb3_discrete import train
+
             train(config_path=str(config_path), save_dir=str(save_dir))
 
-        elif algorithm == 'sb3_dqn':
+        elif algorithm == "sb3_dqn":
             from coatopt.algorithms.train_sb3_discrete_dqn import train
+
             train(config_path=str(config_path), save_dir=str(save_dir))
 
-        elif algorithm == 'sb3_simple':
+        elif algorithm == "sb3_simple":
             from coatopt.algorithms.train_sb3_continuous import train
+
             train(config_path=str(config_path), save_dir=str(save_dir))
 
-        elif algorithm == 'morl':
+        elif algorithm == "morl":
             from coatopt.algorithms.train_morl_simple import train_morld as train
+
             train(config_path=str(config_path), save_dir=str(save_dir))
 
-        elif algorithm == 'nsga2':
+        elif algorithm == "nsga2":
             from coatopt.algorithms.train_genetic_simple import train_genetic as train
+
             train(config_path=str(config_path), save_dir=str(save_dir))
 
-        elif algorithm == 'hppo':
+        elif algorithm == "hppo":
             from coatopt.algorithms.train_hppo_simple import train
+
             train(config_path=str(config_path), save_dir=str(save_dir))
 
         else:
-            raise ValueError(f"Unknown algorithm: {algorithm}. Must be one of: sb3_discrete, sb3_discrete_lstm, sb3_dqn, sb3_simple, morl, nsga2, hppo")
+            raise ValueError(
+                f"Unknown algorithm: {algorithm}. Must be one of: sb3_discrete, sb3_discrete_lstm, sb3_dqn, sb3_simple, morl, nsga2, hppo"
+            )
 
     finally:
         # Always end MLflow run

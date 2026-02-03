@@ -1,8 +1,8 @@
 """Shared configuration classes for CoatOpt experiments."""
 
-from dataclasses import dataclass, field
-import configparser
 import ast
+import configparser
+from dataclasses import dataclass, field
 from pathlib import Path
 
 
@@ -118,28 +118,33 @@ def load_config(config_path: str) -> Config:
 
     # Parse General section
     general_kwargs = {}
-    if parser.has_section('general'):
-        for key, value in parser['general'].items():
+    if parser.has_section("general"):
+        for key, value in parser["general"].items():
             # Parse boolean values
-            if key == 'disable_mlflow':
-                general_kwargs[key] = value.lower() == 'true'
+            if key == "disable_mlflow":
+                general_kwargs[key] = value.lower() == "true"
 
     # Parse Data section
     data_kwargs = {}
-    if parser.has_section('data'):
-        for key, value in parser['data'].items():
+    if parser.has_section("data"):
+        for key, value in parser["data"].items():
             # Parse boolean values
-            if value.lower() in ('true', 'false'):
-                data_kwargs[key] = value.lower() == 'true'
+            if value.lower() in ("true", "false"):
+                data_kwargs[key] = value.lower() == "true"
             # Parse int values
-            elif key in ('n_layers',):
+            elif key in ("n_layers",):
                 data_kwargs[key] = int(value)
             # Parse float values
-            elif key in ('min_thickness', 'max_thickness', 'air_penalty_weight'):
+            elif key in ("min_thickness", "max_thickness", "air_penalty_weight"):
                 data_kwargs[key] = float(value)
             # Parse lists and dicts using ast.literal_eval
-            elif key in ('optimise_parameters', 'optimise_targets', 'objective_bounds',
-                        'optimise_weight_ranges', 'design_criteria'):
+            elif key in (
+                "optimise_parameters",
+                "optimise_targets",
+                "objective_bounds",
+                "optimise_weight_ranges",
+                "design_criteria",
+            ):
                 try:
                     data_kwargs[key] = ast.literal_eval(value)
                 except:
@@ -149,36 +154,47 @@ def load_config(config_path: str) -> Config:
 
     # Parse Training section
     training_kwargs = {}
-    if parser.has_section('training'):
-        for key, value in parser['training'].items():
+    if parser.has_section("training"):
+        for key, value in parser["training"].items():
             # Parse int values
-            if key in ('warmup_episodes_per_objective', 'epochs_per_step', 'steps_per_objective'):
+            if key in (
+                "warmup_episodes_per_objective",
+                "epochs_per_step",
+                "steps_per_objective",
+            ):
                 training_kwargs[key] = int(value)
             # Parse float values
-            elif key in ('constraint_penalty',):
+            elif key in ("constraint_penalty",):
                 training_kwargs[key] = float(value)
             else:
                 training_kwargs[key] = value
 
     # Parse Algorithm section (PPO hyperparameters)
     algorithm_kwargs = {}
-    if parser.has_section('algorithm'):
-        for key, value in parser['algorithm'].items():
+    if parser.has_section("algorithm"):
+        for key, value in parser["algorithm"].items():
             # Parse int values
-            if key in ('n_steps', 'batch_size', 'n_epochs', 'lstm_hidden_size'):
+            if key in ("n_steps", "batch_size", "n_epochs", "lstm_hidden_size"):
                 algorithm_kwargs[key] = int(value)
             # Parse float values
-            elif key in ('learning_rate', 'gamma', 'gae_lambda', 'clip_range',
-                        'ent_coef', 'vf_coef', 'max_grad_norm'):
+            elif key in (
+                "learning_rate",
+                "gamma",
+                "gae_lambda",
+                "clip_range",
+                "ent_coef",
+                "vf_coef",
+                "max_grad_norm",
+            ):
                 algorithm_kwargs[key] = float(value)
             # Parse lists (net_arch)
-            elif key in ('net_arch_pi', 'net_arch_vf'):
+            elif key in ("net_arch_pi", "net_arch_vf"):
                 try:
                     algorithm_kwargs[key] = ast.literal_eval(value)
                 except:
                     algorithm_kwargs[key] = value
             # Parse string values (pre_network)
-            elif key in ('pre_network',):
+            elif key in ("pre_network",):
                 algorithm_kwargs[key] = value.strip('"').strip("'")
             else:
                 algorithm_kwargs[key] = value
@@ -187,5 +203,5 @@ def load_config(config_path: str) -> Config:
         data=DataConfig(**data_kwargs),
         training=TrainingConfig(**training_kwargs),
         algorithm=AlgorithmConfig(**algorithm_kwargs),
-        general=GeneralConfig(**general_kwargs)
+        general=GeneralConfig(**general_kwargs),
     )

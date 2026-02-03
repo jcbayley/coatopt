@@ -181,7 +181,9 @@ class TestCoatingEnvironmentStep:
         action[0] = 100e-9  # thickness
         action[2] = 1.0  # Select material index 1 (material_idx = argmax of action[1:])
 
-        state, rewards, terminated, finished, total_reward, full_action, vals = env.step(action)
+        state, rewards, terminated, finished, total_reward, full_action, vals = (
+            env.step(action)
+        )
 
         assert isinstance(state, CoatingState)
         assert isinstance(rewards, dict)
@@ -197,7 +199,9 @@ class TestCoatingEnvironmentStep:
 
         action = np.array([2, 150e-9])  # material 2, 150nm
 
-        state, rewards, terminated, finished, total_reward, full_action, vals = env.step(action)
+        state, rewards, terminated, finished, total_reward, full_action, vals = (
+            env.step(action)
+        )
 
         assert env.current_index == 1
         assert full_action == [2, 150e-9]
@@ -210,7 +214,9 @@ class TestCoatingEnvironmentStep:
         # Try thickness outside bounds
         action = np.array([2, 1000e-9])  # Too thick
 
-        state, rewards, terminated, finished, total_reward, full_action, vals = env.step(action)
+        state, rewards, terminated, finished, total_reward, full_action, vals = (
+            env.step(action)
+        )
 
         # Should be clamped to max_thickness
         assert full_action[1] <= env.max_thickness
@@ -223,7 +229,9 @@ class TestCoatingEnvironmentStep:
         # Select air material (index 0)
         action = np.array([0, 100e-9])
 
-        state, rewards, terminated, finished, total_reward, full_action, vals = env.step(action)
+        state, rewards, terminated, finished, total_reward, full_action, vals = (
+            env.step(action)
+        )
 
         assert finished is True
         assert env.done is True
@@ -236,12 +244,16 @@ class TestCoatingEnvironmentStep:
         # Add max_layers - 1 layers
         for i in range(env.max_layers - 1):
             action = np.array([2, 100e-9])
-            state, rewards, terminated, finished, total_reward, full_action, vals = env.step(action)
+            state, rewards, terminated, finished, total_reward, full_action, vals = (
+                env.step(action)
+            )
             assert finished is False
 
         # Add final layer
         action = np.array([2, 100e-9])
-        state, rewards, terminated, finished, total_reward, full_action, vals = env.step(action)
+        state, rewards, terminated, finished, total_reward, full_action, vals = (
+            env.step(action)
+        )
 
         assert finished is True
         assert env.done is True
@@ -261,7 +273,9 @@ class TestCoatingEnvironmentStep:
         env.reset()
 
         action = np.array([2, 100e-9])
-        state, rewards, terminated, finished, total_reward, full_action, vals = env.step(action)
+        state, rewards, terminated, finished, total_reward, full_action, vals = (
+            env.step(action)
+        )
 
         # Should have zero reward for intermediate step
         assert total_reward == 0.0
@@ -274,7 +288,9 @@ class TestCoatingEnvironmentStep:
         env.reset()
 
         action = np.array([2, 100e-9])
-        state, rewards, terminated, finished, total_reward, full_action, vals = env.step(action)
+        state, rewards, terminated, finished, total_reward, full_action, vals = (
+            env.step(action)
+        )
 
         # Should have non-zero values
         assert "reflectivity" in vals
@@ -392,7 +408,9 @@ class TestCoatingEnvironmentStateValue:
         state.set_layer(0, 100e-9, 2)  # SiO2
         state.set_layer(1, 100e-9, 3)  # aSi
 
-        reflectivity, thermal_noise, absorption, thickness = env.compute_state_value(state)
+        reflectivity, thermal_noise, absorption, thickness = env.compute_state_value(
+            state
+        )
 
         assert isinstance(reflectivity, (float, np.floating))
         assert isinstance(absorption, (float, np.floating))
@@ -406,7 +424,9 @@ class TestCoatingEnvironmentStateValue:
         state = env.reset()
 
         # Don't add any layers (all air)
-        reflectivity, thermal_noise, absorption, thickness = env.compute_state_value(state)
+        reflectivity, thermal_noise, absorption, thickness = env.compute_state_value(
+            state
+        )
 
         # Empty coating returns substrate properties
         assert isinstance(reflectivity, (float, np.floating))
@@ -475,7 +495,9 @@ class TestCoatingEnvironmentActionSpace:
 class TestCoatingEnvironmentParetoFront:
     """Test Pareto front tracking."""
 
-    def test_update_pareto_front_single_objective(self, single_objective_config, materials):
+    def test_update_pareto_front_single_objective(
+        self, single_objective_config, materials
+    ):
         """Test Pareto front with single objective (should not update)."""
         env = CoatingEnvironment(single_objective_config, materials)
         state = env.reset()
@@ -587,7 +609,10 @@ class TestCoatingEnvironmentConstrainedTraining:
         env.constraints = {"reflectivity": 0.5}  # Require normalized reward >= 0.5
 
         vals = {"reflectivity": 0.90, "absorption": 50.0}
-        base_rewards = {"reflectivity": 0.3, "absorption": 0.7}  # reflectivity violates constraint
+        base_rewards = {
+            "reflectivity": 0.3,
+            "absorption": 0.7,
+        }  # reflectivity violates constraint
 
         penalty = env._compute_constraint_penalty(vals, base_rewards)
 
@@ -630,7 +655,9 @@ class TestCoatingEnvironmentParetoBonus:
 
         assert bonus == 0.0  # No points to dominate
 
-    def test_compute_pareto_dominance_bonus_with_dominated_points(self, basic_config, materials):
+    def test_compute_pareto_dominance_bonus_with_dominated_points(
+        self, basic_config, materials
+    ):
         """Test Pareto bonus when dominating existing points."""
         env = CoatingEnvironment(basic_config, materials)
         env.enable_pareto_bonus(bonus=1.0)

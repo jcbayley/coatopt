@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
 import os
+import time
 from pathlib import Path
 from typing import Optional
 
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+from pymoo.algorithms.moo.moead import MOEAD
 from pymoo.algorithms.moo.nsga2 import NSGA2
 from pymoo.algorithms.moo.nsga3 import NSGA3
-from pymoo.algorithms.moo.moead import MOEAD
 from pymoo.core.problem import ElementwiseProblem
 from pymoo.core.repair import Repair
 from pymoo.operators.crossover.sbx import SBX
@@ -21,8 +22,6 @@ from coatopt.environments.environment import CoatingEnvironment
 from coatopt.environments.state import CoatingState
 from coatopt.utils.configs import Config, DataConfig, TrainingConfig, load_config
 from coatopt.utils.utils import load_materials, save_run_metadata
-from coatopt.environments.state import CoatingState
-import time
 
 
 class CoatingOptimizationProblem(ElementwiseProblem):
@@ -44,7 +43,9 @@ class CoatingOptimizationProblem(ElementwiseProblem):
         thick_lower = np.repeat(env.min_thickness, env.max_layers)
         thick_upper = np.repeat(env.max_thickness, env.max_layers)
         material_lower = np.repeat(0, env.max_layers)
-        material_upper = np.repeat(env.n_materials - 0.001, env.max_layers)  # Slightly less to avoid index error
+        material_upper = np.repeat(
+            env.n_materials - 0.001, env.max_layers
+        )  # Slightly less to avoid index error
 
         xl = np.concatenate((thick_lower, material_lower))
         xu = np.concatenate((thick_upper, material_upper))
@@ -59,8 +60,8 @@ class CoatingOptimizationProblem(ElementwiseProblem):
             out: Output dictionary for objectives
         """
         # Decode variables
-        thicknesses = x[:self.env.max_layers]
-        material_indices = np.floor(x[self.env.max_layers:]).astype(int)
+        thicknesses = x[: self.env.max_layers]
+        material_indices = np.floor(x[self.env.max_layers :]).astype(int)
 
         # Create coating state
         state = CoatingState(
@@ -118,16 +119,19 @@ class CoatingRepair(Repair):
 
         Note: Air layer handling is done in _evaluate, not here.
         """
-        materials_continuous = x[self.env.max_layers:].copy()
+        materials_continuous = x[self.env.max_layers :].copy()
         materials_idx = np.floor(materials_continuous).astype(int)
 
         # Fix consecutive same materials (excluding air)
         for j in range(1, len(materials_idx)):
-            if (materials_idx[j] == materials_idx[j-1] and
-                materials_idx[j] != self.env.air_material_index):
+            if (
+                materials_idx[j] == materials_idx[j - 1]
+                and materials_idx[j] != self.env.air_material_index
+            ):
                 # Change to a different random material
-                available = [m for m in range(self.env.n_materials)
-                           if m != materials_idx[j-1]]
+                available = [
+                    m for m in range(self.env.n_materials) if m != materials_idx[j - 1]
+                ]
                 if available:
                     materials_idx[j] = np.random.choice(available)
 
@@ -136,13 +140,17 @@ class CoatingRepair(Repair):
             for j in range(min(self.min_layers_before_air, len(materials_idx))):
                 if materials_idx[j] == self.env.air_material_index:
                     # Replace with random non-air material
-                    available = [m for m in range(self.env.n_materials) if m != self.env.air_material_index]
+                    available = [
+                        m
+                        for m in range(self.env.n_materials)
+                        if m != self.env.air_material_index
+                    ]
                     if available:
                         materials_idx[j] = np.random.choice(available)
 
         # Write back repaired material indices
         # Convert to continuous representation (add 0.5 so floor gives correct int)
-        x[self.env.max_layers:] = materials_idx + 0.5
+        x[self.env.max_layers :] = materials_idx + 0.5
 
         return x
 
@@ -164,23 +172,23 @@ def train_genetic(config_path: str, save_dir: Optional[str] = None):
 
     # [General] section
     if save_dir is None:
-        save_dir = parser.get('general', 'save_dir')
-    materials_path = parser.get('general', 'materials_path')
+        save_dir = parser.get("general", "save_dir")
+    materials_path = parser.get("general", "materials_path")
 
     # [nsga2] section
-    total_generations = parser.getint('nsga2', 'n_generations')
-    population_size = parser.getint('nsga2', 'population_size')
-    algorithm = parser.get('nsga2', 'algorithm')
-    seed = parser.getint('nsga2', 'seed')
-    crossover_prob = parser.getfloat('nsga2', 'crossover_probability')
-    crossover_eta = parser.getfloat('nsga2', 'crossover_eta')
-    mutation_prob = parser.getfloat('nsga2', 'mutation_probability')
-    mutation_eta = parser.getfloat('nsga2', 'mutation_eta')
-    min_layers_before_air = parser.getint('nsga2', 'min_layers_before_air', fallback=0)
+    total_generations = parser.getint("nsga2", "n_generations")
+    population_size = parser.getint("nsga2", "population_size")
+    algorithm = parser.get("nsga2", "algorithm")
+    seed = parser.getint("nsga2", "seed")
+    crossover_prob = parser.getfloat("nsga2", "crossover_probability")
+    crossover_eta = parser.getfloat("nsga2", "crossover_eta")
+    mutation_prob = parser.getfloat("nsga2", "mutation_probability")
+    mutation_eta = parser.getfloat("nsga2", "mutation_eta")
+    min_layers_before_air = parser.getint("nsga2", "min_layers_before_air", fallback=0)
     verbose = True
 
     # [Data] section
-    n_layers = parser.getint('data', 'n_layers')
+    n_layers = parser.getint("data", "n_layers")
 
     # Setup
     save_dir = Path(save_dir)
@@ -291,7 +299,7 @@ def train_genetic(config_path: str, save_dir: Optional[str] = None):
             "crossover_prob": crossover_prob,
             "mutation_prob": mutation_prob,
             "seed": seed,
-        }
+        },
     )
 
     return result
@@ -313,13 +321,12 @@ def save_results(result, env, materials, save_dir: Path, verbose: bool = True):
         row = {}
 
         # Design variables
-        thicknesses = x[:env.max_layers]
-        materials_idx = np.floor(x[env.max_layers:]).astype(int)
+        thicknesses = x[: env.max_layers]
+        materials_idx = np.floor(x[env.max_layers :]).astype(int)
 
         for j in range(env.max_layers):
             row[f"thickness_{j}"] = thicknesses[j]
             row[f"material_{j}"] = materials_idx[j]
-
 
         state = CoatingState(
             max_layers=env.max_layers,
@@ -356,17 +363,24 @@ def save_results(result, env, materials, save_dir: Path, verbose: bool = True):
     df.to_csv(combined_csv_path, index=False)
 
     # Save separate CSV files for values and rewards
-    value_cols = [col for col in df.columns if col.endswith('_val')]
-    design_cols = [col for col in df.columns if col.startswith('thickness_') or col.startswith('material_')]
+    value_cols = [col for col in df.columns if col.endswith("_val")]
+    design_cols = [
+        col
+        for col in df.columns
+        if col.startswith("thickness_") or col.startswith("material_")
+    ]
 
     values_df = df[design_cols + value_cols].copy()
     # Rename _val columns to remove suffix for compatibility
-    values_df.columns = [col.replace('_val', '') if col.endswith('_val') else col for col in values_df.columns]
+    values_df.columns = [
+        col.replace("_val", "") if col.endswith("_val") else col
+        for col in values_df.columns
+    ]
     values_csv_path = save_dir / "pareto_front_values.csv"
     values_df.to_csv(values_csv_path, index=False)
 
     # Extract reward columns
-    reward_cols = [col for col in df.columns if col.endswith('_reward')]
+    reward_cols = [col for col in df.columns if col.endswith("_reward")]
     rewards_df = df[design_cols + reward_cols].copy()
     rewards_csv_path = save_dir / "pareto_front_rewards.csv"
     rewards_df.to_csv(rewards_csv_path, index=False)
@@ -381,12 +395,12 @@ def save_results(result, env, materials, save_dir: Path, verbose: bool = True):
     # Plot a few sample designs
     n_samples = min(5, len(X))
     for i in range(n_samples):
-        plot_coating_stack(
-            X[i], env, materials, save_dir / f"stack_{i}.png"
-        )
+        plot_coating_stack(X[i], env, materials, save_dir / f"stack_{i}.png")
 
 
-def plot_pareto_front(df: pd.DataFrame, objectives: list, save_dir: Path, plot_type: str = "vals"):
+def plot_pareto_front(
+    df: pd.DataFrame, objectives: list, save_dir: Path, plot_type: str = "vals"
+):
     """Plot Pareto front in either vals or rewards space.
 
     Args:
@@ -436,7 +450,7 @@ def plot_pareto_front(df: pd.DataFrame, objectives: list, save_dir: Path, plot_t
     else:
         raise ValueError(f"plot_type must be 'vals' or 'rewards', got {plot_type}")
 
-    ax.scatter(x, y, c=color, s=50, alpha=0.7, edgecolor='black')
+    ax.scatter(x, y, c=color, s=50, alpha=0.7, edgecolor="black")
     ax.set_xlabel(xlabel)
     ax.set_ylabel(ylabel)
     ax.set_title(f"Pareto Front - {title_suffix} ({len(df)} solutions)")
@@ -447,12 +461,14 @@ def plot_pareto_front(df: pd.DataFrame, objectives: list, save_dir: Path, plot_t
     plt.close()
 
 
-def plot_coating_stack(x: np.ndarray, env: CoatingEnvironment, materials: dict, save_path: Path):
+def plot_coating_stack(
+    x: np.ndarray, env: CoatingEnvironment, materials: dict, save_path: Path
+):
     """Plot coating stack design."""
     fig, ax = plt.subplots(figsize=(8, 10))
 
-    thicknesses = x[:env.max_layers] * 1e9  # Convert to nm
-    material_indices = np.floor(x[env.max_layers:]).astype(int)
+    thicknesses = x[: env.max_layers] * 1e9  # Convert to nm
+    material_indices = np.floor(x[env.max_layers :]).astype(int)
 
     # Material colors
     colors = {
@@ -474,9 +490,14 @@ def plot_coating_stack(x: np.ndarray, env: CoatingEnvironment, materials: dict, 
         mat_name = materials.get(mat_idx, {}).get("name", f"M{mat_idx}")
 
         ax.bar(
-            0, thickness, bottom=y_pos, width=0.6,
-            color=color, edgecolor="black", linewidth=0.5,
-            label=mat_name if i == 0 or mat_idx not in material_indices[:i] else ""
+            0,
+            thickness,
+            bottom=y_pos,
+            width=0.6,
+            color=color,
+            edgecolor="black",
+            linewidth=0.5,
+            label=mat_name if i == 0 or mat_idx not in material_indices[:i] else "",
         )
         y_pos += thickness
 
@@ -502,9 +523,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--generations", type=int, default=100, help="Number of generations"
     )
-    parser.add_argument(
-        "--population", type=int, default=100, help="Population size"
-    )
+    parser.add_argument("--population", type=int, default=100, help="Population size")
     parser.add_argument(
         "--layers", type=int, default=20, help="Number of coating layers"
     )
@@ -526,7 +545,10 @@ if __name__ == "__main__":
         "--crossover-prob", type=float, default=0.9, help="Crossover probability"
     )
     parser.add_argument(
-        "--mutation-prob", type=float, default=None, help="Mutation probability (default: 1/n_var)"
+        "--mutation-prob",
+        type=float,
+        default=None,
+        help="Mutation probability (default: 1/n_var)",
     )
 
     args = parser.parse_args()

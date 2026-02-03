@@ -3,15 +3,15 @@
 Demonstration plot for multi-objective optimization showing feasible points and Pareto front.
 """
 
-import numpy as np
 import matplotlib.pyplot as plt
+import numpy as np
 from matplotlib import rc
 
 # Set up nice plotting style for presentations
-rc('font', size=14)
-rc('axes', titlesize=16)
-rc('axes', labelsize=14)
-rc('legend', fontsize=12)
+rc("font", size=14)
+rc("axes", titlesize=16)
+rc("axes", labelsize=14)
+rc("legend", fontsize=12)
 
 
 def is_pareto_efficient(costs):
@@ -83,44 +83,69 @@ def main():
     fig, ax = plt.subplots(figsize=(10, 7))
 
     # Plot non-Pareto (feasible) points
-    ax.scatter(non_pareto_points[:, 0], non_pareto_points[:, 1],
-               c='lightgray', s=50, alpha=0.6, label='Feasible solutions',
-               edgecolors='gray', linewidth=0.5, zorder=1)
+    ax.scatter(
+        non_pareto_points[:, 0],
+        non_pareto_points[:, 1],
+        c="lightgray",
+        s=50,
+        alpha=0.6,
+        label="Feasible solutions",
+        edgecolors="gray",
+        linewidth=0.5,
+        zorder=1,
+    )
 
     # Plot Pareto front points
-    ax.scatter(pareto_sorted[:, 0], pareto_sorted[:, 1],
-               c='#e74c3c', s=100, alpha=0.9, label='Pareto front',
-               edgecolors='darkred', linewidth=1.5, zorder=3)
+    ax.scatter(
+        pareto_sorted[:, 0],
+        pareto_sorted[:, 1],
+        c="#e74c3c",
+        s=100,
+        alpha=0.9,
+        label="Pareto front",
+        edgecolors="darkred",
+        linewidth=1.5,
+        zorder=3,
+    )
 
     # Connect Pareto front with a line
-    ax.plot(pareto_sorted[:, 0], pareto_sorted[:, 1],
-            'r-', linewidth=2.5, alpha=0.7, zorder=2)
+    ax.plot(
+        pareto_sorted[:, 0],
+        pareto_sorted[:, 1],
+        "r-",
+        linewidth=2.5,
+        alpha=0.7,
+        zorder=2,
+    )
 
     # Labels and title
-    ax.set_xlabel('1 - Reflectivity', fontweight='bold')
-    ax.set_ylabel('Absorption', fontweight='bold')
-    ax.set_title('Multi-Objective Optimization: Pareto Front',
-                 fontweight='bold', pad=20)
+    ax.set_xlabel("1 - Reflectivity", fontweight="bold")
+    ax.set_ylabel("Absorption", fontweight="bold")
+    ax.set_title(
+        "Multi-Objective Optimization: Pareto Front", fontweight="bold", pad=20
+    )
 
     # Add legend
-    ax.legend(loc='upper right', framealpha=0.95)
+    ax.legend(loc="upper right", framealpha=0.95)
 
     # Add grid
-    ax.grid(True, alpha=0.3, linestyle='--')
+    ax.grid(True, alpha=0.3, linestyle="--")
 
     # Set limits with some padding
     x_range = pareto_sorted[:, 0].max() - pareto_sorted[:, 0].min()
     y_range = pareto_sorted[:, 1].max() - pareto_sorted[:, 1].min()
-    ax.set_xlim(pareto_sorted[:, 0].min() - 0.1 * x_range,
-                points[:, 0].max() + 0.1 * x_range)
-    ax.set_ylim(pareto_sorted[:, 1].min() - 0.1 * y_range,
-                points[:, 1].max() + 0.1 * y_range)
+    ax.set_xlim(
+        pareto_sorted[:, 0].min() - 0.1 * x_range, points[:, 0].max() + 0.1 * x_range
+    )
+    ax.set_ylim(
+        pareto_sorted[:, 1].min() - 0.1 * y_range, points[:, 1].max() + 0.1 * y_range
+    )
 
     plt.tight_layout()
 
     # Save the figure
-    output_path = 'moo_demonstration.png'
-    plt.savefig(output_path, dpi=300, bbox_inches='tight', facecolor='white')
+    output_path = "moo_demonstration.png"
+    plt.savefig(output_path, dpi=300, bbox_inches="tight", facecolor="white")
     print(f"Plot saved to: {output_path}")
 
     # Show the plot

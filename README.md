@@ -99,7 +99,7 @@ The framework organizes results to mirror MLflow's experiment/run hierarchy:
 
 ```
 runs/
-  └── {experiment_name}/          
+  └── {experiment_name}/
       ├── 20240202-sb3_discrete-test1/    # Run 1: PPO discrete
       ├── 20240202-genetic-baseline/      # Run 2: NSGA-II
       └── 20240203-moead-tuned/           # Run 3: MOEA/D

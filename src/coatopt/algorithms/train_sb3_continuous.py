@@ -6,17 +6,16 @@ import numpy as np
 from stable_baselines3 import PPO
 
 from coatopt.environments.environment import CoatingEnvironment
-from coatopt.utils.configs import Config, DataConfig, TrainingConfig
 from coatopt.utils.callbacks import PlottingCallback
-from coatopt.utils.utils import load_materials, evaluate_model, EntropyAnnealingCallback
+from coatopt.utils.configs import Config, DataConfig, TrainingConfig
+from coatopt.utils.utils import EntropyAnnealingCallback, evaluate_model, load_materials
 
 
 # ============================================================================
 # GYMNASIUM WRAPPER
 # ============================================================================
 class CoatOptGymWrapper(gym.Env):
-    """Gymnasium wrapper for CoatingEnvironment with constraint-based multi-objective.
-    """
+    """Gymnasium wrapper for CoatingEnvironment with constraint-based multi-objective."""
 
     metadata = {"render_modes": []}
 
@@ -32,7 +31,6 @@ class CoatOptGymWrapper(gym.Env):
         # Consecutive material penalty
         consecutive_material_penalty: float = 0.2,
         # Annealing schedule
-
     ):
         super().__init__()
         self.env = CoatingEnvironment(config, materials)
@@ -41,8 +39,8 @@ class CoatOptGymWrapper(gym.Env):
         self.objectives = list(config.data.optimise_parameters)
         self.constraint_penalty = constraint_penalty
         self.target_constraint_bounds = target_constraint_bounds or {
-            "reflectivity": 0.99,   # Target: must achieve >= 99% reflectivity
-            "absorption": 1,     # Target: must achieve <= 1 ppm absorption
+            "reflectivity": 0.99,  # Target: must achieve >= 99% reflectivity
+            "absorption": 1,  # Target: must achieve <= 1 ppm absorption
         }
 
         # Consecutive material penalty
@@ -54,8 +52,12 @@ class CoatOptGymWrapper(gym.Env):
         self.steps_per_objective = 10
         self.n_objectives = len(self.objectives)
         self.total_levels = self.steps_per_objective
-        self.total_phases = self.total_levels * self.n_objectives  # 10 steps * 2 objectives = 20 phases
-        self.n_anneal_episodes = self.total_phases * self.epochs_per_step  # 20 * 100 = 2000 episodes
+        self.total_phases = (
+            self.total_levels * self.n_objectives
+        )  # 10 steps * 2 objectives = 20 phases
+        self.n_anneal_episodes = (
+            self.total_phases * self.epochs_per_step
+        )  # 20 * 100 = 2000 episodes
 
         # Episode counter for scheduling
         self.episode_count = 0
@@ -69,17 +71,23 @@ class CoatOptGymWrapper(gym.Env):
 
         # Track observed bounds during training (for annealing starting point)
         # These get updated as we see what the agent can actually achieve
-        self.observed_bounds = {obj: {"min": np.inf, "max": -np.inf} for obj in self.objectives}
+        self.observed_bounds = {
+            obj: {"min": np.inf, "max": -np.inf} for obj in self.objectives
+        }
 
         # Compute min and max rewards for annealing from objective bounds
         self.min_rewards = {}
         self.max_rewards = {}
         for obj in self.objectives:
             # Min reward: worst case from objective_bounds[0]
-            self.min_rewards[obj] = self.reward_function(obj, self.config.data.objective_bounds[obj][0])
+            self.min_rewards[obj] = self.reward_function(
+                obj, self.config.data.objective_bounds[obj][0]
+            )
             # Max reward: use target_constraint_bounds as the best achievable value for annealing
             # This represents the tightest constraint we want to reach
-            self.max_rewards[obj] = self.reward_function(obj, self.target_constraint_bounds[obj])
+            self.max_rewards[obj] = self.reward_function(
+                obj, self.target_constraint_bounds[obj]
+            )
 
         # Observation space
         n_features = 1 + self.env.n_materials + 2
@@ -125,16 +133,18 @@ class CoatOptGymWrapper(gym.Env):
 
         # Determine current phase and level
         new_phase = (self.episode_count - 1) // self.epochs_per_step
-        
+
         # Only recompute constraints when entering a new phase
         if new_phase != self.current_phase:
             self.current_phase = new_phase
             # Alternate between objectives every phase
             target_idx = self.current_phase % self.n_objectives
             self.target_objective = self.objectives[target_idx]
-            
+
             # Level increases every n_objectives phases (every 2 phases = every 200 episodes)
-            self.current_level = (self.current_phase // self.n_objectives) + 1  # 1 to total_levels
+            self.current_level = (
+                self.current_phase // self.n_objectives
+            ) + 1  # 1 to total_levels
 
             # Set constraints on other objectives: random within [min, step_level]
             self.constraints = {}
@@ -146,7 +156,9 @@ class CoatOptGymWrapper(gym.Env):
                     constraint_max = min_r + (max_r - min_r) * step_fraction
                     self.constraints[obj] = np.random.uniform(min_r, constraint_max)
 
-        progress = min(1.0, self.episode_count / (self.total_phases * self.epochs_per_step))
+        progress = min(
+            1.0, self.episode_count / (self.total_phases * self.epochs_per_step)
+        )
         return self._get_obs(state), {
             "target": self.target_objective,
             "constraints": self.constraints,
@@ -164,7 +176,10 @@ class CoatOptGymWrapper(gym.Env):
 
         # Check for consecutive same material penalty
         consecutive_penalty = 0.0
-        if self.previous_material_idx is not None and material_idx == self.previous_material_idx:
+        if (
+            self.previous_material_idx is not None
+            and material_idx == self.previous_material_idx
+        ):
             consecutive_penalty = self.consecutive_material_penalty
 
         # Update previous material tracking
@@ -199,13 +214,12 @@ class CoatOptGymWrapper(gym.Env):
             "constraints": self.constraints,
             "consecutive_penalty": consecutive_penalty,
             "annealing_progress": self._get_annealing_progress(),
-            "episode": {'r': 0, 'l': 20, 't': 0}, 
-            'state_array': None, 
-            'constrained_reward': -1.0114863423176935e+19, 
-            'TimeLimit.truncated': False, 
-            'terminal_observation': None
-            }
-        
+            "episode": {"r": 0, "l": 20, "t": 0},
+            "state_array": None,
+            "constrained_reward": -1.0114863423176935e19,
+            "TimeLimit.truncated": False,
+            "terminal_observation": None,
+        }
 
         # At episode end: check constraints and compute final reward
         if done:
@@ -216,8 +230,12 @@ class CoatOptGymWrapper(gym.Env):
                 if obj in vals and vals[obj] is not None:
                     val = float(vals[obj])
                     if not np.isnan(val):
-                        self.observed_bounds[obj]["min"] = min(self.observed_bounds[obj]["min"], val)
-                        self.observed_bounds[obj]["max"] = max(self.observed_bounds[obj]["max"], val)
+                        self.observed_bounds[obj]["min"] = min(
+                            self.observed_bounds[obj]["min"], val
+                        )
+                        self.observed_bounds[obj]["max"] = max(
+                            self.observed_bounds[obj]["max"], val
+                        )
 
             # Compute reward: target objective value + constraint penalties
             total_reward = self._compute_constrained_reward(vals) - consecutive_penalty
@@ -234,7 +252,7 @@ class CoatOptGymWrapper(gym.Env):
 
         # Compute log-target reward (from old coating_reward_function)
         reward = self.reward_function(self.target_objective, target_val)
-        
+
         # Handle inf/nan rewards
         if np.isnan(reward) or np.isinf(reward):
             reward = -self.constraint_penalty
@@ -249,7 +267,7 @@ class CoatOptGymWrapper(gym.Env):
 
             # Compute reward for this objective
             reward_obj = self.reward_function(obj, val)
-            
+
             # Handle inf/nan constraint rewards
             if np.isnan(reward_obj) or np.isinf(reward_obj):
                 penalty += self.constraint_penalty
@@ -262,8 +280,6 @@ class CoatOptGymWrapper(gym.Env):
 
         final_reward = reward - penalty
         return np.clip(final_reward, -1000, 1000)  # Prevent extreme values
-
-
 
 
 # ============================================================================
@@ -284,18 +300,18 @@ def train(config_path: str):
     parser.read(config_path)
 
     # [General] section
-    save_dir = parser.get('general', 'save_dir')
-    materials_path = parser.get('general', 'materials_path')
+    save_dir = parser.get("general", "save_dir")
+    materials_path = parser.get("general", "materials_path")
 
     # [sb3_simple] section
-    total_timesteps = parser.getint('sb3_simple', 'total_timesteps')
-    verbose = parser.getint('sb3_simple', 'verbose')
-    target_reflectivity = parser.getfloat('sb3_simple', 'target_reflectivity')
-    target_absorption = parser.getfloat('sb3_simple', 'target_absorption')
-    tensorboard_log = parser.get('sb3_simple', 'tensorboard_log')
+    total_timesteps = parser.getint("sb3_simple", "total_timesteps")
+    verbose = parser.getint("sb3_simple", "verbose")
+    target_reflectivity = parser.getfloat("sb3_simple", "target_reflectivity")
+    target_absorption = parser.getfloat("sb3_simple", "target_absorption")
+    tensorboard_log = parser.get("sb3_simple", "tensorboard_log")
 
     # [Data] section
-    n_layers = parser.getint('data', 'n_layers')
+    n_layers = parser.getint("data", "n_layers")
 
     # Set up directories
     save_dir = Path(save_dir)
@@ -411,6 +427,7 @@ def train(config_path: str):
     print(f"\nStarting training for {total_timesteps} timesteps...")
     # Combine callbacks
     from stable_baselines3.common.callbacks import CallbackList
+
     callbacks = CallbackList([entropy_callback, plotting_callback])
     model.learn(total_timesteps=total_timesteps, callback=callbacks)
 
@@ -424,8 +441,6 @@ def train(config_path: str):
     evaluate_model(model, env, n_episodes=10)
 
     return model
-
-
 
 
 # ============================================================================
@@ -454,12 +469,16 @@ if __name__ == "__main__":
 
     # Annealing schedule arguments
     parser.add_argument(
-        "--target-reflectivity", type=float, default=0.99,
-        help="Target reflectivity constraint (tightest, at end of annealing)"
+        "--target-reflectivity",
+        type=float,
+        default=0.99,
+        help="Target reflectivity constraint (tightest, at end of annealing)",
     )
     parser.add_argument(
-        "--target-absorption", type=float, default=1,
-        help="Target absorption constraint in ppm (tightest, at end of annealing)"
+        "--target-absorption",
+        type=float,
+        default=1,
+        help="Target absorption constraint in ppm (tightest, at end of annealing)",
     )
 
     args = parser.parse_args()

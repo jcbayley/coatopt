@@ -2,11 +2,12 @@
 
 import json
 import math
-import numpy as np
 import platform
 import time
 from datetime import datetime
 from pathlib import Path
+
+import numpy as np
 from stable_baselines3.common.callbacks import BaseCallback
 
 
@@ -44,10 +45,12 @@ def evaluate_model(model, env, n_episodes: int = 10, use_action_masks: bool = Fa
         steps = 0
 
         while not done:
-            if use_action_masks and hasattr(env, 'action_masks'):
+            if use_action_masks and hasattr(env, "action_masks"):
                 # MaskablePPO with action masking
                 action_masks = env.action_masks()
-                action, _ = model.predict(obs, deterministic=True, action_masks=action_masks)
+                action, _ = model.predict(
+                    obs, deterministic=True, action_masks=action_masks
+                )
             else:
                 # Standard PPO
                 action, _ = model.predict(obs, deterministic=True)
@@ -119,11 +122,9 @@ def save_run_metadata(
 
     # Save to JSON
     metadata_path = save_dir / "run_metadata.json"
-    with open(metadata_path, 'w') as f:
+    with open(metadata_path, "w") as f:
         json.dump(metadata, indent=2, fp=f)
 
     print(f"\nRun metadata saved to {metadata_path}")
     print(f"  Duration: {duration_minutes:.1f} minutes ({duration_hours:.2f} hours)")
     print(f"  Final Pareto front size: {pareto_front_size}")
-
-

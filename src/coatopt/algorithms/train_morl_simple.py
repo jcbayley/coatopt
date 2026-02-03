@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
 import json
+import time
 from pathlib import Path
 
 import gymnasium as gym
-from gymnasium.spaces import Box
 import matplotlib.pyplot as plt
 import numpy as np
+from gymnasium.spaces import Box
 
 from coatopt.environments.environment import CoatingEnvironment
 from coatopt.utils.configs import Config, DataConfig, TrainingConfig
 from coatopt.utils.utils import load_materials, save_run_metadata
-import time
 
 
 # ============================================================================
@@ -25,8 +25,7 @@ class CoatOptEnvSpec:
 
 
 class CoatOptMOGymWrapper(gym.Env):
-    """MO-Gymnasium compatible wrapper for CoatingEnvironment.
-    """
+    """MO-Gymnasium compatible wrapper for CoatingEnvironment."""
 
     metadata = {"render_modes": []}
 
@@ -100,7 +99,10 @@ class CoatOptMOGymWrapper(gym.Env):
 
         # Check for consecutive same material penalty
         consecutive_penalty = 0.0
-        if self.previous_material_idx is not None and material_idx == self.previous_material_idx:
+        if (
+            self.previous_material_idx is not None
+            and material_idx == self.previous_material_idx
+        ):
             consecutive_penalty = self.consecutive_material_penalty
 
         # Update previous material tracking
@@ -132,14 +134,21 @@ class CoatOptMOGymWrapper(gym.Env):
         if done:
             # Final episode reward based on actual objective values
             # Get normalised rewards for all objectives
-            normalised_rewards = self.env.compute_objective_rewards(vals, normalised=True)
-            vec_reward = np.array([normalised_rewards.get(obj, 0.0) for obj in self.objectives], dtype=np.float32)
+            normalised_rewards = self.env.compute_objective_rewards(
+                vals, normalised=True
+            )
+            vec_reward = np.array(
+                [normalised_rewards.get(obj, 0.0) for obj in self.objectives],
+                dtype=np.float32,
+            )
             # Apply consecutive penalty to all objectives
             vec_reward = vec_reward - consecutive_penalty
             info["state_array"] = state.get_array()
         else:
             # Intermediate reward: apply penalty if consecutive material used
-            vec_reward = np.full(self.reward_dim, -consecutive_penalty, dtype=np.float32)
+            vec_reward = np.full(
+                self.reward_dim, -consecutive_penalty, dtype=np.float32
+            )
 
         return obs, vec_reward, done, truncated, info
 
@@ -459,8 +468,9 @@ class ParetoFrontTracker:
             filename: Base name of CSV files (will create two files:
                      {base}_values.csv and {base}_rewards.csv)
         """
-        import pandas as pd
         from pathlib import Path
+
+        import pandas as pd
 
         # Build base filename
         filepath = Path(filename)
@@ -509,7 +519,9 @@ class ParetoFrontTracker:
                 df = df.sort_values(by="absorption", ascending=True)
             df.to_csv(values_filepath, index=False)
             saved_files.append(str(values_filepath))
-            print(f"Saved VALUE space Pareto front to {values_filepath} ({len(df)} points)")
+            print(
+                f"Saved VALUE space Pareto front to {values_filepath} ({len(df)} points)"
+            )
 
         # === Save REWARD space Pareto front ===
         if self.pareto_front:
@@ -546,11 +558,11 @@ class ParetoFrontTracker:
             df = df.sort_values(by="absorption_reward", ascending=False)
             df.to_csv(rewards_filepath, index=False)
             saved_files.append(str(rewards_filepath))
-            print(f"Saved REWARD space Pareto front to {rewards_filepath} ({len(df)} points)")
+            print(
+                f"Saved REWARD space Pareto front to {rewards_filepath} ({len(df)} points)"
+            )
 
         return saved_files
-
-
 
 
 # ============================================================================
@@ -694,23 +706,23 @@ def train_morld(config_path: str, save_dir: str = None):
 
     # [General] section
     if save_dir is None:
-        save_dir = parser.get('general', 'save_dir')
-    materials_path = parser.get('general', 'materials_path')
+        save_dir = parser.get("general", "save_dir")
+    materials_path = parser.get("general", "materials_path")
 
     # [morl] section
-    total_timesteps = parser.getint('morl', 'total_timesteps')
-    pop_size = parser.getint('morl', 'pop_size')
-    seed = parser.getint('morl', 'seed')
-    verbose = parser.getint('morl', 'verbose')
-    plot_freq = parser.getint('morl', 'plot_freq')
-    eval_freq = parser.getint('morl', 'eval_freq')
+    total_timesteps = parser.getint("morl", "total_timesteps")
+    pop_size = parser.getint("morl", "pop_size")
+    seed = parser.getint("morl", "seed")
+    verbose = parser.getint("morl", "verbose")
+    plot_freq = parser.getint("morl", "plot_freq")
+    eval_freq = parser.getint("morl", "eval_freq")
 
     # Network architecture
-    net_arch_str = parser.get('morl', 'net_arch', fallback='[256, 256]')
+    net_arch_str = parser.get("morl", "net_arch", fallback="[256, 256]")
     net_arch = eval(net_arch_str)
 
     # [Data] section
-    n_layers = parser.getint('data', 'n_layers')
+    n_layers = parser.getint("data", "n_layers")
     try:
         from morl_baselines.multi_policy.morld.morld import MORLD
     except ImportError:
@@ -855,8 +867,12 @@ def train_morld(config_path: str, save_dir: str = None):
                 f"HV={hv:.4f}"
             )
             if tracker.pareto_front:
-                best_R = max(s["vals"].get("reflectivity", 0) for s in tracker.pareto_front)
-                best_A = min(s["vals"].get("absorption", 1) for s in tracker.pareto_front)
+                best_R = max(
+                    s["vals"].get("reflectivity", 0) for s in tracker.pareto_front
+                )
+                best_A = min(
+                    s["vals"].get("absorption", 1) for s in tracker.pareto_front
+                )
                 print(f"  Best R={best_R:.6f}, Best A={best_A:.2e}")
 
         # Periodic plotting
@@ -876,7 +892,11 @@ def train_morld(config_path: str, save_dir: str = None):
             # Save timestamped copies
             import shutil
 
-            for src_name in ["pareto_front.png", "best_designs.png", "training_metrics.png"]:
+            for src_name in [
+                "pareto_front.png",
+                "best_designs.png",
+                "training_metrics.png",
+            ]:
                 src = save_dir / src_name
                 if src.exists():
                     dst = plots_dir / f"{src.stem}_t{current_timesteps}{src.suffix}"
@@ -908,7 +928,9 @@ def train_morld(config_path: str, save_dir: str = None):
         print("\nPareto Front Summary:")
         print("-" * 60)
         for i, sol in enumerate(
-            sorted(tracker.pareto_front, key=lambda x: -x["vals"].get("reflectivity", 0))
+            sorted(
+                tracker.pareto_front, key=lambda x: -x["vals"].get("reflectivity", 0)
+            )
         ):
             R = sol["vals"].get("reflectivity", 0)
             A = sol["vals"].get("absorption", 0)
@@ -927,7 +949,7 @@ def train_morld(config_path: str, save_dir: str = None):
             "total_timesteps": total_timesteps,
             "pop_size": pop_size,
             "seed": seed,
-        }
+        },
     )
 
     return agent, tracker
@@ -940,6 +962,7 @@ def calculate_hypervolume(pareto_front: list, ref_point: np.ndarray) -> float:
 
     try:
         from pymoo.indicators.hv import HV
+
         points = np.array([s["reward"] for s in pareto_front])
         # Negate because pymoo expects minimization
         hv_indicator = HV(ref_point=-ref_point)
@@ -959,7 +982,10 @@ def calculate_hypervolume(pareto_front: list, ref_point: np.ndarray) -> float:
 
 
 def evaluate_pareto_front(
-    agent, env: CoatOptMOGymWrapper, tracker: ParetoFrontTracker, n_eval_episodes: int = 10
+    agent,
+    env: CoatOptMOGymWrapper,
+    tracker: ParetoFrontTracker,
+    n_eval_episodes: int = 10,
 ) -> dict:
     """Evaluate agent's policies to extract Pareto front.
 
@@ -997,7 +1023,9 @@ def evaluate_pareto_front(
                 # Get action from the policy
                 # Try different interfaces that MORL-baselines policies might have
                 if hasattr(wrapped_policy, "eval"):
-                    action = wrapped_policy.eval(obs, policy.weights if hasattr(policy, "weights") else None)
+                    action = wrapped_policy.eval(
+                        obs, policy.weights if hasattr(policy, "weights") else None
+                    )
                 elif hasattr(wrapped_policy, "act"):
                     action = wrapped_policy.act(obs)
                 elif hasattr(wrapped_policy, "get_action"):
@@ -1232,7 +1260,9 @@ def train_nlmoppo(
         import mo_gymnasium as mo_gym
         from mo_gymnasium.utils import MORecordEpisodeStatistics
     except ImportError:
-        raise ImportError("mo-gymnasium not installed. Install with: pip install mo-gymnasium")
+        raise ImportError(
+            "mo-gymnasium not installed. Install with: pip install mo-gymnasium"
+        )
 
     import torch
 
@@ -1324,6 +1354,7 @@ def train_nlmoppo(
         try:
             # Try MOPPO first (more common)
             from morl_baselines.single_policy.ser.mo_ppo import MOPPO
+
             agent = MOPPO(
                 id=pref_idx,
                 envs=envs,
@@ -1344,6 +1375,7 @@ def train_nlmoppo(
         except Exception:
             # Fall back to NLMOPPO
             from morl_baselines.single_policy.ser.nl_mo_ppo import NLMOPPO
+
             agent = NLMOPPO(
                 id=pref_idx,
                 envs=envs,
@@ -1411,7 +1443,9 @@ def train_nlmoppo(
         print("\nPareto Front Summary:")
         print("-" * 60)
         for i, sol in enumerate(
-            sorted(tracker.pareto_front, key=lambda x: -x["vals"].get("reflectivity", 0))
+            sorted(
+                tracker.pareto_front, key=lambda x: -x["vals"].get("reflectivity", 0)
+            )
         ):
             R = sol["vals"].get("reflectivity", 0)
             A = sol["vals"].get("absorption", 0)
