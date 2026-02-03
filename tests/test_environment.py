@@ -20,7 +20,7 @@ from coatopt.utils.configs import Config, DataConfig, TrainingConfig
 @pytest.fixture
 def materials():
     """Load materials from the default materials.json file."""
-    materials_path = Path(__file__).parent.parent / "examples" / "materials.json"
+    materials_path = Path(__file__).parent.parent / "experiments" / "materials.json"
     with open(materials_path) as f:
         materials_dict = json.load(f)
 
