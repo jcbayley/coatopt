@@ -552,8 +552,8 @@ def train(config_path: str):
     parser.read(config_path)
 
     # [General] section
-    save_dir = parser.get('General', 'save_dir')
-    materials_path = parser.get('General', 'materials_path')
+    save_dir = parser.get('general', 'save_dir')
+    materials_path = parser.get('general', 'materials_path')
 
     # [hppo] section
     total_episodes = parser.getint('hppo', 'total_episodes', fallback=1000)

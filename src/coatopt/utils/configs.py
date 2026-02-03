@@ -118,16 +118,16 @@ def load_config(config_path: str) -> Config:
 
     # Parse General section
     general_kwargs = {}
-    if parser.has_section('General'):
-        for key, value in parser['General'].items():
+    if parser.has_section('general'):
+        for key, value in parser['general'].items():
             # Parse boolean values
             if key == 'disable_mlflow':
                 general_kwargs[key] = value.lower() == 'true'
 
     # Parse Data section
     data_kwargs = {}
-    if parser.has_section('Data'):
-        for key, value in parser['Data'].items():
+    if parser.has_section('data'):
+        for key, value in parser['data'].items():
             # Parse boolean values
             if value.lower() in ('true', 'false'):
                 data_kwargs[key] = value.lower() == 'true'
@@ -149,8 +149,8 @@ def load_config(config_path: str) -> Config:
 
     # Parse Training section
     training_kwargs = {}
-    if parser.has_section('Training'):
-        for key, value in parser['Training'].items():
+    if parser.has_section('training'):
+        for key, value in parser['training'].items():
             # Parse int values
             if key in ('warmup_episodes_per_objective', 'epochs_per_step', 'steps_per_objective'):
                 training_kwargs[key] = int(value)
@@ -162,8 +162,8 @@ def load_config(config_path: str) -> Config:
 
     # Parse Algorithm section (PPO hyperparameters)
     algorithm_kwargs = {}
-    if parser.has_section('Algorithm'):
-        for key, value in parser['Algorithm'].items():
+    if parser.has_section('algorithm'):
+        for key, value in parser['algorithm'].items():
             # Parse int values
             if key in ('n_steps', 'batch_size', 'n_epochs', 'lstm_hidden_size'):
                 algorithm_kwargs[key] = int(value)

@@ -694,8 +694,8 @@ def train_morld(config_path: str, save_dir: str = None):
 
     # [General] section
     if save_dir is None:
-        save_dir = parser.get('General', 'save_dir')
-    materials_path = parser.get('General', 'materials_path')
+        save_dir = parser.get('general', 'save_dir')
+    materials_path = parser.get('general', 'materials_path')
 
     # [morl] section
     total_timesteps = parser.getint('morl', 'total_timesteps')
@@ -710,7 +710,7 @@ def train_morld(config_path: str, save_dir: str = None):
     net_arch = eval(net_arch_str)
 
     # [Data] section
-    n_layers = parser.getint('Data', 'n_layers')
+    n_layers = parser.getint('data', 'n_layers')
     try:
         from morl_baselines.multi_policy.morld.morld import MORLD
     except ImportError:

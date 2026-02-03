@@ -294,7 +294,7 @@ def train(config_path: str, save_dir: str):
     parser.read(config_path)
 
     # [General] section
-    materials_path = parser.get('General', 'materials_path')
+    materials_path = parser.get('general', 'materials_path')
 
     # [sb3_dqn] section
     section = 'sb3_dqn'
@@ -331,8 +331,8 @@ def train(config_path: str, save_dir: str):
     net_arch = eval(net_arch_str)  # Parse list from string
 
     # [Data] section
-    n_layers = parser.getint('Data', 'n_layers')
-    constraint_schedule = parser.get('Data', 'constraint_schedule', fallback='interleaved').strip('"').strip("'")
+    n_layers = parser.getint('data', 'n_layers')
+    constraint_schedule = parser.get('data', 'constraint_schedule', fallback='interleaved').strip('"').strip("'")
 
     save_dir = Path(save_dir)
     save_dir.mkdir(parents=True, exist_ok=True)

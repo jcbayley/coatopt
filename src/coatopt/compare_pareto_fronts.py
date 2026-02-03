@@ -775,7 +775,7 @@ Examples:
         if config_path and config_path.exists():
             parser = configparser.ConfigParser()
             parser.read(config_path)
-            materials_path = parser.get('General', 'materials_path')
+            materials_path = parser.get('general', 'materials_path')
             materials = load_materials(materials_path)
             config = load_config(str(config_path))
             env = CoatingEnvironment(config, materials)

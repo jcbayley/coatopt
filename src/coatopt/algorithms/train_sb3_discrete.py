@@ -595,12 +595,12 @@ def train(config_path: str, save_dir: str = None):
     parser.read(config_path)
 
     # [General] section
-    materials_path = parser.get('General', 'materials_path')
+    materials_path = parser.get('general', 'materials_path')
 
     # If save_dir not provided, create it 
     if save_dir is None:
-        base_save_dir = parser.get('General', 'save_dir')
-        run_name = parser.get('General', 'run_name', fallback='')
+        base_save_dir = parser.get('general', 'save_dir')
+        run_name = parser.get('general', 'run_name', fallback='')
         date_str = datetime.now().strftime("%Y%m%d")
         algorithm_name = "sb3_discrete"
         if run_name:
@@ -633,8 +633,8 @@ def train(config_path: str, save_dir: str = None):
     reset_policy_each_phase = parser.getboolean(section, 'reset_policy_each_phase', fallback=False)
 
     # [Data] section
-    n_layers = parser.getint('Data', 'n_layers')
-    constraint_schedule = parser.get('Data', 'constraint_schedule', fallback='interleaved').strip('"').strip("'")
+    n_layers = parser.getint('data', 'n_layers')
+    constraint_schedule = parser.get('data', 'constraint_schedule', fallback='interleaved').strip('"').strip("'")
 
     save_dir = Path(save_dir)
     save_dir.mkdir(parents=True, exist_ok=True)

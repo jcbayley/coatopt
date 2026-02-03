@@ -39,16 +39,16 @@ def run_experiment(config_path: str):
     print(f"Running algorithm: {algorithm}")
 
     # [General] section
-    base_save_dir = parser.get('General', 'save_dir')
-    run_name = parser.get('General', 'run_name', fallback='')
+    base_save_dir = parser.get('general', 'save_dir')
+    run_name = parser.get('general', 'run_name', fallback='')
 
     # Get or generate experiment name (problem definition)
-    experiment_name = parser.get('General', 'experiment_name', fallback=None)
+    experiment_name = parser.get('general', 'experiment_name', fallback=None)
 
     # [Data] section - read for experiment name generation
-    n_layers = parser.getint('Data', 'n_layers')
-    min_thickness = parser.getfloat('Data', 'min_thickness', fallback=0.1)
-    max_thickness = parser.getfloat('Data', 'max_thickness', fallback=0.5)
+    n_layers = parser.getint('data', 'n_layers')
+    min_thickness = parser.getfloat('data', 'min_thickness', fallback=0.1)
+    max_thickness = parser.getfloat('data', 'max_thickness', fallback=0.5)
 
     if not experiment_name:
         experiment_name = f"{n_layers}layer-{min_thickness:.2f}-{max_thickness:.2f}"

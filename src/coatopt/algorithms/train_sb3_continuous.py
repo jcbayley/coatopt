@@ -284,8 +284,8 @@ def train(config_path: str):
     parser.read(config_path)
 
     # [General] section
-    save_dir = parser.get('General', 'save_dir')
-    materials_path = parser.get('General', 'materials_path')
+    save_dir = parser.get('general', 'save_dir')
+    materials_path = parser.get('general', 'materials_path')
 
     # [sb3_simple] section
     total_timesteps = parser.getint('sb3_simple', 'total_timesteps')
@@ -295,7 +295,7 @@ def train(config_path: str):
     tensorboard_log = parser.get('sb3_simple', 'tensorboard_log')
 
     # [Data] section
-    n_layers = parser.getint('Data', 'n_layers')
+    n_layers = parser.getint('data', 'n_layers')
 
     # Set up directories
     save_dir = Path(save_dir)

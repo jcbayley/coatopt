@@ -164,8 +164,8 @@ def train_genetic(config_path: str, save_dir: Optional[str] = None):
 
     # [General] section
     if save_dir is None:
-        save_dir = parser.get('General', 'save_dir')
-    materials_path = parser.get('General', 'materials_path')
+        save_dir = parser.get('general', 'save_dir')
+    materials_path = parser.get('general', 'materials_path')
 
     # [nsga2] section
     total_generations = parser.getint('nsga2', 'n_generations')
@@ -180,7 +180,7 @@ def train_genetic(config_path: str, save_dir: Optional[str] = None):
     verbose = True
 
     # [Data] section
-    n_layers = parser.getint('Data', 'n_layers')
+    n_layers = parser.getint('data', 'n_layers')
 
     # Setup
     save_dir = Path(save_dir)
