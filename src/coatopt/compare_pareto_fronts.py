@@ -144,17 +144,13 @@ def create_reference_data(
             env.substrate_material_index,
             materials,
         )
-        reflectivity, thermal_noise, absorption, total_thickness = (
-            env.compute_state_value(coating_state)
-        )
-        print(reflectivity, absorption)
 
-        vals = {
-            "reflectivity": reflectivity,
-            "absorption": absorption,
-        }
-        # Use new compute_objective_rewards method with normalised=True
-        rewards = env.compute_objective_rewards(vals, normalised=True)
+        # Use compute_reward to get both values and rewards
+        reflectivity, thermal_noise, absorption, thickness = env.compute_state_value(
+            coating_state
+        )
+        rewards, vals = env.compute_reward(coating_state, normalised=True)
+        print(vals["reflectivity"], vals["absorption"])
 
         # Extract thicknesses and materials for plotting
         thicknesses = state_array[:, 0]
