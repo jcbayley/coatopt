@@ -20,8 +20,9 @@ from pymoo.util.ref_dirs import get_reference_directions
 from coatopt.environments.environment import CoatingEnvironment
 from coatopt.environments.state import CoatingState
 from coatopt.utils.configs import Config, DataConfig, TrainingConfig, load_config
-from coatopt.utils.utils import load_materials
+from coatopt.utils.utils import load_materials, save_run_metadata
 from coatopt.environments.state import CoatingState
+import time
 
 
 class CoatingOptimizationProblem(ElementwiseProblem):
@@ -259,6 +260,7 @@ def train_genetic(config_path: str, save_dir: Optional[str] = None):
         print(f"  Mutation prob: {mutation_prob}")
 
     # Run optimization
+    start_time = time.time()
     result = minimize(
         problem,
         algo,
@@ -266,6 +268,7 @@ def train_genetic(config_path: str, save_dir: Optional[str] = None):
         seed=seed,
         verbose=verbose,
     )
+    end_time = time.time()
 
     if verbose:
         print(f"\nOptimization complete!")
@@ -273,6 +276,23 @@ def train_genetic(config_path: str, save_dir: Optional[str] = None):
 
     # Save results
     save_results(result, env, materials, save_dir, verbose)
+
+    # Save run metadata
+    save_run_metadata(
+        save_dir=save_dir,
+        algorithm_name=algorithm,
+        start_time=start_time,
+        end_time=end_time,
+        pareto_front_size=len(result.F),
+        total_generations=total_generations,
+        config_path=config_path,
+        additional_info={
+            "population_size": population_size,
+            "crossover_prob": crossover_prob,
+            "mutation_prob": mutation_prob,
+            "seed": seed,
+        }
+    )
 
     return result
 

@@ -175,7 +175,16 @@ def plot_both_spaces_comparison(
     fig, (ax_values, ax_rewards) = plt.subplots(1, 2, figsize=figsize)
     colors = plt.cm.tab10(np.linspace(0, 1, len(pareto_fronts)))
 
-    # === LEFT PLOT: VALUE SPACE ===
+    # Add reference points to VALUE space if provided
+    if reference_values is not None and 'reflectivity' in reference_values.columns and 'absorption' in reference_values.columns:
+        x_ref = reference_values['absorption'].values
+        y_ref = reference_values['reflectivity'].values
+        y_ref_loss = 1 - y_ref
+        valid_ref = ~(np.isnan(x_ref) | np.isnan(y_ref_loss) | np.isinf(x_ref) | np.isinf(y_ref_loss) | (y_ref_loss <= 0))
+        ax_values.scatter(x_ref[valid_ref], y_ref_loss[valid_ref], marker='x', s=300,
+                         color='red', edgecolor='black', linewidth=1.5,
+                         label='Reference', zorder=100, alpha=0.5)
+        
     for i, (values_df, rewards_df, label) in enumerate(pareto_fronts):
         if values_df is None or 'reflectivity' not in values_df.columns or 'absorption' not in values_df.columns:
             print(f"Warning: {label} missing value space data, skipping value plot")
@@ -207,15 +216,7 @@ def plot_both_spaces_comparison(
         ax_values.plot(x_sorted, y_loss_sorted, color=colors[i], alpha=0.4,
                       linewidth=2, linestyle='--', zorder=5+i)
 
-    # Add reference points to VALUE space if provided
-    if reference_values is not None and 'reflectivity' in reference_values.columns and 'absorption' in reference_values.columns:
-        x_ref = reference_values['absorption'].values
-        y_ref = reference_values['reflectivity'].values
-        y_ref_loss = 1 - y_ref
-        valid_ref = ~(np.isnan(x_ref) | np.isnan(y_ref_loss) | np.isinf(x_ref) | np.isinf(y_ref_loss) | (y_ref_loss <= 0))
-        ax_values.scatter(x_ref[valid_ref], y_ref_loss[valid_ref], marker='*', s=300,
-                         color='gold', edgecolor='black', linewidth=1.5,
-                         label='Reference', zorder=100)
+
 
     ax_values.set_xlabel('Absorption (ppm)', fontsize=12)
     ax_values.set_ylabel('1 - Reflectivity', fontsize=12)
@@ -225,7 +226,17 @@ def plot_both_spaces_comparison(
     ax_values.grid(True, alpha=0.3, linestyle='--')
     ax_values.legend(loc='best', fontsize=9, framealpha=0.9)
 
-    # === RIGHT PLOT: REWARD SPACE ===
+    # reward plots
+
+    # Add reference points to REWARD space if provided
+    if reference_rewards is not None and 'reflectivity_reward' in reference_rewards.columns and 'absorption_reward' in reference_rewards.columns:
+        x_ref = reference_rewards['absorption_reward'].values
+        y_ref = reference_rewards['reflectivity_reward'].values
+        valid_ref = ~(np.isnan(x_ref) | np.isnan(y_ref) | np.isinf(x_ref) | np.isinf(y_ref))
+        ax_rewards.scatter(x_ref[valid_ref], y_ref[valid_ref], marker='x', s=300,
+                          color='red', edgecolor='black', linewidth=1.5,
+                          label='Reference', zorder=100)
+        
     for i, (values_df, rewards_df, label) in enumerate(pareto_fronts):
         if rewards_df is None or 'reflectivity_reward' not in rewards_df.columns or 'absorption_reward' not in rewards_df.columns:
             print(f"Warning: {label} missing reward space data, skipping reward plot")
@@ -254,14 +265,7 @@ def plot_both_spaces_comparison(
         ax_rewards.plot(x_sorted, y_sorted, color=colors[i], alpha=0.4,
                        linewidth=2, linestyle='--', zorder=5+i)
 
-    # Add reference points to REWARD space if provided
-    if reference_rewards is not None and 'reflectivity_reward' in reference_rewards.columns and 'absorption_reward' in reference_rewards.columns:
-        x_ref = reference_rewards['absorption_reward'].values
-        y_ref = reference_rewards['reflectivity_reward'].values
-        valid_ref = ~(np.isnan(x_ref) | np.isnan(y_ref) | np.isinf(x_ref) | np.isinf(y_ref))
-        ax_rewards.scatter(x_ref[valid_ref], y_ref[valid_ref], marker='*', s=300,
-                          color='gold', edgecolor='black', linewidth=1.5,
-                          label='Reference', zorder=100)
+
 
     ax_rewards.set_xlabel('Absorption Reward (normalized)', fontsize=12)
     ax_rewards.set_ylabel('Reflectivity Reward (normalized)', fontsize=12)

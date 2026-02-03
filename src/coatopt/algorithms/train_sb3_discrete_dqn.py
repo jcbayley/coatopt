@@ -7,7 +7,8 @@ from stable_baselines3 import DQN
 from coatopt.environments.environment import CoatingEnvironment
 from coatopt.utils.configs import load_config
 from coatopt.utils.callbacks import PlottingCallback
-from coatopt.utils.utils import load_materials
+from coatopt.utils.utils import load_materials, save_run_metadata
+import time
 
 class CoatOptDQNGymWrapper(gym.Env):
     """Gymnasium wrapper for CoatingEnvironment with flattened discrete actions for DQN.
@@ -21,16 +22,24 @@ class CoatOptDQNGymWrapper(gym.Env):
         materials: dict,
         n_thickness_bins: int = 20,
         constraint_penalty: float = 100.0,
-        target_constraint_bounds: dict = None,
         epochs_per_step: int = 200,
         steps_per_objective: int = 10,
         constraint_schedule: str = "interleaved",
+        mask_consecutive_materials: bool = True,
+        mask_air_until_min_layers: bool = True,
+        min_layers_before_air: int = 4,
+        pareto_dominance_bonus: float = 0.0,
     ):
         super().__init__()
         self.env = CoatingEnvironment(config, materials)
         self.config = config
         self.n_thickness_bins = n_thickness_bins
         self.constraint_schedule = constraint_schedule
+
+        # Action masking settings
+        self.mask_consecutive_materials = mask_consecutive_materials
+        self.mask_air_until_min_layers = mask_air_until_min_layers
+        self.min_layers_before_air = min_layers_before_air
 
         # Precompute thickness bins
         self.thickness_bins = np.linspace(
@@ -42,10 +51,6 @@ class CoatOptDQNGymWrapper(gym.Env):
         # Multi-objective settings
         self.objectives = list(config.data.optimise_parameters)
         self.constraint_penalty = constraint_penalty
-        self.target_constraint_bounds = target_constraint_bounds or {
-            "reflectivity": 0.99999999,
-            "absorption": 0.1,
-        }
 
         # Training schedule
         self.epochs_per_step = epochs_per_step
@@ -64,6 +69,10 @@ class CoatOptDQNGymWrapper(gym.Env):
         self.current_phase = 0
         self.current_level = 1
         self.current_layer = 0
+        self.previous_material_idx = None
+
+        # Find air material index (material with index 0)
+        self.air_material_idx = 0
 
         # Enable constrained training in environment
         self.env.enable_constrained_training(
@@ -72,6 +81,10 @@ class CoatOptDQNGymWrapper(gym.Env):
             epochs_per_step=epochs_per_step,
             constraint_penalty=constraint_penalty,
         )
+
+        # Enable Pareto dominance bonus if specified
+        if pareto_dominance_bonus > 0:
+            self.env.enable_pareto_bonus(bonus=pareto_dominance_bonus)
 
         # Current target and constraints
         self.target_objective = self.objectives[0]
@@ -105,6 +118,7 @@ class CoatOptDQNGymWrapper(gym.Env):
         super().reset(seed=seed)
         state = self.env.reset()
         self.current_layer = 0
+        self.previous_material_idx = None
         self.episode_count += 1
 
         # === PHASE 1: WARMUP ===
@@ -207,6 +221,21 @@ class CoatOptDQNGymWrapper(gym.Env):
         material_idx, thickness_bin = self._decode_action(action)
         thickness = self.thickness_bins[thickness_bin]
 
+        # Apply action masking rules (modify invalid actions)
+        # Rule 1: Block consecutive same material
+        if self.mask_consecutive_materials and material_idx == self.previous_material_idx:
+            # Find a different material
+            for alt_mat in range(self.env.n_materials):
+                if alt_mat != self.previous_material_idx:
+                    material_idx = alt_mat
+                    break
+
+        # Rule 2: Block air until minimum layers reached
+        if self.mask_air_until_min_layers and self.current_layer < self.min_layers_before_air:
+            if material_idx == self.air_material_idx:
+                # Choose first non-air material
+                material_idx = 1 if self.env.n_materials > 1 else 0
+
         # Build CoatOpt action
         coatopt_action = np.zeros(self.env.n_materials + 1, dtype=np.float32)
         coatopt_action[0] = thickness
@@ -214,6 +243,9 @@ class CoatOptDQNGymWrapper(gym.Env):
 
         # Step environment
         state, rewards, terminated, finished, total_reward, _, vals = self.env.step(coatopt_action)
+
+        # Track previous material for next step
+        self.previous_material_idx = material_idx
         self.current_layer += 1
 
         obs = self._get_obs(state)
@@ -246,11 +278,12 @@ class CoatOptDQNGymWrapper(gym.Env):
 # ============================================================================
 # TRAINING
 # ============================================================================
-def train(config_path: str):
+def train(config_path: str, save_dir: str):
     """Train DQN with discrete actions on CoatOpt.
 
     Args:
         config_path: Path to config INI file
+        save_dir: Directory to save results
 
     Returns:
         Trained DQN model
@@ -261,7 +294,6 @@ def train(config_path: str):
     parser.read(config_path)
 
     # [General] section
-    save_dir = parser.get('General', 'save_dir')
     materials_path = parser.get('General', 'materials_path')
 
     # [sb3_dqn] section
@@ -269,11 +301,34 @@ def train(config_path: str):
     total_timesteps = parser.getint(section, 'total_timesteps')
     n_thickness_bins = parser.getint(section, 'n_thickness_bins')
     verbose = parser.getint(section, 'verbose')
-    target_reflectivity = parser.getfloat(section, 'target_reflectivity')
-    target_absorption = parser.getfloat(section, 'target_absorption')
     epochs_per_step = parser.getint(section, 'epochs_per_step')
     steps_per_objective = parser.getint(section, 'steps_per_objective')
-    tensorboard_log = parser.get(section, 'tensorboard_log')
+
+    # Action masking settings
+    mask_consecutive_materials = parser.getboolean(section, 'mask_consecutive_materials', fallback=True)
+    mask_air_until_min_layers = parser.getboolean(section, 'mask_air_until_min_layers', fallback=True)
+    min_layers_before_air = parser.getint(section, 'min_layers_before_air', fallback=4)
+
+    # Constraint settings
+    constraint_penalty = parser.getfloat(section, 'constraint_penalty', fallback=10.0)
+    pareto_dominance_bonus = parser.getfloat(section, 'pareto_dominance_bonus', fallback=0.0)
+
+    # DQN hyperparameters
+    learning_rate = parser.getfloat(section, 'learning_rate', fallback=1e-4)
+    buffer_size = parser.getint(section, 'buffer_size', fallback=50000)
+    learning_starts = parser.getint(section, 'learning_starts', fallback=300)
+    batch_size = parser.getint(section, 'batch_size', fallback=128)
+    gamma = parser.getfloat(section, 'gamma', fallback=0.99)
+    train_freq = parser.getint(section, 'train_freq', fallback=4)
+    gradient_steps = parser.getint(section, 'gradient_steps', fallback=1)
+    target_update_interval = parser.getint(section, 'target_update_interval', fallback=100)
+    exploration_fraction = parser.getfloat(section, 'exploration_fraction', fallback=0.3)
+    exploration_initial_eps = parser.getfloat(section, 'exploration_initial_eps', fallback=1.0)
+    exploration_final_eps = parser.getfloat(section, 'exploration_final_eps', fallback=0.05)
+
+    # Network architecture
+    net_arch_str = parser.get(section, 'net_arch', fallback='[64, 64]')
+    net_arch = eval(net_arch_str)  # Parse list from string
 
     # [Data] section
     n_layers = parser.getint('Data', 'n_layers')
@@ -297,14 +352,14 @@ def train(config_path: str):
         config,
         materials,
         n_thickness_bins=n_thickness_bins,
-        constraint_penalty=10.0,
-        target_constraint_bounds={
-            "reflectivity": target_reflectivity,
-            "absorption": target_absorption,
-        },
+        constraint_penalty=constraint_penalty,
         epochs_per_step=epochs_per_step,
         steps_per_objective=steps_per_objective,
         constraint_schedule=constraint_schedule,
+        mask_consecutive_materials=mask_consecutive_materials,
+        mask_air_until_min_layers=mask_air_until_min_layers,
+        min_layers_before_air=min_layers_before_air,
+        pareto_dominance_bonus=pareto_dominance_bonus,
     )
 
     print(f"\nEnvironment created (DQN):")
@@ -318,29 +373,32 @@ def train(config_path: str):
     elif constraint_schedule == "sequential":
         print(f"  Pattern: Complete all {steps_per_objective} constraint levels for each objective before switching")
 
-    # Check tensorboard
-    try:
-        import tensorboard  # noqa: F401
-        tb_log = tensorboard_log
-    except ImportError:
-        print("Tensorboard not installed, disabling tensorboard logging")
-        tb_log = None
+    tb_log = None
+
+    # Configure policy network architecture
+    policy_kwargs = dict(
+        net_arch=net_arch,
+    )
+
+    print(f"\nDQN Network Architecture:")
+    print(f"  Q-network: {net_arch}")
 
     # Create DQN model
     model = DQN(
         "MlpPolicy",
         env=env,
-        learning_rate=1e-4,
-        buffer_size=50000,
-        learning_starts=1000,
-        batch_size=128,
-        gamma=0.99,
-        train_freq=4,
-        gradient_steps=1,
-        target_update_interval=1000,
-        exploration_fraction=0.3,
-        exploration_initial_eps=1.0,
-        exploration_final_eps=0.05,
+        learning_rate=learning_rate,
+        buffer_size=buffer_size,
+        learning_starts=learning_starts,
+        batch_size=batch_size,
+        gamma=gamma,
+        train_freq=train_freq,
+        gradient_steps=gradient_steps,
+        target_update_interval=target_update_interval,
+        exploration_fraction=exploration_fraction,
+        exploration_initial_eps=exploration_initial_eps,
+        exploration_final_eps=exploration_final_eps,
+        policy_kwargs=policy_kwargs,
         verbose=0,
         tensorboard_log=tb_log,
     )
@@ -358,7 +416,9 @@ def train(config_path: str):
 
     # Train
     print(f"\nStarting DQN training for {total_timesteps} timesteps...")
+    start_time = time.time()
     model.learn(total_timesteps=total_timesteps, callback=plotting_callback)
+    end_time = time.time()
 
     # Save model
     model_path = save_dir / "coatopt_dqn"
@@ -368,6 +428,35 @@ def train(config_path: str):
     # Save Pareto front
     print("\nSaving Pareto front...")
     plotting_callback.save_pareto_front_to_csv("pareto_front_dqn.csv")
+
+    # Get Pareto front size
+    import pandas as pd
+    pareto_csv = save_dir / "pareto_front_values.csv"
+    pareto_size = 0
+    if pareto_csv.exists():
+        pareto_df = pd.read_csv(pareto_csv)
+        pareto_size = len(pareto_df)
+
+    # Save run metadata
+    save_run_metadata(
+        save_dir=save_dir,
+        algorithm_name="SB3_DQN",
+        start_time=start_time,
+        end_time=end_time,
+        pareto_front_size=pareto_size,
+        total_episodes=plotting_callback.episode_count,
+        config_path=config_path,
+        additional_info={
+            "total_timesteps": total_timesteps,
+            "n_thickness_bins": n_thickness_bins,
+            "constraint_schedule": constraint_schedule,
+            "constraint_penalty": constraint_penalty,
+            "learning_rate": learning_rate,
+            "buffer_size": buffer_size,
+            "batch_size": batch_size,
+            "gamma": gamma,
+        }
+    )
 
     return model
 

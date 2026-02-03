@@ -7,6 +7,7 @@ import torch
 from coatopt.environments.environment import CoatingEnvironment
 from coatopt.utils.configs import Config, DataConfig, TrainingConfig
 from coatopt.utils import load_materials
+from coatopt.utils.utils import save_run_metadata
 from coatopt.algorithms.hppo.core.agent_simple import SimplePCHPPO
 from coatopt.algorithms.hppo.config_simple import (
     HPPOAgentConfig,
@@ -15,6 +16,7 @@ from coatopt.algorithms.hppo.config_simple import (
     PPOConfig,
     ActionSpaceConfig,
 )
+import time
 
 ### IN PROGRESS
 class SimpleHPPOTrainingLoop:

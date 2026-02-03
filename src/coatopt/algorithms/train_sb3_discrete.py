@@ -15,8 +15,9 @@ from stable_baselines3.common.callbacks import CallbackList
 from coatopt.environments.environment import CoatingEnvironment
 from coatopt.utils.configs import Config, DataConfig, TrainingConfig, load_config
 from coatopt.utils.callbacks import PlottingCallback, EntropyAnnealingCallback, PolicyResetCallback
-from coatopt.utils.utils import load_materials, evaluate_model
+from coatopt.utils.utils import load_materials, evaluate_model, save_run_metadata
 from coatopt.environments.state import CoatingState
+import time
 
 class CoatOptDiscreteGymWrapper(gym.Env):
     """Gymnasium wrapper for CoatingEnvironment with discrete actions and sction masking.
@@ -743,7 +744,11 @@ def train(config_path: str, save_dir: str = None):
     if reset_policy_each_phase:
         print("Policy reset enabled: weights will be reset at each phase transition")
         callbacks.append(PolicyResetCallback(verbose=verbose))
+
+    # Start timing
+    start_time = time.time()
     model.learn(total_timesteps=total_timesteps, callback=CallbackList(callbacks))
+    end_time = time.time()
 
     model_path = save_dir / "coatopt_ppo_discrete"
     model.save(str(model_path))
@@ -780,6 +785,24 @@ def train(config_path: str, save_dir: str = None):
         # Log Pareto plots
         for plot_file in save_dir.glob("pareto*.png"):
             mlflow.log_artifact(str(plot_file))
+
+    # Save run metadata
+    import pandas as pd
+    pareto_df = pd.read_csv(save_dir / "pareto_front_values.csv")
+    save_run_metadata(
+        save_dir=save_dir,
+        algorithm_name="SB3_Discrete_MaskablePPO",
+        start_time=start_time,
+        end_time=end_time,
+        pareto_front_size=len(pareto_df),
+        total_episodes=plotting_callback.episode_count,
+        config_path=config_path,
+        additional_info={
+            "total_timesteps": total_timesteps,
+            "n_thickness_bins": n_thickness_bins,
+            "constraint_schedule": constraint_schedule,
+        }
+    )
 
     return model
 

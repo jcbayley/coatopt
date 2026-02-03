@@ -9,7 +9,8 @@ import numpy as np
 
 from coatopt.environments.environment import CoatingEnvironment
 from coatopt.utils.configs import Config, DataConfig, TrainingConfig
-from coatopt.utils.utils import load_materials
+from coatopt.utils.utils import load_materials, save_run_metadata
+import time
 
 
 # ============================================================================
@@ -798,6 +799,9 @@ def train_morld(config_path: str):
     n_intervals = max(1, total_timesteps // eval_freq)
     timesteps_per_interval = total_timesteps // n_intervals
 
+    # Start timing
+    start_time = time.time()
+
     for interval in range(n_intervals):
         current_timesteps = (interval + 1) * timesteps_per_interval
 
@@ -869,6 +873,7 @@ def train_morld(config_path: str):
                     shutil.copy(src, dst)
 
     print(f"\nTraining complete!")
+    end_time = time.time()
 
     # Final evaluation with more episodes
     print("\nFinal evaluation...")
@@ -898,6 +903,22 @@ def train_morld(config_path: str):
             R = sol["vals"].get("reflectivity", 0)
             A = sol["vals"].get("absorption", 0)
             print(f"  Solution {i + 1}: R={R:.6f}, A={A:.2e}")
+
+    # Save run metadata
+    save_run_metadata(
+        save_dir=save_dir,
+        algorithm_name="MORLD",
+        start_time=start_time,
+        end_time=end_time,
+        pareto_front_size=len(tracker.pareto_front),
+        total_episodes=None,
+        config_path=config_path,
+        additional_info={
+            "total_timesteps": total_timesteps,
+            "pop_size": pop_size,
+            "seed": seed,
+        }
+    )
 
     return agent, tracker
 

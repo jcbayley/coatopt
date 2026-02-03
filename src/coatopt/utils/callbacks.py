@@ -470,6 +470,13 @@ class PlottingCallback(BaseCallback):
             all_abs = [r[1] for r in all_rewards]
             ax_pareto_reward.scatter(all_abs, all_ref, alpha=0.15, s=15, c='gray', label='All episodes')
 
+            # Plot recent 200 episodes in a different color to show evolution
+            recent_rewards = self.all_episode_rewards[-200:]
+            if len(recent_rewards) > 0:
+                recent_ref = [r[0] for r in recent_rewards]
+                recent_abs = [r[1] for r in recent_rewards]
+                ax_pareto_reward.scatter(recent_abs, recent_ref, alpha=0.4, s=25, c='blue', label='Recent 200 episodes')
+
             # Plot Pareto front in REWARD space
             if pareto_designs:
                 pareto_ref = [d['reward_vals'].get('reflectivity', 0) for d in pareto_designs if d['reward_vals']]
@@ -626,14 +633,15 @@ class PlottingCallback(BaseCallback):
         """Save Pareto front from environment to CSV file.
 
         Args:
-            filename: Name of CSV file to save
+            filename: Name of CSV file to save (can be absolute, relative to cwd, or just a filename)
         """
         import pandas as pd
         from pathlib import Path
 
         # Build filepath
         filepath = Path(filename)
-        if not filepath.is_absolute():
+        # Only prepend save_dir if filename is just a filename (no directory components)
+        if not filepath.is_absolute() and filepath.parent == Path('.'):
             filepath = self.save_dir / filename
 
         # Get environment
