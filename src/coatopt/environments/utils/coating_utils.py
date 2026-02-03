@@ -3,7 +3,7 @@ import logging
 
 import numpy as np
 
-from ..core.state import CoatingState
+from ..state import CoatingState
 from .EFI_tmm import CalculateEFI_tmm, physical_to_optical
 from .YAM_CoatingBrownian import getCoatingThermalNoise
 
@@ -467,17 +467,14 @@ def merit_function(
         plots=False,
     )
 
-    if isinstance(noise_summary["Frequency"], float):
-        difference_array = np.absolute(noise_summary["Frequency"] - 100)
-
-        # find the index of minimum element from the array
-        index = difference_array.argmin()
-
-        ThermalNoise_Total = noise_summary["BrownianNoise"][index]
-        # use only the thermal noise at the specified frequency = default : 100 Hz
-    else:
-
+    if isinstance(noise_summary["Frequency"], (float, np.floating)):
+        # Frequency is a scalar, so BrownianNoise is also a scalar
         ThermalNoise_Total = noise_summary["BrownianNoise"]
+    else:
+        # Frequency is an array, find the index closest to 100 Hz
+        difference_array = np.absolute(noise_summary["Frequency"] - 100)
+        index = difference_array.argmin()
+        ThermalNoise_Total = noise_summary["BrownianNoise"][index]
 
     D = ds[-1]  # Total physical thickness of the coating in nm
 
@@ -590,16 +587,13 @@ def merit_function_2(
         Temp=Temp,
     )
 
-    if isinstance(noise_summary["Frequency"], float):
-        difference_array = np.absolute(noise_summary["Frequency"] - frequency)
-
-        # find the index of minimum element from the array
-        index = difference_array.argmin()
-
-        thermal_noise = noise_summary["BrownianNoise"][index]
-        # use only the thermal noise at the specified frequency = default : 100 Hz
-    else:
-
+    if isinstance(noise_summary["Frequency"], (float, np.floating)):
+        # Frequency is a scalar, so BrownianNoise is also a scalar
         thermal_noise = noise_summary["BrownianNoise"]
+    else:
+        # Frequency is an array, find the index closest to the target frequency
+        difference_array = np.absolute(noise_summary["Frequency"] - frequency)
+        index = difference_array.argmin()
+        thermal_noise = noise_summary["BrownianNoise"][index]
 
     return rCoat, thermal_noise

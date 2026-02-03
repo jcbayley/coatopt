@@ -1,3 +1,66 @@
+# Build artifacts
 build/
+dist/
 *.egg-info
-__pycache__
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+
+# Experiment outputs (not tracked)
+experiments/outputs/
+experiments/weights/
+experiments/runs/
+
+# Generated plots and images (experiments)
+experiments/*.png
+experiments/*.jpg
+experiments/*.pdf
+
+# MLflow tracking
+mlruns/
+mlartifacts/
+
+# Model checkpoints and weights
+*.pth
+*.h5
+*.pkl
+*.ckpt
+
+# Data files
+*.hdf5
+*.nc
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb
+
+# Logs
+*.log
+logs/
+
+# Coverage
+.coverage
+htmlcov/
+.pytest_cache/
+
+# Type checking
+.mypy_cache/
+.pytype/
