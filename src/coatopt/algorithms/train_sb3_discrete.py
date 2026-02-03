@@ -128,9 +128,16 @@ class CoatOptDiscreteGymWrapper(gym.Env):
         self.constraints = {}
         self.env.constraints = {}
 
+        # Always use "lstm" pre_type for observations (includes all layers for fixed size)
+        # Network architecture (MLP vs LSTM) is determined by policy_kwargs
+        self.pre_type = "lstm"
+
         # Observation space
         n_features = 1 + self.env.n_materials + 2
-        obs_size = self.env.max_layers * n_features + 1  # +1 for layer number
+        n_constraints = len(self.objectives)  # One constraint threshold per objective
+        obs_size = (
+            self.env.max_layers * n_features + 1 + n_constraints
+        )  # +1 for layer number, +n_constraints
         self.observation_space = gym.spaces.Box(
             low=-np.inf, high=np.inf, shape=(obs_size,), dtype=np.float32
         )
@@ -182,15 +189,19 @@ class CoatOptDiscreteGymWrapper(gym.Env):
         return np.concatenate([material_mask, thickness_mask])
 
     def _get_obs(self, state) -> np.ndarray:
-        """Convert CoatingState to fixed-size numpy array with layer number."""
-        tensor = state.get_observation_tensor(pre_type="lstm")
+        """Convert CoatingState to fixed-size numpy array with layer number and constraints."""
+        tensor = state.get_observation_tensor(pre_type=self.pre_type)
         obs = tensor.numpy().flatten().astype(np.float32)
 
-        # Append normalized layer number so agent knows its position in episode
-        layer_number_normalized = self.current_layer / self.env.max_layers
-        obs_with_layer = np.append(obs, layer_number_normalized)
+        # Append constraint thresholds
+        for obj in self.objectives:
+            obs = np.append(obs, self.env.constraints.get(obj, 0.0))
 
-        return obs_with_layer
+        # Append normalized layer number
+        layer_number_normalized = self.current_layer / self.env.max_layers
+        obs = np.append(obs, layer_number_normalized)
+
+        return obs
 
     def _get_annealing_progress(self) -> float:
         """Get annealing progress from 0.0 (start) to 1.0 (fully annealed)."""

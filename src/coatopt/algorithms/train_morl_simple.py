@@ -9,7 +9,7 @@ import numpy as np
 from gymnasium.spaces import Box
 
 from coatopt.environments.environment import CoatingEnvironment
-from coatopt.utils.configs import Config, DataConfig, TrainingConfig
+from coatopt.utils.configs import Config, DataConfig, TrainingConfig, load_config
 from coatopt.utils.utils import load_materials, save_run_metadata
 
 
@@ -701,6 +701,11 @@ def train_morld(config_path: str, save_dir: str = None):
     """
     import configparser
 
+    # Load full config using shared load_config function
+    config = load_config(config_path)
+    print(f"Loaded config from {config_path}")
+
+    # Parse MORL-specific parameters from [morl] section
     parser = configparser.ConfigParser()
     parser.read(config_path)
 
@@ -720,9 +725,6 @@ def train_morld(config_path: str, save_dir: str = None):
     # Network architecture
     net_arch_str = parser.get("morl", "net_arch", fallback="[256, 256]")
     net_arch = eval(net_arch_str)
-
-    # [Data] section
-    n_layers = parser.getint("data", "n_layers")
     try:
         from morl_baselines.multi_policy.morld.morld import MORLD
     except ImportError:
@@ -742,32 +744,6 @@ def train_morld(config_path: str, save_dir: str = None):
 
     materials = load_materials(str(materials_path))
     print(f"Loaded {len(materials)} materials from {materials_path}")
-
-    # Create minimal config
-    config = Config(
-        data=DataConfig(
-            n_layers=n_layers,
-            min_thickness=10e-9,
-            max_thickness=500e-9,
-            optimise_parameters=["reflectivity", "absorption"],
-            optimise_targets={"reflectivity": 0.99999, "absorption": 0.0},
-            use_optical_thickness=False,
-            ignore_air_option=False,
-            ignore_substrate_option=False,
-            use_intermediate_reward=False,
-            combine="sum",
-            use_reward_normalisation=True,
-            reward_normalisation_apply_clipping=True,
-            objective_bounds={
-                "reflectivity": [0.0, 0.99999],
-                "absorption": [1e-3, 0.0],
-            },
-            apply_air_penalty=True,
-            air_penalty_weight=0.5,
-            apply_preference_constraints=False,
-        ),
-        training=TrainingConfig(cycle_weights="random"),
-    )
 
     # Create MO-Gymnasium compatible environment
     env = CoatOptMOGymWrapper(config, materials)

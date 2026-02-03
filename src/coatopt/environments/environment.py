@@ -128,7 +128,10 @@ class CoatingEnvironment:
 
         # Observation space shape
         features_per_layer = 1 + self.n_materials + 2
-        self.obs_space_shape = (self.max_layers, features_per_layer)
+        n_constraints = (
+            len(self.optimise_parameters) if self.use_constrained_training else 0
+        )
+        self.obs_space_shape = (self.max_layers, features_per_layer, n_constraints)
 
     def reset(self) -> CoatingState:
         """Reset environment to initial state."""
@@ -673,6 +676,27 @@ class CoatingEnvironment:
 
         self.pareto_front_rewards = new_reward_front
         self.pareto_front_values = new_value_front
+
+    def get_observation(
+        self, state: Optional[CoatingState] = None, **kwargs
+    ) -> np.ndarray:
+        """Get observation tensor with constraints included.
+
+        Args:
+            state: State to get observation for (defaults to current_state)
+            **kwargs: Additional arguments passed to get_observation_tensor
+
+        Returns:
+            Observation as numpy array with constraints appended
+        """
+        if state is None:
+            state = self.current_state
+
+        return state.get_observation_tensor(
+            constraints=self.constraints,
+            objective_names=self.optimise_parameters,
+            **kwargs,
+        ).numpy()
 
     def get_state(self) -> CoatingState:
         """Get current state."""

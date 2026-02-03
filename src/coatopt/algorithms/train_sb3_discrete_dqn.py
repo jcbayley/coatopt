@@ -93,9 +93,14 @@ class CoatOptDQNGymWrapper(gym.Env):
         self.constraints = {}
         self.env.constraints = {}
 
+        # Always use "lstm" pre_type for observations (includes all layers for fixed size)
+        # Network architecture is determined by policy_kwargs
+        self.pre_type = "lstm"
+
         # Observation space
         n_features = 1 + self.env.n_materials + 2
-        obs_size = self.env.max_layers * n_features
+        n_constraints = len(self.objectives)  # One constraint threshold per objective
+        obs_size = self.env.max_layers * n_features + n_constraints
         self.observation_space = gym.spaces.Box(
             low=-np.inf, high=np.inf, shape=(obs_size,), dtype=np.float32
         )
@@ -110,9 +115,15 @@ class CoatOptDQNGymWrapper(gym.Env):
         return material_idx, thickness_bin
 
     def _get_obs(self, state) -> np.ndarray:
-        """Convert CoatingState to fixed-size numpy array."""
-        tensor = state.get_observation_tensor(pre_type="lstm")
-        return tensor.numpy().flatten().astype(np.float32)
+        """Convert CoatingState to fixed-size numpy array with constraints."""
+        tensor = state.get_observation_tensor(pre_type=self.pre_type)
+        obs = tensor.numpy().flatten().astype(np.float32)
+
+        # Append constraint thresholds
+        for obj in self.objectives:
+            obs = np.append(obs, self.env.constraints.get(obj, 0.0))
+
+        return obs
 
     def reset(self, seed=None, options=None):
         """Reset with two-phase training: warmup then constrained cycling."""
