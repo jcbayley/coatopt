@@ -677,11 +677,12 @@ class TrainingMetricsTracker:
 # ============================================================================
 # TRAINING WITH MORL/D
 # ============================================================================
-def train_morld(config_path: str):
+def train_morld(config_path: str, save_dir: str = None):
     """Train using MORL/D algorithm with periodic plotting.
 
     Args:
         config_path: Path to config INI file
+        save_dir: Directory to save results (overrides config if provided)
 
     Returns:
         MORL/D agent and Pareto front tracker
@@ -692,7 +693,8 @@ def train_morld(config_path: str):
     parser.read(config_path)
 
     # [General] section
-    save_dir = parser.get('General', 'save_dir')
+    if save_dir is None:
+        save_dir = parser.get('General', 'save_dir')
     materials_path = parser.get('General', 'materials_path')
 
     # [morl] section
@@ -702,6 +704,10 @@ def train_morld(config_path: str):
     verbose = parser.getint('morl', 'verbose')
     plot_freq = parser.getint('morl', 'plot_freq')
     eval_freq = parser.getint('morl', 'eval_freq')
+
+    # Network architecture
+    net_arch_str = parser.get('morl', 'net_arch', fallback='[256, 256]')
+    net_arch = eval(net_arch_str)
 
     # [Data] section
     n_layers = parser.getint('Data', 'n_layers')
@@ -766,6 +772,9 @@ def train_morld(config_path: str):
     # Reference point for hypervolume (worst case)
     ref_point = np.array([0.0, 0.0])
 
+    print(f"\nMORL Network Architecture:")
+    print(f"  Policy network: {net_arch}")
+
     # Create MORL/D agent (wandb disabled with log=False)
     agent = MORLD(
         env=env,
@@ -782,6 +791,7 @@ def train_morld(config_path: str):
         weight_adaptation_method=None,
         log=False,  # Disable wandb logging
         device="auto",
+        policy_args={"net_arch": net_arch},  # Network architecture for actor and critic
     )
 
     # Initialize trackers
