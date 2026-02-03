@@ -525,6 +525,7 @@ class DiscreteActionPlottingCallback(PlottingCallback):
         materials: dict = None,
         verbose: int = 0,
         disable_mlflow: bool = True,
+        mlflow_log_freq: int = 1,
     ):
         super().__init__(
             env=env,
@@ -535,6 +536,7 @@ class DiscreteActionPlottingCallback(PlottingCallback):
             materials=materials,
             verbose=verbose,
             disable_mlflow=disable_mlflow,
+            mlflow_log_freq=mlflow_log_freq,
         )
 
     def _plot_alternating_materials(self):
@@ -810,6 +812,7 @@ def train(config_path: str, save_dir: str = None):
         materials=materials,
         verbose=verbose,
         disable_mlflow=config.general.disable_mlflow,
+        mlflow_log_freq=config.general.mlflow_log_freq,
     )
 
     print(f"\nStarting training for {total_timesteps} timesteps...")

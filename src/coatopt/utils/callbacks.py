@@ -170,6 +170,7 @@ class PlottingCallback(BaseCallback):
         materials: dict = None,
         verbose: int = 0,
         disable_mlflow: bool = True,
+        mlflow_log_freq: int = 1,
     ):
         """Initialize plotting callback.
 
@@ -182,11 +183,13 @@ class PlottingCallback(BaseCallback):
             materials: Materials dictionary for plotting
             verbose: Verbosity level
             disable_mlflow: If True, disable MLflow logging (default: True)
+            mlflow_log_freq: Log to MLflow every N episodes (default: 1)
         """
         super().__init__(verbose)
         self.env = env
         self.plot_freq = plot_freq
         self.design_plot_freq = design_plot_freq
+        self.mlflow_log_freq = mlflow_log_freq
         self.save_dir = Path(save_dir)
         self.n_best_designs = n_best_designs
         self.materials = materials or {}
@@ -251,36 +254,30 @@ class PlottingCallback(BaseCallback):
                 vals = info.get("vals", {})
                 rewards = info.get("rewards", {})
 
-                # Log to MLflow (if enabled)
-                if not self.disable_mlflow and mlflow.active_run():
-                    mlflow.log_metric(
-                        "episode_reward", ep_reward, step=self.episode_count
-                    )
-                    mlflow.log_metric(
-                        "episode_length", ep_length, step=self.episode_count
-                    )
+                # Log to MLflow (if enabled and at logging frequency)
+                if (
+                    not self.disable_mlflow
+                    and mlflow.active_run()
+                    and self.episode_count % self.mlflow_log_freq == 0
+                ):
+                    # Batch metrics for efficiency
+                    metrics = {
+                        "episode_reward": ep_reward,
+                        "episode_length": ep_length,
+                    }
                     if hasattr(self.model, "ent_coef"):
-                        mlflow.log_metric(
-                            "entropy_coef",
-                            float(self.model.ent_coef),
-                            step=self.episode_count,
-                        )
+                        metrics["entropy_coef"] = float(self.model.ent_coef)
                     if vals:
                         for obj_name, obj_val in vals.items():
-                            mlflow.log_metric(
-                                f"value_{obj_name}", obj_val, step=self.episode_count
-                            )
+                            metrics[f"value_{obj_name}"] = obj_val
                     if rewards:
                         for obj_name, obj_val in rewards.items():
-                            mlflow.log_metric(
-                                f"reward_{obj_name}", obj_val, step=self.episode_count
-                            )
+                            metrics[f"reward_{obj_name}"] = obj_val
                     if "annealing_progress" in info:
-                        mlflow.log_metric(
-                            "annealing_progress",
-                            info["annealing_progress"],
-                            step=self.episode_count,
-                        )
+                        metrics["annealing_progress"] = info["annealing_progress"]
+
+                    # Log all metrics in a single call
+                    mlflow.log_metrics(metrics, step=self.episode_count)
 
                 # Track normalized rewards if available in info
                 if rewards:
@@ -288,22 +285,23 @@ class PlottingCallback(BaseCallback):
                     abs_reward = rewards.get("absorption", 0.0)
                     self.all_episode_rewards.append((ref_reward, abs_reward))
 
-                # Compute and track hypervolume
-                env = self.env
-                if hasattr(env, "env"):
-                    env = env.env
-                if hasattr(env, "compute_hypervolume"):
-                    try:
-                        hv = env.compute_hypervolume(space="reward")
-                        self.hypervolume_history.append((self.episode_count, hv))
-                        # Log to MLflow if enabled
-                        if not self.disable_mlflow and mlflow.active_run():
-                            mlflow.log_metric(
-                                "hypervolume", hv, step=self.episode_count
-                            )
-                    except Exception as e:
-                        # If hypervolume computation fails, skip it
-                        pass
+                # Compute and track hypervolume (respecting log frequency to reduce overhead)
+                if self.episode_count % self.mlflow_log_freq == 0:
+                    env = self.env
+                    if hasattr(env, "env"):
+                        env = env.env
+                    if hasattr(env, "compute_hypervolume"):
+                        try:
+                            hv = env.compute_hypervolume(space="reward")
+                            self.hypervolume_history.append((self.episode_count, hv))
+                            # Log to MLflow if enabled
+                            if not self.disable_mlflow and mlflow.active_run():
+                                mlflow.log_metric(
+                                    "hypervolume", hv, step=self.episode_count
+                                )
+                        except Exception as e:
+                            # If hypervolume computation fails, skip it
+                            pass
 
                 # Plot designs periodically
                 if self.episode_count % self.design_plot_freq == 0:

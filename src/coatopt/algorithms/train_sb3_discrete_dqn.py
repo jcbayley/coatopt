@@ -463,6 +463,7 @@ def train(config_path: str, save_dir: str):
         n_best_designs=5,
         materials=materials,
         verbose=verbose,
+        mlflow_log_freq=10,  # Log to MLflow every 10 episodes
     )
 
     # Train

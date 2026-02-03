@@ -653,7 +653,8 @@ class TestCoatingEnvironmentParetoBonus:
         vals = {"reflectivity": 0.95, "absorption": 50.0}
         bonus = env._compute_pareto_dominance_bonus(vals)
 
-        assert bonus == 0.0  # No points to dominate
+        # With hypervolume-based bonus, first point creates hypervolume improvement from 0
+        assert bonus > 0.0
 
     def test_compute_pareto_dominance_bonus_with_dominated_points(
         self, basic_config, materials
@@ -672,8 +673,8 @@ class TestCoatingEnvironmentParetoBonus:
         vals = {"reflectivity": 0.99, "absorption": 10.0}
         bonus = env._compute_pareto_dominance_bonus(vals)
 
-        # Should dominate the existing point
-        assert bonus >= 1.0
+        # Bonus is based on hypervolume improvement, should be positive
+        assert bonus > 0.0
 
 
 class TestCoatingEnvironmentStateMethods:
@@ -725,43 +726,53 @@ class TestCoatingEnvironmentDominance:
 
     def test_dominates_reward_space(self, basic_config, materials):
         """Test dominance check in reward space (always maximize)."""
-        env = CoatingEnvironment(basic_config, materials)
+        import numpy as np
 
-        obj1 = [0.8, 0.9]  # Better in both
-        obj2 = [0.5, 0.6]
+        from coatopt.utils.metrics import dominates
 
-        assert env._dominates(obj1, obj2, reward_space=True) is True
-        assert env._dominates(obj2, obj1, reward_space=True) is False
+        obj1 = np.array([0.8, 0.9])  # Better in both
+        obj2 = np.array([0.5, 0.6])
+
+        assert dominates(obj1, obj2, maximize=True) is True
+        assert dominates(obj2, obj1, maximize=True) is False
 
     def test_dominates_value_space(self, basic_config, materials):
         """Test dominance check in value space (use objective_directions)."""
-        env = CoatingEnvironment(basic_config, materials)
+        import numpy as np
+
+        from coatopt.utils.metrics import dominates_mixed
 
         # reflectivity: maximize, absorption: minimize
-        obj1 = [0.99, 10.0]  # Better reflectivity, better absorption
-        obj2 = [0.95, 50.0]
+        obj1 = np.array([0.99, 10.0])  # Better reflectivity, better absorption
+        obj2 = np.array([0.95, 50.0])
 
-        assert env._dominates(obj1, obj2, reward_space=False) is True
+        objective_directions = [True, False]  # reflectivity: max, absorption: min
+        assert dominates_mixed(obj1, obj2, objective_directions) is True
 
     def test_dominates_non_dominated(self, basic_config, materials):
         """Test that non-dominated points are correctly identified."""
-        env = CoatingEnvironment(basic_config, materials)
+        import numpy as np
+
+        from coatopt.utils.metrics import dominates_mixed
 
         # One better in first objective, other better in second
-        obj1 = [0.99, 100.0]
-        obj2 = [0.90, 10.0]
+        obj1 = np.array([0.99, 100.0])
+        obj2 = np.array([0.90, 10.0])
 
-        assert env._dominates(obj1, obj2, reward_space=False) is False
-        assert env._dominates(obj2, obj1, reward_space=False) is False
+        objective_directions = [True, False]  # reflectivity: max, absorption: min
+        assert dominates_mixed(obj1, obj2, objective_directions) is False
+        assert dominates_mixed(obj2, obj1, objective_directions) is False
 
     def test_dominates_equal_points(self, basic_config, materials):
         """Test that equal points don't dominate each other."""
-        env = CoatingEnvironment(basic_config, materials)
+        import numpy as np
 
-        obj1 = [0.95, 50.0]
-        obj2 = [0.95, 50.0]
+        from coatopt.utils.metrics import dominates
 
-        assert env._dominates(obj1, obj2, reward_space=False) is False
+        obj1 = np.array([0.95, 50.0])
+        obj2 = np.array([0.95, 50.0])
+
+        assert dominates(obj1, obj2, maximize=True) is False
 
 
 class TestCoatingEnvironmentRepr:

@@ -92,6 +92,7 @@ class GeneralConfig:
     """General configuration settings."""
 
     disable_mlflow: bool = True  # Default: disable MLflow logging
+    mlflow_log_freq: int = 10  # Log to MLflow every N episodes (reduces API calls)
 
 
 @dataclass
@@ -123,6 +124,9 @@ def load_config(config_path: str) -> Config:
             # Parse boolean values
             if key == "disable_mlflow":
                 general_kwargs[key] = value.lower() == "true"
+            # Parse int values
+            elif key == "mlflow_log_freq":
+                general_kwargs[key] = int(value)
 
     # Parse Data section
     data_kwargs = {}
