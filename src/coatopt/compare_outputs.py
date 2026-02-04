@@ -646,6 +646,93 @@ def print_statistics(pareto_fronts: List[Tuple[pd.DataFrame, str]]):
                     print(f"    Std:  {values.std():.6e}")
 
 
+def create_hypervolume_ranking_table(
+    pareto_fronts: List[Tuple[Optional[pd.DataFrame], Optional[pd.DataFrame], str]],
+    save_path: Optional[Path] = None,
+) -> pd.DataFrame:
+    """Create a ranking table of runs ordered by hypervolume.
+
+    Args:
+        pareto_fronts: List of (values_df, rewards_df, label) tuples
+        save_path: Path to save the ranking table (txt and csv)
+
+    Returns:
+        DataFrame with rankings
+    """
+    rankings = []
+    for values_df, rewards_df, label in pareto_fronts:
+        hv_value = 0.0
+        hv_reward = 0.0
+        n_points_value = 0
+        n_points_reward = 0
+
+        if values_df is not None:
+            hv_value = compute_hypervolume_from_df(values_df, space="value")
+            n_points_value = len(values_df)
+
+        if rewards_df is not None:
+            hv_reward = compute_hypervolume_from_df(rewards_df, space="reward")
+            n_points_reward = len(rewards_df)
+
+        rankings.append(
+            {
+                "run_name": label,
+                "hypervolume_value": hv_value,
+                "hypervolume_reward": hv_reward,
+                "n_points_value": n_points_value,
+                "n_points_reward": n_points_reward,
+            }
+        )
+
+    ranking_df = pd.DataFrame(rankings)
+
+    # Sort by value space hypervolume (absorption/reflectivity)
+    ranking_df = ranking_df.sort_values("hypervolume_value", ascending=False)
+    ranking_df.insert(0, "rank", range(1, len(ranking_df) + 1))
+
+    # Print to console
+    print("\n" + "=" * 100)
+    print("HYPERVOLUME RANKINGS (sorted by value space hypervolume)")
+    print("=" * 100)
+    print(
+        ranking_df.to_string(
+            index=False,
+            formatters={
+                "hypervolume_value": "{:.6f}".format,
+                "hypervolume_reward": "{:.6f}".format,
+            },
+        )
+    )
+    print("=" * 100 + "\n")
+
+    # Save to files if path provided
+    if save_path:
+        # Save as CSV
+        csv_path = save_path.parent / (save_path.stem + "_rankings.csv")
+        ranking_df.to_csv(csv_path, index=False)
+        print(f"Saved hypervolume rankings (CSV) to {csv_path}")
+
+        # Save as formatted text file
+        txt_path = save_path.parent / (save_path.stem + "_rankings.txt")
+        with open(txt_path, "w") as f:
+            f.write("=" * 100 + "\n")
+            f.write("HYPERVOLUME RANKINGS (sorted by value space hypervolume)\n")
+            f.write("=" * 100 + "\n")
+            f.write(
+                ranking_df.to_string(
+                    index=False,
+                    formatters={
+                        "hypervolume_value": "{:.6f}".format,
+                        "hypervolume_reward": "{:.6f}".format,
+                    },
+                )
+            )
+            f.write("\n" + "=" * 100 + "\n")
+        print(f"Saved hypervolume rankings (TXT) to {txt_path}")
+
+    return ranking_df
+
+
 def print_statistics_both_spaces(
     pareto_fronts: List[Tuple[Optional[pd.DataFrame], Optional[pd.DataFrame], str]]
 ):
@@ -1045,31 +1132,19 @@ Examples:
     else:
         output_path = Path("pareto_comparison.png")
 
-    # Plot BOTH VALUE and REWARD space comparison (new default)
+    # Generate hypervolume ranking table
+    print("\nGenerating hypervolume rankings...")
+    create_hypervolume_ranking_table(pareto_fronts, save_path=output_path)
+
+    # Plot BOTH VALUE and REWARD space comparison
     print("\nGenerating combined VALUE + REWARD space comparison plot...")
-    combined_path = output_path.parent / (
-        output_path.stem + "_both_spaces" + output_path.suffix
-    )
     plot_both_spaces_comparison(
         pareto_fronts,
-        save_path=combined_path,
+        save_path=output_path,
         title=args.title,
         reference_values=reference_values,
         reference_rewards=reference_rewards,
     )
-
-    # Plot VALUE space only (legacy)
-    if pareto_fronts_values_only:
-        print("\nGenerating VALUE space comparison plot...")
-        plot_pareto_comparison(
-            pareto_fronts_values_only,
-            save_path=output_path,
-            obj_x=args.obj_x,
-            obj_y=args.obj_y,
-            title=args.title + " (Value Space)",
-            xscale=args.xscale,
-            yscale=args.yscale,
-        )
 
     # Plot normalized comparison if requested
     if args.normalized and pareto_fronts_values_only:

@@ -229,3 +229,97 @@ def compute_hypervolume_mixed(
     hv = ind(points)
 
     return float(hv)
+
+
+def save_pareto_to_csv(env, filename: str = "pareto_front.csv", save_dir=None):
+    """Save Pareto front from environment to CSV files.
+
+    Args:
+        env: Environment with get_pareto_front method
+        filename: Name of CSV file to save (can be absolute, relative to cwd, or just a filename)
+        save_dir: Directory to save to. If None and filename is relative, saves to cwd.
+    """
+    from pathlib import Path
+
+    import pandas as pd
+
+    # Build filepath
+    filepath = Path(filename)
+    # Only prepend save_dir if filename is just a filename (no directory components) and save_dir is provided
+    if save_dir and not filepath.is_absolute() and filepath.parent == Path("."):
+        filepath = Path(save_dir) / filename
+
+    # Unwrap environment if needed (e.g., VecEnv wrappers)
+    if hasattr(env, "env"):
+        env = env.env
+
+    # Get both value and reward space Pareto fronts
+    pareto_front_values = (
+        env.get_pareto_front(space="value") if hasattr(env, "get_pareto_front") else []
+    )
+    pareto_front_rewards = (
+        env.get_pareto_front(space="reward") if hasattr(env, "get_pareto_front") else []
+    )
+
+    if not pareto_front_values:
+        print("No Pareto front data to save")
+        return
+
+    # Convert to CSV format (value space)
+    data = []
+    for obj_vector, state in pareto_front_values:
+        row = {}
+
+        # Add objective values
+        if hasattr(env, "optimise_parameters"):
+            for i, param_name in enumerate(env.optimise_parameters):
+                if i < len(obj_vector):
+                    row[param_name] = obj_vector[i]
+
+        # Add state information
+        state_array = state.get_array()
+        thicknesses = state_array[:, 0]
+        material_indices = state_array[:, 1].astype(int)
+
+        # Filter active layers
+        active_mask = thicknesses > 1e-12
+        active_thicknesses = thicknesses[active_mask]
+        active_materials = material_indices[active_mask]
+
+        row["n_layers"] = len(active_thicknesses)
+        row["thicknesses"] = ",".join(f"{t:.6f}" for t in active_thicknesses)
+        row["materials"] = ",".join(map(str, active_materials))
+
+        data.append(row)
+
+    df = pd.DataFrame(data)
+
+    # Sort by absorption if available (lower is better)
+    if "absorption" in df.columns:
+        df = df.sort_values("absorption", ascending=True)
+    elif "reflectivity" in df.columns:
+        df = df.sort_values("reflectivity", ascending=False)
+
+    # Save value space
+    values_path = filepath.parent / "pareto_front_values.csv"
+    df.to_csv(values_path, index=False)
+
+    # Save reward space
+    data_rewards = []
+    for obj_vector, state in pareto_front_rewards:
+        row = {}
+        if hasattr(env, "optimise_parameters"):
+            for i, param_name in enumerate(env.optimise_parameters):
+                if i < len(obj_vector):
+                    row[f"{param_name}_reward"] = obj_vector[i]
+        data_rewards.append(row)
+
+    if data_rewards:
+        df_rewards = pd.DataFrame(data_rewards)
+        rewards_path = filepath.parent / "pareto_front_rewards.csv"
+        df_rewards.to_csv(rewards_path, index=False)
+        print(
+            f"Saved Pareto front ({len(df)} designs) to {values_path} and {rewards_path}"
+        )
+    else:
+        print(f"Saved Pareto front ({len(df)} designs) to {values_path}")

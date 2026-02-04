@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+import configparser
+import random
 import shutil
 import time
 import warnings
@@ -8,6 +10,7 @@ from pathlib import Path
 import gymnasium as gym
 import mlflow
 import numpy as np
+import pandas as pd
 import torch as th
 import torch.nn as nn
 from sb3_contrib import MaskablePPO
@@ -22,6 +25,8 @@ from coatopt.utils.callbacks import (
     PolicyResetCallback,
 )
 from coatopt.utils.configs import Config, DataConfig, TrainingConfig, load_config
+from coatopt.utils.metrics import save_pareto_to_csv
+from coatopt.utils.plotting import plot_coating_stack_from_state_array
 from coatopt.utils.utils import evaluate_model, load_materials, save_run_metadata
 
 
@@ -157,24 +162,20 @@ class CoatOptDiscreteGymWrapper(gym.Env):
     def action_masks(self) -> np.ndarray:
         """Return action masks for MaskablePPO.
 
-        For MultiDiscrete spaces, returns a single concatenated boolean array:
+        Returns a single concatenated boolean array:
             [material_mask (n_materials), thickness_mask (n_thickness_bins)]
 
         Total shape: (n_materials + n_thickness_bins,)
-
-        Masking rules:
-            1. Block consecutive same material (if enabled)
-            2. Block air material until min_layers_before_air reached (if enabled)
         """
         # Start with all actions valid
         material_mask = np.ones(self.env.n_materials, dtype=bool)
         thickness_mask = np.ones(self.n_thickness_bins, dtype=bool)
 
-        # Rule 1: Block consecutive same material
+        # 1: Block consecutive same material
         if self.mask_consecutive_materials and self.previous_material_idx is not None:
             material_mask[self.previous_material_idx] = False
 
-        # Rule 2: Block air until minimum layers reached
+        # 2: Block air until minimum layers reached
         if (
             self.mask_air_until_min_layers
             and self.current_layer < self.min_layers_before_air
@@ -185,7 +186,6 @@ class CoatOptDiscreteGymWrapper(gym.Env):
         if not material_mask.any():
             material_mask[:] = True  # Fall back to all valid
 
-        # Concatenate masks for MultiDiscrete space
         return np.concatenate([material_mask, thickness_mask])
 
     def _get_obs(self, state) -> np.ndarray:
@@ -204,7 +204,7 @@ class CoatOptDiscreteGymWrapper(gym.Env):
         return obs
 
     def _get_annealing_progress(self) -> float:
-        """Get annealing progress from 0.0 (start) to 1.0 (fully annealed)."""
+        """Get annealing progress from 0.0 to 1.0."""
         return min(1.0, self.episode_count / self.n_anneal_episodes)
 
     def reset(self, seed=None, options=None):
@@ -219,7 +219,7 @@ class CoatOptDiscreteGymWrapper(gym.Env):
         # Increment episode counter
         self.episode_count += 1
 
-        # === PHASE 1: WARMUP ===
+        # === WARMUP ===
         # Optimize each objective individually to discover achievable bounds
         if self.episode_count <= self.total_warmup_episodes:
             self.is_warmup = True
@@ -246,19 +246,19 @@ class CoatOptDiscreteGymWrapper(gym.Env):
                 "is_warmup": True,
             }
 
-        # === PHASE 2: CONSTRAINED CYCLING ===
+        # === CONSTRAINED CYCLING ===
         # Transition from warmup to constrained phase
         if self.is_warmup:
             self.is_warmup = False
             self.env.is_warmup = False
-            print(f"\n=== WARMUP COMPLETE ===")
+            print(f"\nWARMUP COMPLETE")
             print(f"Observed value bounds (phase 1): {self.env.observed_value_bounds}")
             print(
                 f"Best normalised rewards during warmup (phase 1): {self.env.warmup_best_rewards}"
             )
             for obj in self.objectives:
                 print(f"  {obj}: [0.0, {self.env.warmup_best_rewards[obj]:.4f}]")
-            print(f"=== STARTING CONSTRAINED PHASE ===\n")
+            print(f"STARTING CONSTRAINED PHASE \n")
 
         # Episode count relative to end of warmup
         constrained_episode = self.episode_count - self.total_warmup_episodes
@@ -276,7 +276,6 @@ class CoatOptDiscreteGymWrapper(gym.Env):
 
         elif self.constraint_schedule == "sequential":
             # complete all levels for one objective before switching
-            # Offset by 1 to alternate properly from warmup (which ends with absorption)
             cycle_length = self.total_levels * self.n_objectives
             cycle_phase = new_phase % cycle_length
             constrained_idx = (cycle_phase // self.total_levels + 1) % self.n_objectives
@@ -345,21 +344,6 @@ class CoatOptDiscreteGymWrapper(gym.Env):
         thickness_bin = int(action[1])
         thickness = self.get_thickness_from_bin(thickness_bin)
 
-        # DEBUG: Print first few actions
-        if self.current_layer < 3 and self.episode_count < 5:
-            print(
-                f"Episode {self.episode_count}, Layer {self.current_layer}: "
-                f"action={action}, material={material_idx}, thickness_bin={thickness_bin}, thickness={thickness:.4f}"
-            )
-
-        # Check for consecutive same material penalty (backup if masking fails)
-        consecutive_penalty = 0.0
-        if (
-            self.previous_material_idx is not None
-            and material_idx == self.previous_material_idx
-        ):
-            consecutive_penalty = self.consecutive_material_penalty
-
         # Update tracking for action masking
         self.previous_material_idx = material_idx
         self.current_layer += 1
@@ -379,12 +363,12 @@ class CoatOptDiscreteGymWrapper(gym.Env):
         truncated = False
 
         # Default: no reward for intermediate steps
-        total_reward = 0.0 - consecutive_penalty
+        total_reward = 0.0
         info = {}
 
         # Only populate info at episode end
         if done:
-            total_reward = env_reward - consecutive_penalty
+            total_reward = env_reward
 
             # Build info only at terminal step
             info = {
@@ -393,7 +377,6 @@ class CoatOptDiscreteGymWrapper(gym.Env):
                 "finished": finished,
                 "target": self.target_objective,
                 "constraints": self.constraints,
-                "consecutive_penalty": consecutive_penalty,
                 "annealing_progress": self._get_annealing_progress(),
                 "state_array": state.get_array(),
                 "constrained_reward": total_reward,
@@ -425,18 +408,15 @@ class CoatOptDiscreteGymWrapper(gym.Env):
                 else "none"
             )
             constr_str = f"C[R≥{r_constr}, A≥{a_constr}]"
-            print(
-                f"Ep{self.episode_count:4d} {phase_str:8s} target={self.target_objective[:4]:4s} | R_rew={r_reward:.4f} A_rew={a_reward:.4f} | {constr_str} | total={total_reward:.4f}"
-            )
+            # print(
+            #    f"Ep{self.episode_count:4d} {phase_str:8s} target={self.target_objective[:4]:4s} | R_rew={r_reward:.4f} A_rew={a_reward:.4f} | {constr_str} | total={total_reward:.4f}"
+            # )
 
         return obs, float(total_reward), done, truncated, info
 
 
 class LSTMFeatureExtractor(BaseFeaturesExtractor):
-    """Custom LSTM feature extractor for sequential coating layer processing.
-
-    This processes the flattened observation (max_layers * features_per_layer)
-    by reshaping it back into a sequence and running it through an LSTM.
+    """LSTM feature extractor for sequential coating layer processing.
 
     Args:
         observation_space: Gym observation space
@@ -456,7 +436,6 @@ class LSTMFeatureExtractor(BaseFeaturesExtractor):
         max_layers: int = 20,
         features_per_layer: int = None,
     ):
-        # Features dim is what we output to the policy/value networks
         super().__init__(observation_space, features_dim)
 
         self.max_layers = max_layers
@@ -475,8 +454,7 @@ class LSTMFeatureExtractor(BaseFeaturesExtractor):
             batch_first=True,
         )
 
-        # Project LSTM output + layer number to desired feature dimension
-        # +1 for layer number concatenated after LSTM
+        # Project LSTM output + layer number
         self.linear = nn.Linear(lstm_hidden_size + 1, features_dim)
 
     def forward(self, observations: th.Tensor) -> th.Tensor:
@@ -520,134 +498,6 @@ class LSTMFeatureExtractor(BaseFeaturesExtractor):
         return features
 
 
-class DiscreteActionPlottingCallback(PlottingCallback):
-    """Extended callback with alternating materials plotting for discrete actions.
-
-    Inherits all plotting from PlottingCallback and adds discrete-specific plots.
-    """
-
-    def __init__(
-        self,
-        env,
-        plot_freq: int = 5000,
-        design_plot_freq: int = 100,
-        save_dir: str = ".",
-        n_best_designs: int = 5,
-        materials: dict = None,
-        verbose: int = 0,
-        disable_mlflow: bool = True,
-        mlflow_log_freq: int = 1,
-    ):
-        super().__init__(
-            env=env,
-            plot_freq=plot_freq,
-            design_plot_freq=design_plot_freq,
-            save_dir=save_dir,
-            n_best_designs=n_best_designs,
-            materials=materials,
-            verbose=verbose,
-            disable_mlflow=disable_mlflow,
-            mlflow_log_freq=mlflow_log_freq,
-        )
-
-    def _plot_alternating_materials(self):
-        """Plot coating stack designs for alternating material combinations."""
-        import matplotlib.pyplot as plt
-
-        if self.env is None:
-            return
-
-        # Material combinations to test: (mat1, mat2, label)
-        # Based on typical materials: 1=SiO2, 2=Ti:Ta2O5, 3=aSi
-        combinations = [
-            (1, 2, "SiO2 / Ti:Ta2O5"),
-            (1, 3, "SiO2 / aSi"),
-            (2, 3, "Ti:Ta2O5 / aSi"),
-        ]
-
-        # Create alternating designs
-        designs = []
-        n_layers = 20
-        avg_thickness1 = 0.25
-        avg_thickness2 = 0.1
-
-        for avg_thickness in [avg_thickness1, avg_thickness2]:
-            for mat1, mat2, label in combinations:
-                # Check if materials exist
-                if mat1 not in self.materials or mat2 not in self.materials:
-                    continue
-
-                # Create state array in one-hot format: [thickness, material_onehot, n, k]
-                state_array = np.zeros((n_layers, 1 + len(self.materials) + 2))
-                for i in range(n_layers):
-                    material_idx = mat1 if i % 2 == 0 else mat2
-                    state_array[i, 0] = avg_thickness
-                    state_array[i, 1 + material_idx] = 1.0
-
-                # Create CoatingState from the internal (n_layers, 2) format
-                # Column 0: thickness, Column 1: material_index
-                internal_state = np.zeros((n_layers, 2))
-                for i in range(n_layers):
-                    material_idx = mat1 if i % 2 == 0 else mat2
-                    internal_state[i, 0] = avg_thickness
-                    internal_state[i, 1] = material_idx
-
-                coating_state = CoatingState.from_array(
-                    internal_state,
-                    len(self.materials),
-                    self.env.env.air_material_index,
-                    self.env.env.substrate_material_index,
-                    self.materials,
-                )
-
-                reflectivity, thermal_noise, absorption, total_thickness = (
-                    self.env.env.compute_state_value(coating_state)
-                )
-
-                # Compute normalised rewards using environment's compute_reward
-                # Temporarily save warmup state to prevent test designs from corrupting warmup_best
-                saved_warmup_best = self.env.env.warmup_best_rewards.copy()
-                rewards, vals = self.env.env.compute_reward(
-                    coating_state, normalised=True
-                )
-                self.env.env.warmup_best_rewards = saved_warmup_best  # Restore
-                ref_reward = rewards.get("reflectivity", 0.0)
-                abs_reward = rewards.get("absorption", 0.0)
-                total_reward = ref_reward + abs_reward
-
-                vals = {
-                    "reflectivity": reflectivity,
-                    "absorption": absorption,
-                    "total_reward": total_reward,
-                }
-
-                designs.append(
-                    {
-                        "state_array": state_array,  # Use one-hot format for plotting
-                        "vals": vals,
-                        "label": label,
-                    }
-                )
-
-        if not designs:
-            return
-
-        # Plot like _plot_best_designs
-        n_designs = len(designs)
-        fig, axs = plt.subplots(1, n_designs, figsize=(4 * n_designs, 6), squeeze=False)
-
-        for i, design in enumerate(designs):
-            ax = axs[0, i]
-            self._plot_single_stack(
-                ax, design["state_array"], design["vals"], rank=design["label"]
-            )
-
-        plt.tight_layout()
-        save_path = self.save_dir / "alternating_materials_designs.png"
-        plt.savefig(save_path)
-        plt.close(fig)
-
-
 def train(config_path: str, save_dir: str = None):
     """Train MaskablePPO with DISCRETE actions and ACTION MASKING on CoatOpt.
 
@@ -658,7 +508,6 @@ def train(config_path: str, save_dir: str = None):
     Returns:
         Trained MaskablePPO model
     """
-    import configparser
 
     parser = configparser.ConfigParser()
     parser.read(config_path)
@@ -681,16 +530,12 @@ def train(config_path: str, save_dir: str = None):
     else:
         save_dir = Path(save_dir)
 
-    # [sb3_discrete] or [sb3_discrete_lstm]
-    section = (
-        "sb3_discrete_lstm"
-        if parser.has_section("sb3_discrete_lstm")
-        else "sb3_discrete"
-    )
+    section = "sb3_discrete"
 
     total_timesteps = parser.getint(section, "total_timesteps")
     n_thickness_bins = parser.getint(section, "n_thickness_bins")
     verbose = parser.getint(section, "verbose")
+    seed = parser.getint(section, "seed", fallback=42)
     mask_consecutive_materials = parser.getboolean(
         section, "mask_consecutive_materials"
     )
@@ -729,6 +574,15 @@ def train(config_path: str, save_dir: str = None):
 
     materials = load_materials(str(materials_path))
     print(f"Loaded {len(materials)} materials from {materials_path}")
+
+    # Set random seeds for reproducibility
+    random.seed(seed)
+    np.random.seed(seed)
+    th.manual_seed(seed)
+    if th.cuda.is_available():
+        th.cuda.manual_seed(seed)
+        th.cuda.manual_seed_all(seed)
+    print(f"Random seed set to: {seed}")
 
     # Load config
     config = load_config(config_path)
@@ -803,6 +657,7 @@ def train(config_path: str, save_dir: str = None):
         verbose=0,
         tensorboard_log=tb_log,
         env=env,
+        seed=seed,
     )
 
     entropy_callback = EntropyAnnealingCallback(
@@ -814,21 +669,11 @@ def train(config_path: str, save_dir: str = None):
         constraint_window=50,  # Track last 50 episodes
     )
 
-    plotting_callback = DiscreteActionPlottingCallback(
-        env=env,
-        plot_freq=500,  # Reduced for shorter episodes
-        design_plot_freq=50,
-        save_dir=str(save_dir),
-        n_best_designs=5,
-        materials=materials,
-        verbose=verbose,
-        disable_mlflow=config.general.disable_mlflow,
-        mlflow_log_freq=config.general.mlflow_log_freq,
-    )
-
     print(f"\nStarting training for {total_timesteps} timesteps...")
     # Combine callbacks
-    callbacks = [entropy_callback, plotting_callback]
+    callbacks = [
+        entropy_callback,
+    ]
     if reset_policy_each_phase:
         print("Policy reset enabled: weights will be reset at each phase transition")
         callbacks.append(PolicyResetCallback(verbose=verbose))
@@ -848,17 +693,14 @@ def train(config_path: str, save_dir: str = None):
     # Save Pareto front to CSV
     print("\nSaving Pareto front...")
     pareto_csv = save_dir / "pareto_front.csv"
-    plotting_callback.save_pareto_front_to_csv(str(pareto_csv))
+    save_pareto_to_csv(env, str(pareto_csv))
 
-    # Log FINAL Pareto front to MLflow (only once, not every epoch)
+    # Log Pareto front to MLflow
     if not config.general.disable_mlflow and mlflow.active_run():
         print("Logging Pareto front to MLflow.....")
 
         # Log the CSV as artifact
         mlflow.log_artifact(str(pareto_csv))
-
-        # Log Pareto front as a table (queryable in MLflow)
-        import pandas as pd
 
         pareto_df = pd.read_csv(pareto_csv)
         mlflow.log_table(pareto_df, artifact_file="pareto_front_table.json")
@@ -885,12 +727,13 @@ def train(config_path: str, save_dir: str = None):
         start_time=start_time,
         end_time=end_time,
         pareto_front_size=len(pareto_df),
-        total_episodes=plotting_callback.episode_count,
+        total_episodes=None,
         config_path=config_path,
         additional_info={
             "total_timesteps": total_timesteps,
             "n_thickness_bins": n_thickness_bins,
             "constraint_schedule": constraint_schedule,
+            "seed": seed,
         },
     )
 

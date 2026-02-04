@@ -9,6 +9,7 @@ from stable_baselines3 import DQN
 from coatopt.environments.environment import CoatingEnvironment
 from coatopt.utils.callbacks import PlottingCallback
 from coatopt.utils.configs import load_config
+from coatopt.utils.metrics import save_pareto_to_csv
 from coatopt.utils.utils import load_materials, save_run_metadata
 
 
@@ -490,7 +491,7 @@ def train(config_path: str, save_dir: str):
 
     # Save Pareto front
     print("\nSaving Pareto front...")
-    plotting_callback.save_pareto_front_to_csv("pareto_front_dqn.csv")
+    save_pareto_to_csv(env, "pareto_front_dqn.csv", save_dir=save_dir)
 
     # Get Pareto front size
     import pandas as pd

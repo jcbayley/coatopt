@@ -21,6 +21,7 @@ from pymoo.util.ref_dirs import get_reference_directions
 from coatopt.environments.environment import CoatingEnvironment
 from coatopt.environments.state import CoatingState
 from coatopt.utils.configs import Config, DataConfig, TrainingConfig, load_config
+from coatopt.utils.plotting import plot_coating_stack, plot_pareto_front
 from coatopt.utils.utils import load_materials, save_run_metadata
 
 
@@ -396,124 +397,6 @@ def save_results(result, env, materials, save_dir: Path, verbose: bool = True):
     n_samples = min(5, len(X))
     for i in range(n_samples):
         plot_coating_stack(X[i], env, materials, save_dir / f"stack_{i}.png")
-
-
-def plot_pareto_front(
-    df: pd.DataFrame, objectives: list, save_dir: Path, plot_type: str = "vals"
-):
-    """Plot Pareto front in either vals or rewards space.
-
-    Args:
-        df: DataFrame with both {param}_val and {param}_reward columns
-        objectives: List of objective names
-        save_dir: Directory to save plot
-        plot_type: Either "vals" (physical values) or "rewards" (log-transformed rewards)
-    """
-    fig, ax = plt.subplots(figsize=(10, 8))
-
-    obj1, obj2 = objectives[0], objectives[1]
-
-    if plot_type == "vals":
-        # Plot physical values
-        x = df[f"{obj1}_val"].values
-        y = df[f"{obj2}_val"].values
-
-        # Handle reflectivity specially
-        if obj1 == "reflectivity":
-            x = 1 - x  # Plot as loss
-            xlabel = "1 - Reflectivity"
-        else:
-            xlabel = obj1.replace("_", " ").title()
-
-        if obj2 == "absorption":
-            ylabel = "Absorption (ppm)"
-        elif obj2 == "thermal_noise":
-            ylabel = "Thermal Noise (m/√Hz)"
-        else:
-            ylabel = obj2.replace("_", " ").title()
-
-        color = "red"
-        filename = "pareto_front_vals.png"
-        title_suffix = "Physical Values"
-
-    elif plot_type == "rewards":
-        # Plot rewards
-        x = df[f"{obj1}_reward"].values
-        y = df[f"{obj2}_reward"].values
-
-        xlabel = f"{obj1.replace('_', ' ').title()} Reward"
-        ylabel = f"{obj2.replace('_', ' ').title()} Reward"
-
-        color = "blue"
-        filename = "pareto_front_rewards.png"
-        title_suffix = "Rewards"
-    else:
-        raise ValueError(f"plot_type must be 'vals' or 'rewards', got {plot_type}")
-
-    ax.scatter(x, y, c=color, s=50, alpha=0.7, edgecolor="black")
-    ax.set_xlabel(xlabel)
-    ax.set_ylabel(ylabel)
-    ax.set_title(f"Pareto Front - {title_suffix} ({len(df)} solutions)")
-    ax.grid(True, alpha=0.3)
-
-    plt.tight_layout()
-    plt.savefig(save_dir / filename, dpi=150, bbox_inches="tight")
-    plt.close()
-
-
-def plot_coating_stack(
-    x: np.ndarray, env: CoatingEnvironment, materials: dict, save_path: Path
-):
-    """Plot coating stack design."""
-    fig, ax = plt.subplots(figsize=(8, 10))
-
-    thicknesses = x[: env.max_layers] * 1e9  # Convert to nm
-    material_indices = np.floor(x[env.max_layers :]).astype(int)
-
-    # Material colors
-    colors = {
-        0: "lightgray",
-        1: "steelblue",
-        2: "coral",
-        3: "mediumseagreen",
-        4: "gold",
-        5: "mediumpurple",
-    }
-
-    # Plot stack from bottom to top
-    y_pos = 0
-    for i, (thickness, mat_idx) in enumerate(zip(thicknesses, material_indices)):
-        if thickness < 1e-3:  # Skip very thin layers (likely air)
-            continue
-
-        color = colors.get(mat_idx, "gray")
-        mat_name = materials.get(mat_idx, {}).get("name", f"M{mat_idx}")
-
-        ax.bar(
-            0,
-            thickness,
-            bottom=y_pos,
-            width=0.6,
-            color=color,
-            edgecolor="black",
-            linewidth=0.5,
-            label=mat_name if i == 0 or mat_idx not in material_indices[:i] else "",
-        )
-        y_pos += thickness
-
-    ax.set_ylabel("Thickness (nm)")
-    ax.set_title("Coating Stack Design")
-    ax.set_xticks([])
-    ax.set_xlim(-0.5, 0.5)
-
-    handles, labels = ax.get_legend_handles_labels()
-    by_label = dict(zip(labels, handles))
-    if by_label:
-        ax.legend(by_label.values(), by_label.keys(), loc="upper right")
-
-    plt.tight_layout()
-    plt.savefig(save_path, dpi=150, bbox_inches="tight")
-    plt.close()
 
 
 if __name__ == "__main__":
