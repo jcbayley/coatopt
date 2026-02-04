@@ -123,6 +123,8 @@ class CoatingState:
         pre_type: str = "linear",
         include_field_data: bool = False,
         merit_function_callback=None,
+        constraints: Optional[dict] = None,
+        objective_names: Optional[list] = None,
         **physics_params,
     ) -> torch.Tensor:
         """
@@ -132,11 +134,14 @@ class CoatingState:
 
         Base format per layer: [thickness, material_0, ..., material_n, n, k]
         Enhanced format (with field): [thickness, materials, n, k, efield, grad, R, A, TN]
+        Appends constraint thresholds at the end if provided.
 
         Args:
             pre_type: "linear" for flattening, else 2D
             include_field_data: Include electric field calculations (default: False)
             merit_function_callback: Physics function from environment
+            constraints: Dict of constraint thresholds {objective_name: threshold}
+            objective_names: Ordered list of objective names for consistent constraint ordering
             **physics_params: Additional physics parameters
 
         Returns:
@@ -185,6 +190,22 @@ class CoatingState:
                 field_results = merit_function_callback(self, **physics_params)
                 if field_results and isinstance(field_results, dict):
                     tensor = self._add_field_info(tensor, field_results)
+
+        # Append constraint thresholds (before pre_type formatting for 2D tensors)
+        if constraints is not None and objective_names:
+            constraint_values = [constraints.get(obj, 0.0) for obj in objective_names]
+            constraint_tensor = torch.tensor(constraint_values, dtype=torch.float32)
+
+            if tensor.dim() == 2:
+                # 2D tensor: add constraints as extra features to each layer
+                n_layers = tensor.shape[0]
+                constraint_expanded = constraint_tensor.unsqueeze(0).expand(
+                    n_layers, -1
+                )
+                tensor = torch.cat([tensor, constraint_expanded], dim=1)
+            else:
+                # 1D tensor: just append
+                tensor = torch.cat([tensor, constraint_tensor])
 
         # Apply pre_type formatting
         if pre_type == "linear":

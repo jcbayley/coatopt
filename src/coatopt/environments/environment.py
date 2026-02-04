@@ -128,7 +128,10 @@ class CoatingEnvironment:
 
         # Observation space shape
         features_per_layer = 1 + self.n_materials + 2
-        self.obs_space_shape = (self.max_layers, features_per_layer)
+        n_constraints = (
+            len(self.optimise_parameters) if self.use_constrained_training else 0
+        )
+        self.obs_space_shape = (self.max_layers, features_per_layer, n_constraints)
 
     def reset(self) -> CoatingState:
         """Reset environment to initial state."""
@@ -148,7 +151,6 @@ class CoatingEnvironment:
         action: np.ndarray,
         objective_weights: Optional[Dict[str, float]] = None,
         pc_tracker=None,
-        pareto_tracker=None,
         phase_info=None,
         **kwargs,
     ) -> Tuple:
@@ -200,8 +202,6 @@ class CoatingEnvironment:
             total_reward, vals, reward_components = self.compute_training_reward(
                 self.current_state,
                 objective_weights=objective_weights,
-                pc_tracker=pc_tracker,
-                phase_info=phase_info,
             )
 
             # Always update pareto front when episode finishes (for tracking and optional bonus)
@@ -225,52 +225,7 @@ class CoatingEnvironment:
             vals,
         )
 
-    def compute_reward(
-        self,
-        state,  # Can be CoatingState or numpy array
-        normalised: bool = True,
-    ) -> Tuple[Dict[str, float], Dict[str, float]]:
-        """Compute base rewards for all objectives (no modifiers).
-
-        This is the core reward function that computes rewards for each objective.
-        Use this for evaluation or when you want base rewards without training modifiers.
-
-        Args:
-            state: CoatingState or numpy array
-            normalised: If True, scale rewards to [0, 1]. If False, return raw log-based rewards.
-
-        Returns:
-            Tuple of (individual_rewards, vals)
-            - individual_rewards: Dict mapping objective names to their rewards
-            - vals: Dict of physics values (reflectivity, thermal_noise, etc.)
-        """
-        # Convert numpy array to CoatingState if needed
-        if isinstance(state, np.ndarray):
-            state = CoatingState.from_array(
-                state,
-                self.n_materials,
-                self.air_material_index,
-                self.substrate_material_index,
-                self.materials,
-            )
-
-        # Get physics values
-        reflectivity, thermal_noise, absorption, total_thickness = (
-            self.compute_state_value(state)
-        )
-
-        vals = {
-            "reflectivity": reflectivity,
-            "thermal_noise": thermal_noise,
-            "thickness": total_thickness,
-            "absorption": absorption,
-        }
-
-        # Compute base rewards for all objectives
-        individual_rewards = self.compute_objective_rewards(vals, normalised=normalised)
-
-        return individual_rewards, vals
-
+    # Updates
     def _initialize_reward_bounds(self):
         """Initialize reward bounds from objective_bounds config."""
         for obj in self.optimise_parameters:
@@ -344,272 +299,8 @@ class CoatingEnvironment:
         self.use_pareto_bonus = True
         self.pareto_dominance_bonus = bonus
 
-    # ========================================================================
-    # REWARD COMPUTATION
-    # ========================================================================
-
-    def compute_objective_rewards(
-        self, vals: dict, normalised: bool = True
-    ) -> Dict[str, float]:
-        """Compute base rewards for all objectives.
-
-        This is the main reward function that computes rewards for each objective.
-
-        Args:
-            vals: Dictionary of objective values (reflectivity, thermal_noise, etc.)
-            normalised: If True, scale rewards to [0, 1]. If False, return raw log-based rewards.
-
-        Returns:
-            Dictionary mapping objective names to their rewards
-        """
-        rewards = {}
-
-        for objective in self.optimise_parameters:
-            val = vals.get(objective)
-            if val is None or np.isnan(val):
-                rewards[objective] = 0.0
-                continue
-
-            # Compute raw log-based reward
-            target = self.optimise_targets.get(objective, 0.0)
-            raw_reward = -np.log(np.abs(val - target) + 1e-30)
-
-            if normalised:
-                # Scale to [0, 1] using reward bounds
-                bounds = self.reward_bounds.get(objective, [-100, 0])
-                min_reward, max_reward = bounds[0], bounds[1]
-
-                if max_reward <= min_reward:
-                    rewards[objective] = 0.5
-                else:
-                    rewards[objective] = np.exp(
-                        (raw_reward - min_reward) / (max_reward - min_reward)
-                    )
-            else:
-                rewards[objective] = raw_reward
-
-        return rewards
-
-    # ========================================================================
-    # REWARD MODIFIERS (applied on top of base rewards)
-    # ========================================================================
-
-    def _compute_constraint_penalty(
-        self, vals: dict, base_rewards: Dict[str, float]
-    ) -> float:
-        """Compute constraint violation penalty.
-
-        Args:
-            vals: Dictionary of objective values
-            base_rewards: Dictionary of normalised base rewards for each objective
-
-        Returns:
-            Penalty value (positive number to subtract from reward)
-        """
-        penalty = 0.0
-
-        for obj, threshold in self.constraints.items():
-            val = vals.get(obj)
-            if val is None or np.isnan(val):
-                penalty += 1.0
-                continue
-
-            norm_reward = base_rewards.get(obj, 0.0)
-
-            if norm_reward < threshold:
-                violation = threshold - norm_reward
-                penalty += violation * self.constraint_penalty
-
-        return penalty
-
-    def _compute_pareto_dominance_bonus(self, vals: dict) -> float:
-        """Compute pareto dominance bonus based on hypervolume improvement.
-
-        This is a reward modifier that gives extra reward proportional to how much
-        the current point improves the Pareto front hypervolume.
-
-        IMPORTANT: Uses REWARD space Pareto front for calculations.
-
-        Args:
-            vals: Dictionary of objective values
-
-        Returns:
-            Bonus reward (hypervolume improvement * bonus weight)
-        """
-        if not self.use_pareto_bonus or not self.multi_objective:
-            return 0.0
-
-        from ..utils.metrics import compute_hypervolume, update_pareto_front
-
-        # Build reward vector for current point (normalised rewards)
-        reward_dict = self.compute_objective_rewards(vals, normalised=True)
-        current_reward = np.array(
-            [reward_dict.get(param, 0.0) for param in self.optimise_parameters]
-        )
-
-        # Get current Pareto front reward vectors
-        current_front = [np.array(r) for r, _ in self.pareto_front_rewards]
-
-        # Compute current hypervolume
-        if len(current_front) == 0:
-            hv_old = 0.0
-        else:
-            ref_point = np.zeros(len(self.optimise_parameters))
-            hv_old = compute_hypervolume(current_front, ref_point, maximize=True)
-
-        # Compute what the front would be with the new point
-        new_front = update_pareto_front(current_front, current_reward, maximize=True)
-
-        # Compute new hypervolume
-        ref_point = np.zeros(len(self.optimise_parameters))
-        hv_new = compute_hypervolume(new_front, ref_point, maximize=True)
-
-        # Compute hypervolume improvement
-        hv_improvement = max(0.0, hv_new - hv_old)
-
-        # Update max hypervolume tracking
-        if hv_new > self.max_hypervolume:
-            self.max_hypervolume = hv_new
-
-        # Return bonus proportional to hypervolume improvement
-        return hv_improvement * self.pareto_dominance_bonus
-
-    def compute_training_reward(
-        self,
-        state,  # Can be CoatingState or numpy array
-        objective_weights: Optional[Dict[str, float]] = None,
-        pc_tracker=None,
-        pareto_tracker=None,
-        phase_info=None,
-    ) -> Tuple[float, Dict[str, float], Dict[str, float]]:
-        """Compute reward for training (base rewards + modifiers).
-
-        This method:
-        1. Calls compute_reward() to get base rewards
-        2. Computes total reward based on training mode
-        3. Adds modifiers: constraint penalty, pareto bonus
-
-        Args:
-            state: CoatingState or numpy array
-            objective_weights: Weights for each objective (used in standard mode)
-            pc_tracker: Optional progress tracker
-            pareto_tracker: Optional pareto front tracker
-            phase_info: Optional phase information
-
-        Returns:
-            Tuple of (total_reward, vals, individual_rewards)
-        """
-        # Get base rewards (normalised for constrained training, raw otherwise)
-        normalised = self.use_constrained_training
-        individual_rewards, vals = self.compute_reward(state, normalised=normalised)
-
-        # Update observed bounds (for constrained training)
-        if self.use_constrained_training:
-            self.update_observed_bounds(vals)
-
-        # Compute total reward based on training mode
-        if self.use_constrained_training:
-            # Constrained training mode
-            if self.is_warmup:
-                # Phase 1 (Warmup): Optimize single objective
-                total_reward = individual_rewards.get(self.target_objective, 0.0)
-                self.update_warmup_best(self.target_objective, total_reward)
-            else:
-                # Phase 2 (Constrained): Optimize target objective with constraints
-                total_reward = individual_rewards.get(self.target_objective, 0.0)
-
-                # Add constraint penalty modifier
-                penalty = self._compute_constraint_penalty(vals, individual_rewards)
-                total_reward -= penalty
-                individual_rewards["constraint_penalty"] = -penalty
-        else:
-            # Standard mode: weighted sum of base rewards
-            if objective_weights is None:
-                objective_weights = self.objective_weights
-
-            total_reward = sum(
-                individual_rewards.get(param, 0.0) * objective_weights.get(param, 1.0)
-                for param in self.optimise_parameters
-            )
-
-        # Add pareto dominance bonus modifier (for both modes)
-        if self.use_pareto_bonus:
-            pareto_bonus = self._compute_pareto_dominance_bonus(vals)
-            total_reward += pareto_bonus
-            individual_rewards["pareto_bonus"] = pareto_bonus
-
-        return total_reward, vals, individual_rewards
-
-    def compute_state_value(
-        self, state: CoatingState, return_field_data: bool = False
-    ) -> Tuple:
-        """
-        Compute physics values using coating_utils.merit_function.
-
-        This is the ONLY interface to physics modules - does not modify them.
-        """
-        # Get state array - use get_array() to match base_environment behavior
-        state_array = state.get_array()
-
-        # Trim out air layers and reverse order (as base_environment does)
-        state_trim = state_utils.trim_state(state_array)
-        state_trim = state_trim[::-1]
-
-        # Check if state is empty (all air layers)
-        if len(state_trim) == 0:
-            # Return default values for empty coating
-            if return_field_data:
-                return (0.0, None, 0.0, 0.0, None)
-            else:
-                return (0.0, None, 0.0, 0.0)
-
-        # Call existing physics code
-        result = coating_utils.merit_function(
-            np.array(state_trim),
-            self.materials,
-            light_wavelength=self.light_wavelength,
-            frequency=self.frequency,
-            wBeam=self.wBeam,
-            Temp=self.Temp,
-            substrate_index=self.substrate_material_index,
-            air_index=self.air_material_index,
-            use_optical_thickness=self.use_optical_thickness,
-            return_field_data=return_field_data,
-        )
-
-        if return_field_data:
-            return result  # (r, thermal, absorption, thickness, field_data)
-        else:
-            return result  # (r, thermal, absorption, thickness)
-
-    def sample_action_space(self) -> np.ndarray:
-        """Sample random action."""
-        action = np.zeros(self.n_materials + 1)
-
-        if self.use_optical_thickness:
-            action[0] = np.random.uniform(0.01, 1.0)
-        else:
-            action[0] = np.random.uniform(self.min_thickness, self.max_thickness)
-
-        valid_materials = list(range(self.n_materials))
-        if self.ignore_air_option:
-            valid_materials = [
-                m for m in valid_materials if m != self.air_material_index
-            ]
-        if self.ignore_substrate_option:
-            valid_materials = [
-                m for m in valid_materials if m != self.substrate_material_index
-            ]
-
-        material_idx = np.random.choice(valid_materials)
-        action[material_idx + 1] = 1.0
-        return action
-
     def update_pareto_front(self, objectives: Dict[str, float], state: CoatingState):
         """Update both reward and value space Pareto fronts.
-
-        IMPORTANT: Dominance checks use REWARD space, not value space.
-        Value space is only for visual diagnostics.
 
         Args:
             objectives: Dictionary of objective values (reflectivity, absorption, etc.)
@@ -674,6 +365,296 @@ class CoatingEnvironment:
         self.pareto_front_rewards = new_reward_front
         self.pareto_front_values = new_value_front
 
+    # Reward computation
+    def compute_state_value(
+        self, state: CoatingState, return_field_data: bool = False
+    ) -> Tuple:
+        """
+        Compute physics values using coating_utils.merit_function.
+        """
+        # Get state array - use get_array() to match base_environment behavior
+        state_array = state.get_array()
+
+        # Trim out air layers and reverse order (as base_environment does)
+        state_trim = state_utils.trim_state(state_array)
+        state_trim = state_trim[::-1]
+
+        # Check if state is empty (all air layers)
+        if len(state_trim) == 0:
+            # Return default values for empty coating
+            if return_field_data:
+                return (0.0, None, 0.0, 0.0, None)
+            else:
+                return (0.0, None, 0.0, 0.0)
+
+        # Call existing physics code
+        result = coating_utils.merit_function(
+            np.array(state_trim),
+            self.materials,
+            light_wavelength=self.light_wavelength,
+            frequency=self.frequency,
+            wBeam=self.wBeam,
+            Temp=self.Temp,
+            substrate_index=self.substrate_material_index,
+            air_index=self.air_material_index,
+            use_optical_thickness=self.use_optical_thickness,
+            return_field_data=return_field_data,
+        )
+
+        if return_field_data:
+            return result  # (r, thermal, absorption, thickness, field_data)
+        else:
+            return result  # (r, thermal, absorption, thickness)
+
+    def compute_reward(
+        self,
+        state,  # Can be CoatingState or numpy array
+        normalised: bool = True,
+    ) -> Tuple[Dict[str, float], Dict[str, float]]:
+        """Compute base rewards for all objectives.
+
+        Args:
+            state: CoatingState or numpy array
+            normalised: If True, scale rewards to [0, 1]. If False, return raw log-based rewards.
+
+        Returns:
+            Tuple of (individual_rewards, vals)
+            - individual_rewards: Dict mapping objective names to their rewards
+            - vals: Dict of physics values (reflectivity, thermal_noise, etc.)
+        """
+        # Convert numpy array to CoatingState if needed
+        if isinstance(state, np.ndarray):
+            state = CoatingState.from_array(
+                state,
+                self.n_materials,
+                self.air_material_index,
+                self.substrate_material_index,
+                self.materials,
+            )
+
+        # Get physics values
+        reflectivity, thermal_noise, absorption, total_thickness = (
+            self.compute_state_value(state)
+        )
+
+        vals = {
+            "reflectivity": reflectivity,
+            "thermal_noise": thermal_noise,
+            "thickness": total_thickness,
+            "absorption": absorption,
+        }
+
+        # Compute base rewards for all objectives
+        individual_rewards = self.compute_objective_rewards(vals, normalised=normalised)
+
+        return individual_rewards, vals
+
+    def compute_objective_rewards(
+        self, vals: dict, normalised: bool = True
+    ) -> Dict[str, float]:
+        """Compute base rewards for all objectives.
+
+        Args:
+            vals: Dictionary of objective values (reflectivity, thermal_noise, etc.)
+            normalised: If True, scale rewards to [0, 1]. If False, return raw log-based rewards.
+
+        Returns:
+            Dictionary mapping objective names to their rewards
+        """
+        rewards = {}
+
+        for objective in self.optimise_parameters:
+            val = vals.get(objective)
+
+            # Compute raw log-based reward
+            target = self.optimise_targets.get(objective, 0.0)
+            raw_reward = -np.log(np.abs(val - target) + 1e-30)
+
+            if normalised:
+                # Scale to [0, 1] using reward bounds
+                bounds = self.reward_bounds.get(objective, [-100, 0])
+                min_reward, max_reward = bounds[0], bounds[1]
+
+                if max_reward <= min_reward:
+                    rewards[objective] = 0.5
+                else:
+                    rewards[objective] = np.exp(
+                        (raw_reward - min_reward) / (max_reward - min_reward)
+                    )
+            else:
+                rewards[objective] = raw_reward
+
+        return rewards
+
+    def compute_training_reward(
+        self,
+        state,  # Can be CoatingState or numpy array
+        objective_weights: Optional[Dict[str, float]] = None,
+    ) -> Tuple[float, Dict[str, float], Dict[str, float]]:
+        """Compute reward for training (base rewards + modifiers).
+
+        Args:
+            state: CoatingState or numpy array
+            objective_weights: Weights for each objective (used in standard mode)
+            pc_tracker: Optional progress tracker
+            pareto_tracker: Optional pareto front tracker
+            phase_info: Optional phase information
+
+        Returns:
+            Tuple of (total_reward, vals, individual_rewards)
+        """
+        # Get base rewards (normalised for constrained training, raw otherwise)
+        normalised = self.use_constrained_training
+        individual_rewards, vals = self.compute_reward(state, normalised=normalised)
+
+        # Update observed bounds (for constrained training)
+        if self.use_constrained_training:
+            self.update_observed_bounds(vals)
+
+        # Compute total reward based on training mode
+        if self.use_constrained_training:
+            # Constrained training mode
+            if self.is_warmup:
+                # Phase 1 (Warmup): Optimize single objective
+                total_reward = individual_rewards.get(self.target_objective, 0.0)
+                self.update_warmup_best(self.target_objective, total_reward)
+            else:
+                # Phase 2 (Constrained): Optimize target objective with constraints
+                total_reward = individual_rewards.get(self.target_objective, 0.0)
+
+                # Add constraint penalty modifier
+                penalty = self._compute_constraint_penalty(vals, individual_rewards)
+                total_reward -= penalty
+                individual_rewards["constraint_penalty"] = -penalty
+        else:
+            # Standard mode: weighted sum of base rewards
+            if objective_weights is None:
+                objective_weights = self.objective_weights
+
+            total_reward = sum(
+                individual_rewards.get(param, 0.0) * objective_weights.get(param, 1.0)
+                for param in self.optimise_parameters
+            )
+
+        # Add pareto dominance bonus modifier (for both modes)
+        if self.use_pareto_bonus:
+            pareto_bonus = self._compute_pareto_dominance_bonus(vals)
+            total_reward += pareto_bonus
+            individual_rewards["pareto_bonus"] = pareto_bonus
+
+        return total_reward, vals, individual_rewards
+
+    # Reward Addons
+
+    def _compute_constraint_penalty(self, vals, rewards: Dict[str, float]) -> float:
+        """Compute constraint violation penalty.
+        Args:
+            base_rewards: Dictionary of normalised rewards for each objective
+        Returns:
+            Penalty value (positive number to subtract from reward)
+        """
+        penalty = 0.0
+
+        for obj, threshold in self.constraints.items():
+
+            norm_reward = rewards.get(obj, 0.0)
+
+            if norm_reward < threshold:
+                violation = threshold - norm_reward
+                penalty += violation * self.constraint_penalty
+
+        return penalty
+
+    def _compute_pareto_dominance_bonus(self, vals: dict) -> float:
+        """Compute pareto dominance bonus based on hypervolume improvement.
+
+        Args:
+            vals: Dictionary of objective values
+
+        Returns:
+            Bonus reward (hypervolume improvement * bonus weight)
+        """
+        if not self.use_pareto_bonus or not self.multi_objective:
+            return 0.0
+
+        # Build reward vector for current point (normalised rewards)
+        reward_dict = self.compute_objective_rewards(vals, normalised=True)
+        current_reward = np.array(
+            [reward_dict.get(param, 0.0) for param in self.optimise_parameters]
+        )
+
+        # Get current Pareto front reward vectors
+        current_front = [np.array(r) for r, _ in self.pareto_front_rewards]
+
+        # Compute current hypervolume
+        if len(current_front) == 0:
+            hv_old = 0.0
+        else:
+            ref_point = np.zeros(len(self.optimise_parameters))
+            hv_old = compute_hypervolume(current_front, ref_point, maximize=True)
+
+        # Compute what the front would be with the new point
+        new_front = update_pareto_front(current_front, current_reward, maximize=True)
+
+        # Compute new hypervolume
+        ref_point = np.zeros(len(self.optimise_parameters))
+        hv_new = compute_hypervolume(new_front, ref_point, maximize=True)
+
+        # Compute hypervolume improvement
+        hv_improvement = max(0.0, hv_new - hv_old)
+
+        # Update max hypervolume tracking
+        if hv_new > self.max_hypervolume:
+            self.max_hypervolume = hv_new
+
+        # Return bonus proportional to hypervolume improvement
+        return hv_improvement * self.pareto_dominance_bonus
+
+    # Utility functions
+    def sample_action_space(self) -> np.ndarray:
+        """Sample random action."""
+        action = np.zeros(self.n_materials + 1)
+
+        if self.use_optical_thickness:
+            action[0] = np.random.uniform(0.01, 1.0)
+        else:
+            action[0] = np.random.uniform(self.min_thickness, self.max_thickness)
+
+        valid_materials = list(range(self.n_materials))
+        if self.ignore_air_option:
+            valid_materials = [
+                m for m in valid_materials if m != self.air_material_index
+            ]
+        if self.ignore_substrate_option:
+            valid_materials = [
+                m for m in valid_materials if m != self.substrate_material_index
+            ]
+
+        material_idx = np.random.choice(valid_materials)
+        action[material_idx + 1] = 1.0
+        return action
+
+    def get_observation(
+        self, state: Optional[CoatingState] = None, **kwargs
+    ) -> np.ndarray:
+        """Get observation tensor with constraints included.
+
+        Args:
+            state: State to get observation for (defaults to current_state)
+            **kwargs: Additional arguments passed to get_observation_tensor
+
+        Returns:
+            Observation as numpy array with constraints appended
+        """
+        if state is None:
+            state = self.current_state
+
+        return state.get_observation_tensor(
+            constraints=self.constraints,
+            objective_names=self.optimise_parameters,
+            **kwargs,
+        ).numpy()
+
     def get_state(self) -> CoatingState:
         """Get current state."""
         return self.current_state
@@ -721,7 +702,6 @@ class CoatingEnvironment:
         # Set reference point
         if ref_point is None:
             if space == "reward":
-                # In reward space, all objectives are maximized (higher is better)
                 # Reference point should be worse than all points (e.g., [0, 0])
                 ref_point = np.zeros(len(self.optimise_parameters))
             else:
@@ -750,10 +730,3 @@ class CoatingEnvironment:
     def get_parameter_names(self) -> List[str]:
         """Get list of optimization parameter names."""
         return self.optimise_parameters
-
-    def __repr__(self) -> str:
-        return (
-            f"CoatingEnvironment(max_layers={self.max_layers}, "
-            f"n_materials={self.n_materials}, multi_objective={self.multi_objective}, "
-            f"objectives={self.optimise_parameters})"
-        )

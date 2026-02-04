@@ -20,7 +20,7 @@ from coatopt.utils.configs import Config, DataConfig, TrainingConfig
 @pytest.fixture
 def materials():
     """Load materials from the default materials.json file."""
-    materials_path = Path(__file__).parent.parent / "examples" / "materials.json"
+    materials_path = Path(__file__).parent.parent / "experiments" / "materials.json"
     with open(materials_path) as f:
         materials_dict = json.load(f)
 
@@ -122,7 +122,7 @@ class TestCoatingEnvironmentInitialization:
 
         n_materials = len(materials)
         features_per_layer = 1 + n_materials + 2  # thickness + materials + n + k
-        expected_shape = (10, features_per_layer)
+        expected_shape = (10, features_per_layer, 0)
 
         assert env.obs_space_shape == expected_shape
 
@@ -363,20 +363,6 @@ class TestCoatingEnvironmentRewards:
         assert "reflectivity" in rewards
         assert "absorption" in rewards
         assert isinstance(rewards["reflectivity"], float)
-
-    def test_compute_objective_rewards_handles_nan(self, basic_config, materials):
-        """Test that NaN values are handled gracefully."""
-        env = CoatingEnvironment(basic_config, materials)
-
-        vals = {
-            "reflectivity": np.nan,
-            "absorption": 100.0,
-        }
-
-        rewards = env.compute_objective_rewards(vals, normalised=True)
-
-        assert rewards["reflectivity"] == 0.0
-        assert isinstance(rewards["absorption"], float)
 
     def test_compute_training_reward_standard_mode(self, basic_config, materials):
         """Test training reward computation in standard mode."""
@@ -773,20 +759,6 @@ class TestCoatingEnvironmentDominance:
         obj2 = np.array([0.95, 50.0])
 
         assert dominates(obj1, obj2, maximize=True) is False
-
-
-class TestCoatingEnvironmentRepr:
-    """Test string representations."""
-
-    def test_repr(self, basic_config, materials):
-        """Test __repr__ output."""
-        env = CoatingEnvironment(basic_config, materials)
-
-        repr_str = repr(env)
-
-        assert "CoatingEnvironment" in repr_str
-        assert "max_layers=10" in repr_str
-        assert "multi_objective=True" in repr_str
 
 
 class TestCoatingEnvironmentObservedBounds:

@@ -1,25 +1,20 @@
 # CoatOpt: Multi-Objective Coating Optimization
 
-A test bed for comparing Reinforcement Learning and Evolutionary algorithms on multi-objective optimization problems for designing gravitational wave detector mirror coatings.
+A test for comparing Reinforcement Learning and Evolutionary algorithms on multi-objective optimization problems for designing gravitational wave detector mirror coatings.
 
-## Overview
+Algorithms Supported:
+- RL Algorithms: PPO, DQN, MORL (Stable-Baselines3)
+- Evolutionary Algorithms: NSGA-II, MOEA/D
 
-CoatOpt provides a unified framework for testing and comparing different optimization algorithms on coating stack design:
+Optimization Objectives:
+- Reflectivity: Maximize mirror reflectance
+- Absorption: Minimize optical absorption
+- Thermal Noise: Minimize Brownian thermal noise
 
-**Algorithms Supported:**
-- **RL Algorithms**: PPO, DQN, MORL (Stable-Baselines3)
-- **Evolutionary Algorithms**: NSGA-II, MOEA/D
-
-**Optimization Objectives:**
-- **Reflectivity**: Maximize mirror reflectance (↑)
-- **Absorption**: Minimize optical absorption (↓)
-- **Thermal Noise**: Minimize Brownian thermal noise (↓)
-
-All algorithms maintain Pareto fronts of non-dominated solutions for multi-objective optimization.
 
 ## Installation
 
-CoatOpt uses **uv** as the package manager. Python 3.9+ is required.
+CoatOpt uses **uv** as the package manager.
 
 ```bash
 # Install uv if you don't have it
@@ -34,14 +29,14 @@ uv sync
 
 ### Running Experiments
 
-All algorithms use a unified run script with config files:
+All algorithms use a run script with config files:
 
 ```bash
 # Run with config file
 uv run python -m coatopt.run --config experiments/config_sb3_discrete.ini
 
-# Or use the shorter form
-uv run python -m coatopt.run --config experiments/config_genetic.ini
+# Or use the sweep functionality
+uv run python -m coatopt.sweep --config experiments/config_genetic.ini
 ```
 
 ### Example Config
@@ -53,7 +48,7 @@ Create a config file (e.g., `my_experiment.ini`):
 save_dir = ./runs
 materials_path = src/coatopt/config/materials.json
 run_name = test1
-# Optional: experiment_name = 20layer-0.1-0.5 (auto-generated if not set)
+# Optional: experiment_name = 20layer-0.1-0.5
 
 [Data]
 n_layers = 20
@@ -61,7 +56,7 @@ min_thickness = 0.1
 max_thickness = 0.5
 optimise_parameters = reflectivity, absorption
 optimise_targets = {"reflectivity": 1.0, "absorption": 0.0}
-objective_bounds = {"reflectivity": [0.9, 0.99999], "absorption": [1e-6, 100e-6]}
+objective_bounds = {"reflectivity": [0.9, 0.99999], "absorption": [1e3, 1e-1]}
 constraint_schedule = interleaved
 
 [sb3_discrete]
@@ -117,13 +112,7 @@ All runs are automatically tracked in MLflow:
 ```bash
 # View results in MLflow UI
 uv run mlflow ui
-
-# Open browser to http://localhost:5000
 ```
-
-**MLflow Organization:**
-- **Experiment** = Problem definition (e.g., "20layer-0.1-0.5")
-- **Run** = Algorithm attempt (e.g., "20240202-sb3_discrete-test1")
 
 
 ## Example: Comparing Algorithms

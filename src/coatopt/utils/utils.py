@@ -3,12 +3,31 @@
 import json
 import math
 import platform
+import subprocess
 import time
 from datetime import datetime
 from pathlib import Path
 
 import numpy as np
 from stable_baselines3.common.callbacks import BaseCallback
+
+
+def get_git_hash() -> str:
+    """Get current git commit hash.
+
+    Returns:
+        Git commit hash (short), or 'unknown' if not in git repo
+    """
+    try:
+        return (
+            subprocess.check_output(
+                ["git", "rev-parse", "--short", "HEAD"], stderr=subprocess.DEVNULL
+            )
+            .decode("ascii")
+            .strip()
+        )
+    except:
+        return "unknown"
 
 
 def load_materials(path: str) -> dict:
@@ -109,6 +128,7 @@ def save_run_metadata(
         "total_episodes": total_episodes,
         "total_generations": total_generations,
         "config_path": str(config_path) if config_path else None,
+        "git_hash": get_git_hash(),
         "platform": {
             "system": platform.system(),
             "python_version": platform.python_version(),

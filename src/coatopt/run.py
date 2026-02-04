@@ -100,46 +100,43 @@ def run_experiment(config_path: str):
     print(f"Save directory: {save_dir}")
     print(f"MLflow run: {run_dir_name}")
 
-    try:
-        #  algorithm-specific training
-        if algorithm == "sb3_discrete":
-            from coatopt.algorithms.train_sb3_discrete import train
+    #  algorithm-specific training
+    if algorithm == "sb3_discrete":
+        from coatopt.algorithms.train_sb3_discrete import train
 
-            train(config_path=str(config_path), save_dir=str(save_dir))
+        train(config_path=str(config_path), save_dir=str(save_dir))
 
-        elif algorithm == "sb3_dqn":
-            from coatopt.algorithms.train_sb3_discrete_dqn import train
+    elif algorithm == "nsga2":
+        from coatopt.algorithms.train_genetic_simple import train_genetic as train
 
-            train(config_path=str(config_path), save_dir=str(save_dir))
+        train(config_path=str(config_path), save_dir=str(save_dir))
 
-        elif algorithm == "sb3_simple":
-            from coatopt.algorithms.train_sb3_continuous import train
+    elif algorithm == "sb3_dqn":
+        from coatopt.algorithms.train_sb3_discrete_dqn import train
 
-            train(config_path=str(config_path), save_dir=str(save_dir))
+        train(config_path=str(config_path), save_dir=str(save_dir))
 
-        elif algorithm == "morl":
-            from coatopt.algorithms.train_morl_simple import train_morld as train
+    elif algorithm == "sb3_simple":
+        from coatopt.algorithms.train_sb3_continuous import train
 
-            train(config_path=str(config_path), save_dir=str(save_dir))
+        train(config_path=str(config_path), save_dir=str(save_dir))
 
-        elif algorithm == "nsga2":
-            from coatopt.algorithms.train_genetic_simple import train_genetic as train
+    elif algorithm == "morl":
+        from coatopt.algorithms.train_morl_simple import train
 
-            train(config_path=str(config_path), save_dir=str(save_dir))
+        train(config_path=str(config_path), save_dir=str(save_dir))
 
-        elif algorithm == "hppo":
-            from coatopt.algorithms.train_hppo_simple import train
+    elif algorithm == "hppo":
+        from coatopt.algorithms.train_hppo_simple import train
 
-            train(config_path=str(config_path), save_dir=str(save_dir))
+        train(config_path=str(config_path), save_dir=str(save_dir))
 
-        else:
-            raise ValueError(
-                f"Unknown algorithm: {algorithm}. Must be one of: sb3_discrete, sb3_discrete_lstm, sb3_dqn, sb3_simple, morl, nsga2, hppo"
-            )
+    else:
+        raise ValueError(
+            f"Unknown algorithm: {algorithm}. Must be one of: sb3_discrete, sb3_discrete_lstm, sb3_dqn, sb3_simple, morl, nsga2, hppo"
+        )
 
-    finally:
-        # Always end MLflow run
-        mlflow.end_run()
+    mlflow.end_run()
 
 
 if __name__ == "__main__":

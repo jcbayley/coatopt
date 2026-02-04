@@ -9,6 +9,9 @@ import numpy as np
 import torch
 from stable_baselines3.common.callbacks import BaseCallback
 
+from coatopt.utils.metrics import save_pareto_to_csv
+from coatopt.utils.plotting import plot_coating_stack_from_state_array
+
 
 class EntropyAnnealingCallback(BaseCallback):
     """Callback to update entropy coefficient with cosine annealing schedule.
@@ -663,79 +666,26 @@ class PlottingCallback(BaseCallback):
             state_array = design["state_array"]
             vals = design["vals"]
 
-            self._plot_single_stack(ax, state_array, vals, rank=i + 1)
+            # Use shared plotting utility
+            title_parts = [f"Rank {i + 1}"]
+            for param, val in vals.items():
+                if param == "reflectivity":
+                    title_parts.append(f"R={val:.6f}")
+                elif param == "absorption":
+                    title_parts.append(f"A={val:.2e}")
+            title = "\n".join(title_parts)
+
+            plot_coating_stack_from_state_array(
+                state_array=state_array,
+                materials=self.materials,
+                title=title,
+                ax=ax,
+            )
 
         plt.tight_layout()
         save_path = self.save_dir / "pareto_front_designs.png"
         plt.savefig(save_path)
         plt.close(fig)
-
-    def _plot_single_stack(self, ax, state_array, vals, rank: int):
-        """Plot a single coating stack as vertical bars."""
-        # state_array shape: (n_layers, n_materials + 1 + ...)
-        # Column 0: thickness, Columns 1+: one-hot material
-
-        # Filter to active layers (thickness > 0)
-        thicknesses = state_array[:, 0]
-        active_mask = thicknesses > 1e-12
-        active_thicknesses = thicknesses[active_mask]
-
-        # Check if using optical thickness (very small values ~0.1-0.5)
-        # or physical thickness (larger values ~10e-9 to 500e-9)
-        if len(active_thicknesses) > 0 and active_thicknesses.max() < 10:
-            # Optical thickness, keep as is
-            thickness_label = "Optical Thickness"
-        else:
-            # Physical thickness, convert to nm
-            active_thicknesses = active_thicknesses * 1e9
-            thickness_label = "Thickness (nm)"
-
-        if len(active_thicknesses) == 0:
-            ax.text(0.5, 0.5, "Empty design", ha="center", va="center")
-            ax.set_title(f"Rank {rank}")
-            return
-
-        # Get material indices
-        material_onehot = state_array[active_mask, 1:]
-        material_indices = np.argmax(material_onehot, axis=1)
-
-        # Plot stacked bars from bottom to top
-        y_pos = 0
-        for layer_idx, (thickness, mat_idx) in enumerate(
-            zip(active_thicknesses, material_indices)
-        ):
-            color = self.MATERIAL_COLORS.get(mat_idx, "gray")
-            mat_name = self.materials.get(mat_idx, {}).get("name", f"M{mat_idx}")
-
-            ax.bar(
-                0,
-                thickness,
-                bottom=y_pos,
-                width=0.6,
-                color=color,
-                edgecolor="black",
-                linewidth=0.5,
-                label=(
-                    mat_name
-                    if layer_idx == 0 or mat_idx not in material_indices[:layer_idx]
-                    else ""
-                ),
-            )
-            y_pos += thickness
-
-        # Labels and title
-        R = vals.get("reflectivity", 0)
-        A = vals.get("absorption", 0)
-        ax.set_title(f"Rank {rank}\nR={R:.6f}, A={A:.3e}")
-        ax.set_ylabel(thickness_label)
-        ax.set_xticks([])
-        ax.set_xlim(-0.5, 0.5)
-
-        # Legend with unique materials
-        handles, labels = ax.get_legend_handles_labels()
-        by_label = dict(zip(labels, handles))
-        if by_label:
-            ax.legend(by_label.values(), by_label.keys(), loc="upper right", fontsize=8)
 
     def save_pareto_front_to_csv(self, filename: str = "pareto_front.csv"):
         """Save Pareto front from environment to CSV file.
@@ -743,92 +693,4 @@ class PlottingCallback(BaseCallback):
         Args:
             filename: Name of CSV file to save (can be absolute, relative to cwd, or just a filename)
         """
-        from pathlib import Path
-
-        import pandas as pd
-
-        # Build filepath
-        filepath = Path(filename)
-        # Only prepend save_dir if filename is just a filename (no directory components)
-        if not filepath.is_absolute() and filepath.parent == Path("."):
-            filepath = self.save_dir / filename
-
-        # Get environment
-        env = self.env
-        if hasattr(env, "env"):
-            env = env.env
-
-        # Get both value and reward space Pareto fronts
-        pareto_front_values = (
-            env.get_pareto_front(space="value")
-            if hasattr(env, "get_pareto_front")
-            else []
-        )
-        pareto_front_rewards = (
-            env.get_pareto_front(space="reward")
-            if hasattr(env, "get_pareto_front")
-            else []
-        )
-
-        if not pareto_front_values:
-            print("No Pareto front data to save")
-            return
-
-        # Convert to CSV format
-        data = []
-        for obj_vector, state in pareto_front_values:
-            row = {}
-
-            # Add objective values
-            if hasattr(env, "optimise_parameters"):
-                for i, param_name in enumerate(env.optimise_parameters):
-                    if i < len(obj_vector):
-                        row[param_name] = obj_vector[i]
-
-            # Add state information
-            state_array = state.get_array()
-            thicknesses = state_array[:, 0]
-            material_indices = state_array[:, 1].astype(int)
-
-            # Filter active layers
-            active_mask = thicknesses > 1e-12
-            active_thicknesses = thicknesses[active_mask]
-            active_materials = material_indices[active_mask]
-
-            row["n_layers"] = len(active_thicknesses)
-            row["thicknesses"] = ",".join(f"{t:.6f}" for t in active_thicknesses)
-            row["materials"] = ",".join(map(str, active_materials))
-
-            data.append(row)
-
-        df = pd.DataFrame(data)
-
-        # Sort by absorption if available (lower is better)
-        if "absorption" in df.columns:
-            df = df.sort_values("absorption", ascending=True)
-        elif "reflectivity" in df.columns:
-            df = df.sort_values("reflectivity", ascending=False)
-
-        # Save value space
-        values_path = filepath.parent / "pareto_front_values.csv"
-        df.to_csv(values_path, index=False)
-
-        # Save reward space
-        data_rewards = []
-        for obj_vector, state in pareto_front_rewards:
-            row = {}
-            if hasattr(env, "optimise_parameters"):
-                for i, param_name in enumerate(env.optimise_parameters):
-                    if i < len(obj_vector):
-                        row[f"{param_name}_reward"] = obj_vector[i]
-            data_rewards.append(row)
-
-        if data_rewards:
-            df_rewards = pd.DataFrame(data_rewards)
-            rewards_path = filepath.parent / "pareto_front_rewards.csv"
-            df_rewards.to_csv(rewards_path, index=False)
-            print(
-                f"Saved Pareto front ({len(df)} designs) to {values_path} and {rewards_path}"
-            )
-        else:
-            print(f"Saved Pareto front ({len(df)} designs) to {values_path}")
+        save_pareto_to_csv(self.env, filename, save_dir=self.save_dir)
