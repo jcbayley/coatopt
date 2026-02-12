@@ -1,13 +1,18 @@
 #from thermal_noise_hong import getCoatBrownian
+from deap import base, creator, tools
+import seaborn as sns
 import matplotlib.pyplot as plt
 import matplotlib.cm as cm
 import numpy as np
 import random
 import os 
-#from gwinc import * 
+from gwinc import * 
 import numpy as np
 import numba 
 import pandas as pd 
+import sys 
+sys.path.append('/Users/simon/Dropbox/Python/Optics/CoatingDevelopment/coatingstack/')
+
 
 def generate_coating_stack(lambda_):
     """
@@ -60,101 +65,6 @@ def generate_coating_stack(lambda_):
             file.write(f"material_{i}\t {d_physical_layers[i-1]:.2f}\n")
 
     return n_input, dOpt
-
-
-def thin_film_stack(n_input, dOpt, lambda_):
-    """
-    Generates and plots a thin film coating stack.
-
-    :param n_input: Array of refractive indices for each material.
-    :param dOpt: Array specifying the material for each layer.
-    :param lambda_: Wavelength.
-    :return: n_layers, material_kind, d_physical_layers
-    """
-    if len(n_input) < max(dOpt):
-        raise ValueError('The number of refractive indices provided is less than the required materials in dOpt.')
-
-    # Calculate individual physical thickness for each material
-    d_physical = lambda_ / (4 * np.array(n_input))
-
-    # Arrays for each layer
-    n_layers = np.array(n_input)[np.array(dOpt) - 1]
-    material_kind = dOpt
-    d_physical_layers = np.array(d_physical)[np.array(dOpt) - 1]
-
-
-    # Plotting the thin film stack
-    unique_materials = list(set(dOpt))
-    colors = plt.cm.viridis(np.linspace(0, 1, len(unique_materials)))  # generate distinct colors for materials
-
-    # Check if the file exists to write headers
-    file_exists = os.path.exists('coating_metadata.txt')
-
-    # Write metadata to text file
-    with open('coating_metadata.txt', 'a') as file:
-        if not file_exists:
-            file.write("Lambda (m)\tTotal Layers\t")
-            for i in range(1, 7):
-                file.write(f"Material_{i}\tNo. Layers_{i}\tPhysical Thickness_{i} (m)\tRefractive Index_{i}\t")
-            file.write("\n")
-        
-        file.write(f"{lambda_:.2e}\t{len(dOpt)}\t")
-        for i in range(1, 7):
-            if i in dOpt:
-                file.write(f"Material {i}\t")
-                file.write(f"{len([x for x in dOpt if x == i])}\t")
-                file.write(f"{sum(d_physical_layers[dOpt == i]):.2e}\t")
-                file.write(f"{n_input[i-1]:.2f}\t")  # Directly access the refractive index from n_input
-            else:
-                file.write("NaN\tNaN\tNaN\tNaN\t")
-        file.write("\n")
-    
-    plt.figure(figsize=(10, 8))
-    plt.subplot(2, 1, 1)
-    plt.grid(True)
-    depth_so_far = 0  # To keep track of where to plot the next bar
-    for i in range(len(dOpt)):
-        material_idx = dOpt[i]
-        color_idx = unique_materials.index(material_idx)
-        plt.bar(depth_so_far + d_physical_layers[i] / 2, d_physical_layers[i], color=colors[color_idx],
-                width=d_physical_layers[i])
-        depth_so_far += d_physical_layers[i]
-
-    plt.xlim([0, sum(d_physical_layers) * 1.01])
-    plt.ylabel('Physical Thickness [nm]')
-    plt.xlabel('Layer Position')
-    plt.title('Generated Stack')
-    legend_str = ['n = ' + str(n) for n in n_input]
-    plt.grid(False)
-    plt.legend(legend_str)
-
-    # Additional code for plotting the normalized electric field intensity squared can be added here
-
-    plt.show()
-
-   # Printing coating properties
-    print("\nCoating Properties:\n")
-    print(f"\nLaser Wavelength:\t\t{lambda_*1E9:.2f} nm")
-    print(f"Number of Materials:\t\t{len(unique_materials):d}")
-    print(f"Total Physical Thickness:\t{sum(d_physical_layers):.2e} m")
-
-    
-    for i in unique_materials:
-        print(f"\n--------- Material {i} -------------\n")
-        dOpt_array = np.array(dOpt)
-        matching_indices = dOpt_array == i
-        n_layers_matching = n_layers[matching_indices]
-        d_physical_layers_matching = d_physical_layers[matching_indices]
-
-        if len(n_layers_matching) > 0:
-            print(f"No. Layers:\t\t\t{len(n_layers_matching)}")
-            print(f"Total Physical Thickness:\t{sum(d_physical_layers_matching):.2e} m")
-            print(f"Refractive Index:\t\t{np.unique(n_layers_matching)[0]:.2f}")
-        else:
-            print(f"No layers of material {i} found.")
-
-    return n_layers, material_kind, d_physical_layers
-
 
 #functions used to Calculate Coating Thermal Noise 
 # not to be used to calculate optical properties 
@@ -227,6 +137,7 @@ def getCoatAbsorption(lambda_, dOpt, aLayer, nLayer, rbar, r):
     rho = (1 + np.abs(rbar)**2) + 2 * (np.sin(phi) / phi) * np.real(rbar * np.exp(1j * phi))
     
     # Geometrical thickness of each layer
+
     dGeo = lambda_ * dOpt / nLayer
     
     # Compute power weighting for each layer
@@ -302,7 +213,7 @@ def getCoatAbsorption(lambda_, dOpt, aLayer, nLayer, rbar, r):
     # Power in each layer
     powerLayer = np.cumprod(np.abs((1 - r[:-1]**2) / (1 + r[:-1] * rbar)**2))
     
-    # print(dOpt)
+    
     # raise
     # One-way phases in each layer
     phi = 2 * np.pi * dOpt
@@ -369,16 +280,27 @@ def getCoatNoise2(f, lambda_, wBeam, Temp, materialParams, materialSub, material
     pratN = np.zeros_like(dOpt)
     phiN = np.zeros_like(dOpt)
     
-    for n, mat in enumerate(materialLayer):
-        nN[n] = materialParams[mat]['n']
-        aN[n] = materialParams[mat]['a']
-        alphaN[n] = materialParams[mat]['alpha']
-        betaN[n] = materialParams[mat]['beta']
-        kappaN[n] = materialParams[mat]['kappa']
-        cN[n] = materialParams[mat]['C']
-        yN[n] = materialParams[mat]['Y']
-        pratN[n] = materialParams[mat]['prat']
-        phiN[n] = materialParams[mat]['phiM']
+    if np.size(materialLayer) == 1:
+        nN[0] = materialParams[materialLayer]['n']
+        aN[0] = materialParams[materialLayer]['a']
+        alphaN[0] = materialParams[materialLayer]['alpha']
+        betaN[0] = materialParams[materialLayer]['beta']
+        kappaN[0] = materialParams[materialLayer]['kappa']
+        cN[0] = materialParams[materialLayer]['C']
+        yN[0] = materialParams[materialLayer]['Y']
+        pratN[0] = materialParams[materialLayer]['prat']
+        phiN[0] = materialParams[materialLayer]['phiM']
+    else:
+        for n, mat in enumerate(materialLayer):
+            nN[n] = materialParams[mat]['n']
+            aN[n] = materialParams[mat]['a']
+            alphaN[n] = materialParams[mat]['alpha']
+            betaN[n] = materialParams[mat]['beta']
+            kappaN[n] = materialParams[mat]['kappa']
+            cN[n] = materialParams[mat]['C']
+            yN[n] = materialParams[mat]['Y']
+            pratN[n] = materialParams[mat]['prat']
+            phiN[n] = materialParams[mat]['phiM']
     
     # Geometrical thickness of each layer and total
     dGeo = lambda_ * dOpt / nN
@@ -417,11 +339,36 @@ def speedyNoise(nN, dcdp, ySub, yN, pratSub, pratN, kBT, wBeam, w, dGeo, phiN, a
 
 
 
-def getCoatingThermalNoise(dOpt, materialLayer, materialParams, materialSub=1, lambda_=1, f=1, wBeam=1, Temp=1,plots=True):
+def getCoatingThermalNoise(dOpt=None, materialLayer=None, materialParams=None,tphys=None ,materialSub=1, lambda_=1, f=1, wBeam=1, Temp=1,plots=True,verbose=False):
+    from EFI_tmm import optical_to_physical, physical_to_optical
     # Set seaborn style and viridis color palette
-    #sns.set_style("whitegrid")
-    #sns.set_palette("tab10")
+    sns.set_style("whitegrid")
+    sns.set_palette("tab10")
+    
+    ##check units 
 
+    if lambda_ > 1:
+        lambda_ *= 1E-9
+    
+    
+    if tphys is None and dOpt is not None:
+        if verbose: 
+            print('[getCTN] - Calculating physical thickness... ')
+        tphys = []
+        for layer_material in materialLayer:
+            n_i = materialParams[layer_material]['n']
+            physical_thickness = optical_to_physical(dOpt[layer_material], lambda_, n_i)
+            # print(physical_thickness)
+            # print(f"Layer {layer_material}: Optical Thickness: {dOpt[layer_material]}, Physical Thickness: {physical_thickness}, Refractive Index: {n_i}")
+            tphys.append(physical_thickness)
+        tphys = np.array(tphys)
+    elif tphys is None and dOpt is  None:
+        raise ValueError(f" [getCTN] Missing required parameters: dOpt and tphys cannot both be empty -please supply an array of thicknesses. ")
+    else:
+        if verbose: 
+            print('[getCTN] Using Physical Thickness... ')
+
+    
     # Extract substrate properties
     nSub = materialParams[materialSub]['n']
     ySub = materialParams[materialSub]['Y']
@@ -429,20 +376,24 @@ def getCoatingThermalNoise(dOpt, materialLayer, materialParams, materialSub=1, l
 
     # Initialize vectors of material properties
    # Initialize vectors of material properties
-    nLayer = np.zeros(len(materialLayer))
-    aLayer = np.zeros(len(materialLayer))
-    
-    for n, mat in enumerate(materialLayer):
-        nLayer[n] = materialParams[mat]['n']
-        # aLayer[n] = materialParams[mat]['a']
-    
+    nLayer = np.zeros(1) if np.size(materialLayer) == 1 else np.zeros(len(materialLayer))
+    aLayer = np.zeros(1) if np.size(materialLayer) == 1 else np.zeros(len(materialLayer))
+
+    if np.size(materialLayer) == 1:
+        nLayer[0] = materialParams[materialLayer]['n']
+        # aLayer[0] = materialParams[materialLayer]['a']
+    else:
+        for n, mat in enumerate(materialLayer):
+            nLayer[n] = materialParams[mat]['n']
+            # aLayer[n] = materialParams[mat]['a']
+        
 
     # Compute reflectivities
     rCoat, dcdp, rbar, r = getCoatRefl2(1, nSub, nLayer, dOpt)
     
 
     # Compute absorption
-    # absCoat, absLayer, powerLayer, rho = getCoatAbsorption(lambda_, dOpt, aLayer, nLayer, rbar, r)
+    absCoat, absLayer, powerLayer, rho = getCoatAbsorption(lambda_, dOpt, aLayer, nLayer, rbar, r)
 
     # Compute brownian and thermo-optic noises
     SbrZ, StoZ, SteZ, StrZ, brLayer = getCoatNoise2(f, lambda_, wBeam, Temp, materialParams, materialSub, materialLayer, dOpt, dcdp)
@@ -502,11 +453,18 @@ def getCoatingThermalNoise(dOpt, materialLayer, materialParams, materialSub=1, l
     # CREATE DEBUGGING DATAFRAME
     # --------------------------------------------------------------------------
     # Gather layer-wise information for each layer
-    Youngs = [materialParams[mat]['Y'] for mat in materialLayer]
-    poisson = [materialParams[mat]['prat'] for mat in materialLayer]
-    loss = [materialParams[mat]['phiM'] for mat in materialLayer]  # Make sure 'phiM' is in your params
+    if np.size(materialLayer) == 1:
+        Youngs = [materialParams[materialLayer]['Y']]
+        poisson = [materialParams[materialLayer]['prat']]
+        loss = [materialParams[materialLayer]['phiM']]
+    else:
+        Youngs = [materialParams[mat]['Y'] for mat in materialLayer]
+        poisson = [materialParams[mat]['prat'] for mat in materialLayer]
+        loss = [materialParams[mat]['phiM'] for mat in materialLayer]
 
     debug_data = {
+        'dOpt'  :dOpt,
+        'materialLayer': materialLayer, 
         'Youngs': Youngs,
         'Poisson': poisson,
         'Loss': loss,
@@ -521,4 +479,8 @@ def getCoatingThermalNoise(dOpt, materialLayer, materialParams, materialSub=1, l
     return noise_summary, rCoat, dcdp, rbar, r, debug_df
 
 
-  
+def find_brownian_noise_for_frequency(dataset, frequency=100):
+        # Find indices where 'Frequency' equals the specified frequency
+    indices = [i for i, freq in enumerate(dataset['Frequency']) if freq == frequency]
+    # Return the 'BrownianNoise' values for these indices
+    return [dataset['BrownianNoise'][i] for i in indices]
