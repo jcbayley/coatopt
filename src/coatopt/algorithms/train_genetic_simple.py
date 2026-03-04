@@ -1,4 +1,23 @@
 #!/usr/bin/env python3
+"""
+Genetic algorithms (NSGA-II, NSGA-III, MOEA/D) for multi-objective coating optimization.
+
+Uses PyMOO to optimize coating designs with repair operators enforcing:
+- No consecutive same materials (except air)
+- All layers after first air must be air
+- No air until min_layers_before_air reached
+
+Config section: [nsga2]
+  n_generations            = 100
+  population_size          = 100
+  algorithm                = NSGA2          # NSGA2, NSGA3, or MOEAD
+  seed                     = 42
+  crossover_probability    = 0.9
+  crossover_eta            = 15.0
+  mutation_probability     = None           # Default: 1/n_var
+  mutation_eta             = 20.0
+  min_layers_before_air    = 0              # Min layers before air allowed
+"""
 import os
 import time
 from pathlib import Path

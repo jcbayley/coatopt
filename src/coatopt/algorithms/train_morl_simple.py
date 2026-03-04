@@ -1,4 +1,28 @@
 #!/usr/bin/env python3
+"""
+MORLD (MOSAC population) for multi-objective optimization.
+
+Uses MOSAC agents with weight adaptation (PSA) to explore the Pareto front.
+Trains a population of agents with different weight vectors that adapt toward
+underexplored regions.
+
+Config section: [morl] or [morld]
+  total_timesteps          = 500000
+  seed                     = 42
+  verbose                  = 1
+  plot_freq                = 10000
+  eval_freq                = 10000
+  net_arch                 = [256, 256]
+  pop_size                 = 8              # Population size
+  scalarization_method     = ws             # Weighted sum (ws only, tch broken)
+  weight_adaptation_method = PSA            # PSA or none
+  weight_init_method       = uniform
+  neighborhood_size        = 2
+  shared_buffer            = true
+  exchange_every           = 50000          # Weight exchange frequency
+  gamma                    = 0.99
+  learning_rate            = 3e-4
+"""
 import time
 from pathlib import Path
 

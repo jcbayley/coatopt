@@ -1,4 +1,32 @@
 #!/usr/bin/env python3
+"""
+MaskablePPO with discrete actions (material + thickness bins) and action masking.
+
+Two-phase training: warmup (per-objective) then constrained cycling with gradual
+constraint tightening. Supports both MLP and LSTM feature extractors. Action masks
+block consecutive materials and early air selection.
+
+Config section: [sb3_discrete]
+  total_timesteps          = 100000
+  n_thickness_bins         = 20
+  verbose                  = 1
+  seed                     = 42
+  mask_consecutive_materials = true
+  mask_air_until_min_layers = true
+  min_layers_before_air    = 4
+  epochs_per_step          = 200            # Episodes per phase
+  steps_per_objective      = 10             # Constraint levels
+  constraint_penalty       = 10.0
+  max_entropy              = 0.2            # Initial entropy coefficient
+  min_entropy              = 0.01           # Final entropy coefficient
+  pareto_dominance_bonus   = 0.0            # Hypervolume improvement bonus
+  adaptive_entropy_to_constraints = false
+  reset_policy_each_phase  = false          # Reset weights at phase transitions
+  # LSTM feature extractor (if pre_network=lstm):
+  lstm_hidden_size         = 128
+  lstm_num_layers          = 2
+  lstm_features_dim        = 128
+"""
 import configparser
 import random
 import shutil

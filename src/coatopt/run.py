@@ -38,11 +38,10 @@ def run_experiment(config_path: str):
         "morl",
         "morl_discrete",
         "nsga2",
-        "hppo",
         "sac_multiagent",
         "sac_hybrid",
-        "ppo_multiagent",
-        "ppo_sequential",
+        "hppo_multiagent",
+        "hppo_sequential",
     }
     algorithm = None
     for section in parser.sections():
@@ -153,11 +152,6 @@ def run_experiment(config_path: str):
             save_dir=str(save_dir),
         )
 
-    elif algorithm == "hppo":
-        from coatopt.algorithms.train_hppo_simple import train
-
-        results = train(config_path=str(config_path), save_dir=str(save_dir))
-
     elif algorithm == "sac_multiagent":
         from coatopt.algorithms.train_sac_multiagent import train
 
@@ -168,13 +162,13 @@ def run_experiment(config_path: str):
 
         results = train(config_path=str(config_path), save_dir=str(save_dir))
 
-    elif algorithm == "ppo_multiagent":
-        from coatopt.algorithms.train_ppo_multiagent import train
+    elif algorithm == "hppo_multiagent":
+        from coatopt.algorithms.train_hppo_multiagent import train
 
         results = train(config_path=str(config_path), save_dir=str(save_dir))
 
-    elif algorithm == "ppo_sequential":
-        from coatopt.algorithms.train_ppo_sequential import train
+    elif algorithm == "hppo_sequential":
+        from coatopt.algorithms.train_hppo_sequential import train
 
         results = train(config_path=str(config_path), save_dir=str(save_dir))
 

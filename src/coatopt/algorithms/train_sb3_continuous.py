@@ -1,4 +1,18 @@
 #!/usr/bin/env python3
+"""
+PPO with continuous action space (material index + thickness).
+
+Uses constraint-based multi-objective training with stepped constraint schedule.
+Alternates between objectives with gradually tightening constraints on non-target
+objectives. Applies consecutive material penalty during training.
+
+Config section: [sb3_simple] or [sb3_continuous]
+  total_timesteps          = 100000
+  verbose                  = 1
+  target_reflectivity      = 0.99           # Target constraint (tightest)
+  target_absorption        = 1              # Target constraint (tightest, ppm)
+  tensorboard_log          = ./sb3_logs
+"""
 from pathlib import Path
 
 import gymnasium as gym

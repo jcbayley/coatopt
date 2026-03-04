@@ -1,4 +1,44 @@
 #!/usr/bin/env python3
+"""
+Discrete-action MORL algorithms (GPI-PD, Envelope, PCN) with action masking.
+
+Wrapper provides flat discrete actions (material × thickness bins) with consecutive
+material and early-air masking. Algorithms use Q-value or logit masking during eval.
+
+Config section: [morl_discrete]
+  sub_algorithm            = gpipd          # Algorithm: gpipd, envelope, pcn
+  total_timesteps          = 500000
+  seed                     = 42
+  verbose                  = 1
+  eval_freq                = 10000
+  n_thickness_bins         = 20
+  mask_consecutive_materials = true
+  mask_air_until_min_layers = true
+  min_layers_before_air    = 4
+  consecutive_penalty      = 0.1            # Reward penalty per constraint violation
+  print_freq               = 200
+  net_arch                 = [256, 256]
+  gamma                    = 0.99
+  learning_rate            = 3e-4
+  batch_size               = 256
+  buffer_size              = 100000
+  target_net_update_freq   = 200
+  tau                      = 1.0
+  epsilon_decay_steps      = 50000
+  per                      = true           # Prioritized experience replay
+  # GPI-PD specific:
+  alpha_per                = 0.6            # PER alpha
+  min_priority             = 0.01
+  use_gpi                  = true
+  dyna                     = false          # Model-based rollouts (expensive)
+  gpi_pd                   = true
+  # Envelope specific:
+  per_alpha                = 0.6
+  envelope                 = true
+  num_sample_w             = 4
+  # PCN specific:
+  hidden_dim               = 256
+"""
 import configparser
 import time
 from pathlib import Path
