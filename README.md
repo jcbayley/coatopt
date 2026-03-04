@@ -130,3 +130,10 @@ uv run mlflow ui
 
 ### Algorithm-Specific Sections
 See example configs in `experiments/` for algorithm-specific parameters.
+
+
+### Extra installation
+For the morl baselines GPIPD method the pycddlib needs to eb installed, if libraries in homebrew added with
+```bash
+CPPFLAGS="-I/opt/homebrew/include" LDFLAGS="-L/opt/homebrew/lib" uv add "pycddlib==2.1.6"
+```

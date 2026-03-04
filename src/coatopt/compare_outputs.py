@@ -9,38 +9,30 @@ import pandas as pd
 
 from coatopt.environments.state import CoatingState
 from coatopt.utils.metrics import compute_hypervolume
+from coatopt.utils.utils import load_pareto_front
 
 
 def compute_hypervolume_from_df(df: pd.DataFrame, space: str = "reward") -> float:
     """Compute hypervolume from a Pareto front DataFrame.
 
     Args:
-        df: DataFrame with either value space (reflectivity, absorption) or
-            reward space (reflectivity_reward, absorption_reward) columns
+        df: DataFrame with reflectivity and absorption columns (both value and reward space)
         space: "reward" or "value"
 
     Returns:
         Hypervolume value (float)
     """
+    if "reflectivity" not in df.columns or "absorption" not in df.columns:
+        return 0.0
+
+    points = df[["absorption", "reflectivity"]].values
+
     if space == "reward":
-        if (
-            "reflectivity_reward" not in df.columns
-            or "absorption_reward" not in df.columns
-        ):
-            return 0.0
-        points = df[["absorption_reward", "reflectivity_reward"]].values
         ref_point = np.array([0.0, 0.0])  # Worst case in reward space
         return compute_hypervolume(points, ref_point, maximize=True)
     else:
-        if "reflectivity" not in df.columns or "absorption" not in df.columns:
-            return 0.0
-        points = df[["absorption", "reflectivity"]].values
         # For value space with mixed objectives: absorption minimize, reflectivity maximize
-        # Use a reference point that's worse than all points
-        ref_point = np.array(
-            [np.max(points[:, 0]) * 1.1, 0.0]
-        )  # Worst absorption, worst reflectivity
-        # Transform for mixed objectives
+        ref_point = np.array([np.max(points[:, 0]) * 1.1, 0.0])
         from coatopt.utils.metrics import compute_hypervolume_mixed
 
         objective_directions = [
@@ -48,45 +40,6 @@ def compute_hypervolume_from_df(df: pd.DataFrame, space: str = "reward") -> floa
             True,
         ]  # absorption: minimize, reflectivity: maximize
         return compute_hypervolume_mixed(points, ref_point, objective_directions)
-
-
-def load_pareto_front(
-    directory: Path, label: Optional[str] = None
-) -> Tuple[Optional[pd.DataFrame], Optional[pd.DataFrame], str]:
-    """Load Pareto fronts (value and reward space) from a directory.
-
-    Args:
-        directory: Path to directory containing pareto_front_values.csv and pareto_front_rewards.csv
-        label: Optional custom label
-
-    Returns:
-        Tuple of (values_df, rewards_df, label)
-    """
-    values_path = directory / "pareto_front_values.csv"
-    rewards_path = directory / "pareto_front_rewards.csv"
-    legacy_path = directory / "pareto_front.csv"
-
-    if label is None:
-        label = directory.name
-
-    values_df = None
-    rewards_df = None
-
-    # Try loading value space Pareto front
-    if values_path.exists():
-        values_df = pd.read_csv(values_path)
-    elif legacy_path.exists():
-        # Fallback to legacy pareto_front.csv (assume it's value space)
-        values_df = pd.read_csv(legacy_path)
-
-    # Try loading reward space Pareto front
-    if rewards_path.exists():
-        rewards_df = pd.read_csv(rewards_path)
-
-    if values_df is None and rewards_df is None:
-        raise FileNotFoundError(f"No pareto_front CSV files found in {directory}")
-
-    return values_df, rewards_df, label
 
 
 def create_reference_data(
@@ -150,7 +103,6 @@ def create_reference_data(
             coating_state
         )
         rewards, vals = env.compute_reward(coating_state, normalised=True)
-        print(vals["reflectivity"], vals["absorption"])
 
         # Extract thicknesses and materials for plotting
         thicknesses = state_array[:, 0]
@@ -166,12 +118,10 @@ def create_reference_data(
                 "materials": ",".join(map(str, material_indices)),
             }
         )
-        rewards_list.append({f"{k}_reward": v for k, v in rewards.items()})
+        rewards_list.append({k: v for k, v in rewards.items()})
 
     values_df = pd.DataFrame(values_list) if values_list else None
     rewards_df = pd.DataFrame(rewards_list) if rewards_list else None
-
-    print(rewards_df)
 
     return values_df, rewards_df
 
@@ -298,11 +248,11 @@ def plot_both_spaces_comparison(
     # Add reference points to REWARD space if provided
     if (
         reference_rewards is not None
-        and "reflectivity_reward" in reference_rewards.columns
-        and "absorption_reward" in reference_rewards.columns
+        and "reflectivity" in reference_rewards.columns
+        and "absorption" in reference_rewards.columns
     ):
-        x_ref = reference_rewards["absorption_reward"].values
-        y_ref = reference_rewards["reflectivity_reward"].values
+        x_ref = reference_rewards["absorption"].values
+        y_ref = reference_rewards["reflectivity"].values
         valid_ref = ~(
             np.isnan(x_ref) | np.isnan(y_ref) | np.isinf(x_ref) | np.isinf(y_ref)
         )
@@ -322,8 +272,8 @@ def plot_both_spaces_comparison(
     for i, (values_df, rewards_df, label) in enumerate(pareto_fronts):
         if (
             rewards_df is None
-            or "reflectivity_reward" not in rewards_df.columns
-            or "absorption_reward" not in rewards_df.columns
+            or "reflectivity" not in rewards_df.columns
+            or "absorption" not in rewards_df.columns
         ):
             print(f"Warning: {label} missing reward space data, skipping reward plot")
             continue
@@ -332,8 +282,8 @@ def plot_both_spaces_comparison(
         hv_reward = compute_hypervolume_from_df(rewards_df, space="reward")
         label_with_hv = f"{label} (HV: {hv_reward:.4f})" if hv_reward > 0 else label
 
-        x = rewards_df["absorption_reward"].values
-        y = rewards_df["reflectivity_reward"].values
+        x = rewards_df["absorption"].values
+        y = rewards_df["reflectivity"].values
 
         # Remove invalid values
         valid = ~(np.isnan(x) | np.isnan(y) | np.isinf(x) | np.isinf(y))
@@ -771,11 +721,11 @@ def print_statistics_both_spaces(
             print(f"  REWARD SPACE:")
             print(f"    Number of points: {len(rewards_df)}")
             print(f"    Hypervolume: {hv_reward:.6f}")
-            for col in ["reflectivity_reward", "absorption_reward"]:
+            for col in ["reflectivity", "absorption"]:
                 if col in rewards_df.columns:
                     values = rewards_df[col].dropna()
                     if len(values) > 0:
-                        obj_name = col.replace("_reward", "")
+                        obj_name = col
                         print(f"    {obj_name} reward:")
                         print(f"      Min:  {values.min():.6f}")
                         print(f"      Max:  {values.max():.6f}")
@@ -918,6 +868,9 @@ Examples:
 
   # Compare different objectives
   python compare_pareto_fronts.py --dirs run1 run2 --obj-x thermal_noise --obj-y reflectivity
+
+  # Plot top 5 runs by reward hypervolume alongside all runs
+  python compare_pareto_fronts.py --alldirs runs/ --top-n 5
         """,
     )
 
@@ -1021,6 +974,12 @@ Examples:
         choices=["reflectivity", "absorption"],
         help="Objective to sort designs by (default: reflectivity)",
     )
+    parser.add_argument(
+        "--top-n",
+        type=int,
+        default=None,
+        help="Plot an additional comparison with only the top N runs by reward hypervolume",
+    )
 
     args = parser.parse_args()
 
@@ -1035,13 +994,7 @@ Examples:
         discovered_dirs = []
         for subdir in sorted(parent_dir.iterdir()):
             if subdir.is_dir():
-                # Check if directory contains any pareto front files
-                has_pareto = (
-                    (subdir / "pareto_front_values.csv").exists()
-                    or (subdir / "pareto_front_rewards.csv").exists()
-                    or (subdir / "pareto_front.csv").exists()
-                )
-                if has_pareto:
+                if (subdir / "pareto_front.csv").exists():
                     discovered_dirs.append(str(subdir))
 
         if not discovered_dirs:
@@ -1072,12 +1025,11 @@ Examples:
             print(f"Warning: Directory {directory} does not exist, skipping")
             continue
 
-        label = args.labels[i] if args.labels else None
+        lbl = args.labels[i] if args.labels else directory.name
         try:
-            values_df, rewards_df, lbl = load_pareto_front(directory, label)
+            _, values_df, rewards_df = load_pareto_front(directory)
             pareto_fronts.append((values_df, rewards_df, lbl))
-
-            # Keep values_df for legacy plots if available
+            print(f"Loaded Pareto front from {directory} with label '{lbl}'")
             if values_df is not None:
                 pareto_fronts_values_only.append((values_df, lbl))
         except FileNotFoundError as e:
@@ -1145,6 +1097,40 @@ Examples:
         reference_values=reference_values,
         reference_rewards=reference_rewards,
     )
+
+    # Plot top-N by reward hypervolume if requested
+    if args.top_n is not None:
+        print(f"\nGenerating top-{args.top_n} comparison by reward hypervolume...")
+
+        # Compute reward hypervolumes for sorting
+        pareto_with_hv = []
+        for values_df, rewards_df, label in pareto_fronts:
+            hv_reward = 0.0
+            if rewards_df is not None:
+                hv_reward = compute_hypervolume_from_df(rewards_df, space="reward")
+            pareto_with_hv.append((values_df, rewards_df, label, hv_reward))
+
+        # Sort by reward hypervolume (descending) and take top N
+        pareto_with_hv.sort(key=lambda x: x[3], reverse=True)
+        top_n_fronts = [
+            (vdf, rdf, lbl) for vdf, rdf, lbl, _ in pareto_with_hv[: args.top_n]
+        ]
+
+        if len(top_n_fronts) > 0:
+            # Create output path for top-N plot
+            top_n_path = output_path.parent / (
+                output_path.stem + f"_top{args.top_n}" + output_path.suffix
+            )
+
+            plot_both_spaces_comparison(
+                top_n_fronts,
+                save_path=top_n_path,
+                title=f"{args.title} (Top {args.top_n} by Reward Hypervolume)",
+                reference_values=reference_values,
+                reference_rewards=reference_rewards,
+            )
+        else:
+            print(f"Warning: No fronts available for top-{args.top_n} plot")
 
     # Plot normalized comparison if requested
     if args.normalized and pareto_fronts_values_only:

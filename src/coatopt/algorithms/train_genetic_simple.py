@@ -22,7 +22,7 @@ from coatopt.environments.environment import CoatingEnvironment
 from coatopt.environments.state import CoatingState
 from coatopt.utils.configs import Config, DataConfig, TrainingConfig, load_config
 from coatopt.utils.plotting import plot_coating_stack, plot_pareto_front
-from coatopt.utils.utils import load_materials, save_run_metadata
+from coatopt.utils.utils import convert_pymoo_to_dataframes, load_materials
 
 
 class CoatingOptimizationProblem(ElementwiseProblem):
@@ -283,120 +283,50 @@ def train_genetic(config_path: str, save_dir: Optional[str] = None):
         print(f"\nOptimization complete!")
         print(f"Pareto front size: {len(result.F)}")
 
-    # Save results
-    save_results(result, env, materials, save_dir, verbose)
+    # Convert PyMOO results to standardized DataFrames
+    designs_df, values_df, rewards_df = convert_pymoo_to_dataframes(result, env)
 
-    # Save run metadata
-    save_run_metadata(
-        save_dir=save_dir,
-        algorithm_name=algorithm,
-        start_time=start_time,
-        end_time=end_time,
-        pareto_front_size=len(result.F),
-        total_generations=total_generations,
-        config_path=config_path,
-        additional_info={
+    # Optional: Plot Pareto fronts and sample designs
+    if save_dir and len(env.optimise_parameters) >= 2:
+        save_dir = Path(save_dir)
+        # Create combined df for plotting
+        plot_df = designs_df.copy()
+        for col in values_df.columns:
+            plot_df[f"{col}_val"] = values_df[col]
+        for col in rewards_df.columns:
+            plot_df[f"{col}_reward"] = rewards_df[col]
+
+        plot_pareto_front(plot_df, env.optimise_parameters, save_dir, plot_type="vals")
+        plot_pareto_front(
+            plot_df, env.optimise_parameters, save_dir, plot_type="rewards"
+        )
+        if verbose:
+            print(f"  Saved Pareto front plots")
+
+        # Plot sample designs
+        n_samples = min(5, len(result.X))
+        for i in range(n_samples):
+            x = result.X[i]
+            thicknesses = x[: env.max_layers]
+            materials_idx = np.floor(x[env.max_layers :]).astype(int)
+            plot_coating_stack(
+                thicknesses, materials_idx, materials, save_dir / f"stack_{i}.png"
+            )
+
+    return {
+        "pareto_designs": designs_df,
+        "pareto_values": values_df,
+        "pareto_rewards": rewards_df,
+        "model": None,
+        "metadata": {
+            "algorithm": algorithm,
+            "total_generations": total_generations,
             "population_size": population_size,
             "crossover_prob": crossover_prob,
             "mutation_prob": mutation_prob,
             "seed": seed,
         },
-    )
-
-    return result
-
-
-def save_results(result, env, materials, save_dir: Path, verbose: bool = True):
-    """Save optimization results in both val and reward space."""
-
-    # Extract Pareto front
-    X = result.X  # Design variables
-    F = result.F  # Objectives (minimized)
-
-    if verbose:
-        print(f"\nSaving results to {save_dir}")
-
-    # Create results dataframe with both vals and rewards
-    data = []
-    for i, (x, f) in enumerate(zip(X, F)):
-        row = {}
-
-        # Design variables
-        thicknesses = x[: env.max_layers]
-        materials_idx = np.floor(x[env.max_layers :]).astype(int)
-
-        for j in range(env.max_layers):
-            row[f"thickness_{j}"] = thicknesses[j]
-            row[f"material_{j}"] = materials_idx[j]
-
-        state = CoatingState(
-            max_layers=env.max_layers,
-            n_materials=env.n_materials,
-            air_material_index=env.air_material_index,
-            substrate_material_index=env.substrate_material_index,
-            materials=env.materials,
-        )
-
-        # Fill state with design
-        air_found = False
-        for k in range(env.max_layers):
-            if air_found or materials_idx[k] == env.air_material_index:
-                air_found = True
-                state.set_layer(k, 0.0, env.air_material_index)
-            else:
-                state.set_layer(k, thicknesses[k], materials_idx[k])
-
-        # Get base rewards and values from environment (normalised=True)
-        normalised_rewards, vals = env.compute_reward(state, normalised=True)
-
-        # Store values and normalised rewards
-        for param in env.optimise_parameters:
-            val = vals.get(param, 0.0)
-            row[f"{param}_val"] = val
-            row[f"{param}_reward"] = normalised_rewards.get(param, 0.0)
-
-        data.append(row)
-
-    df = pd.DataFrame(data)
-
-    # Save combined CSV (for reference)
-    combined_csv_path = save_dir / "pareto_front.csv"
-    df.to_csv(combined_csv_path, index=False)
-
-    # Save separate CSV files for values and rewards
-    value_cols = [col for col in df.columns if col.endswith("_val")]
-    design_cols = [
-        col
-        for col in df.columns
-        if col.startswith("thickness_") or col.startswith("material_")
-    ]
-
-    values_df = df[design_cols + value_cols].copy()
-    # Rename _val columns to remove suffix for compatibility
-    values_df.columns = [
-        col.replace("_val", "") if col.endswith("_val") else col
-        for col in values_df.columns
-    ]
-    values_csv_path = save_dir / "pareto_front_values.csv"
-    values_df.to_csv(values_csv_path, index=False)
-
-    # Extract reward columns
-    reward_cols = [col for col in df.columns if col.endswith("_reward")]
-    rewards_df = df[design_cols + reward_cols].copy()
-    rewards_csv_path = save_dir / "pareto_front_rewards.csv"
-    rewards_df.to_csv(rewards_csv_path, index=False)
-
-    # Plot Pareto fronts (both vals and rewards)
-    if len(env.optimise_parameters) >= 2:
-        plot_pareto_front(df, env.optimise_parameters, save_dir, plot_type="vals")
-        plot_pareto_front(df, env.optimise_parameters, save_dir, plot_type="rewards")
-        if verbose:
-            print(f"  Saved Pareto front plots (vals + rewards)")
-
-    # Plot a few sample designs
-    n_samples = min(5, len(X))
-    for i in range(n_samples):
-        plot_coating_stack(X[i], env, materials, save_dir / f"stack_{i}.png")
+    }
 
 
 if __name__ == "__main__":

@@ -9,7 +9,6 @@ import numpy as np
 import torch
 from stable_baselines3.common.callbacks import BaseCallback
 
-from coatopt.utils.metrics import save_pareto_to_csv
 from coatopt.utils.plotting import plot_coating_stack_from_state_array
 
 
@@ -143,6 +142,164 @@ class PolicyResetCallback(BaseCallback):
                             f"\n→ Phase {self.current_phase} → {info['phase']}: Policy weights reset\n"
                         )
                 self.current_phase = info["phase"]
+        return True
+
+
+class MLflowLoggingCallback(BaseCallback):
+    """Lightweight callback for logging metrics to MLflow without plotting overhead.
+
+    Logs episode rewards, objective values/rewards, hypervolume, entropy, etc.
+    Much faster than PlottingCallback since it skips all visualization.
+    """
+
+    def __init__(
+        self,
+        log_freq: int = 1,
+        verbose: int = 0,
+        save_dir: str = None,
+        pareto_mlflow_freq: int = None,
+        materials: dict = None,
+    ):
+        """Initialize MLflow logging callback.
+
+        Args:
+            log_freq: Log metrics to MLflow every N episodes (default: 1)
+            verbose: Verbosity level
+            save_dir: Directory to save Pareto front CSV during training (optional)
+            pareto_mlflow_freq: Log Pareto front to MLflow every N episodes (default: same as log_freq)
+            materials: Materials dict for plotting coating designs (optional)
+        """
+        super().__init__(verbose)
+        print("================", log_freq, "==================")
+        self.log_freq = log_freq
+        self.episode_count = 0
+        self.save_dir = Path(save_dir) if save_dir else None
+        self.pareto_mlflow_freq = pareto_mlflow_freq or log_freq
+        self.materials = materials or {}
+
+    def _on_step(self) -> bool:
+        """Called at each step. Log metrics at specified frequency."""
+        infos = self.locals.get("infos", [])
+
+        for info in infos:
+            if "episode" in info and not isinstance(info["episode"], int):
+                self.episode_count += 1
+
+                # Only log at specified frequency
+                if self.episode_count % self.log_freq != 0:
+                    continue
+
+                # Only log if MLflow run is active
+                if not mlflow.active_run():
+                    continue
+
+                # Collect metrics to log
+                metrics = {}
+
+                # Episode reward and length
+                if "episode" in info and isinstance(info["episode"], dict):
+                    metrics["episode_reward"] = info["episode"]["r"]
+                    metrics["episode_length"] = info["episode"]["l"]
+
+                # Entropy coefficient
+                if hasattr(self.model, "ent_coef"):
+                    metrics["entropy_coef"] = float(self.model.ent_coef)
+
+                # Objective values (physical values)
+                vals = info.get("vals", {})
+                if vals:
+                    for obj_name, obj_val in vals.items():
+                        metrics[f"value_{obj_name}"] = obj_val
+
+                # Objective rewards (normalized)
+                rewards = info.get("rewards", {})
+                if rewards:
+                    for obj_name, obj_val in rewards.items():
+                        metrics[f"reward_{obj_name}"] = obj_val
+
+                # Phase and level info
+                if "phase" in info:
+                    metrics["phase"] = info["phase"]
+                if "level" in info:
+                    metrics["level"] = info["level"]
+
+                # Hypervolume (compute periodically)
+                env = self.training_env
+                if hasattr(env, "envs") and len(env.envs) > 0:
+                    env = env.envs[0]
+                if hasattr(env, "env"):
+                    env = env.env
+                if hasattr(env, "compute_hypervolume"):
+                    hv = env.compute_hypervolume(space="reward")
+                    metrics["hypervolume"] = hv
+
+                # Log all metrics in a single call (efficient)
+                if metrics:
+                    mlflow.log_metrics(metrics, step=self.episode_count)
+
+                # Save/log current Pareto front
+                import pandas as pd
+
+                # Ensure env is unwrapped to base environment
+                base_env = env.env if hasattr(env, "env") else env
+                designs_df, values_df, rewards_df = base_env.export_pareto_dataframes()
+                if not designs_df.empty:
+                    # Create combined dataframe for monitoring
+                    pareto_combined = pd.concat(
+                        [values_df, rewards_df.add_suffix("_reward")], axis=1
+                    )
+
+                    # Save CSV during training (overwrites) - happens every log_freq
+                    if self.save_dir:
+                        pareto_csv = self.save_dir / "pareto_front_current.csv"
+                        pareto_combined.to_csv(pareto_csv, index=False)
+
+                        # Plot Pareto front designs using existing plotting utilities
+                        pareto_front_values = base_env.get_pareto_front(space="value")
+                        if pareto_front_values and self.materials:
+                            n_designs = len(pareto_front_values)
+                            fig, axs = plt.subplots(
+                                1, n_designs, figsize=(4 * n_designs, 6), squeeze=False
+                            )
+
+                            for i, (obj_vector, state) in enumerate(
+                                pareto_front_values
+                            ):
+                                ax = axs[0, i]
+                                state_array = state.get_array()
+
+                                # Build title
+                                title_parts = [f"Rank {i + 1}"]
+                                if i < len(values_df):
+                                    for col in values_df.columns:
+                                        val = values_df.iloc[i][col]
+                                        if col == "reflectivity":
+                                            title_parts.append(f"R={val:.6f}")
+                                        elif col == "absorption":
+                                            title_parts.append(f"A={val:.2e}")
+
+                                plot_coating_stack_from_state_array(
+                                    state_array=state_array,
+                                    materials=self.materials,
+                                    title="\n".join(title_parts),
+                                    ax=ax,
+                                )
+
+                            plt.tight_layout()
+                            plt.savefig(self.save_dir / "pareto_front_designs.png")
+                            plt.close(fig)
+
+                    # Log to MLflow less frequently to avoid overhead
+                    if self.episode_count % self.pareto_mlflow_freq == 0:
+                        mlflow.log_table(
+                            pareto_combined, artifact_file="pareto_front_current.json"
+                        )
+
+                if self.verbose and self.episode_count % (self.log_freq * 10) == 0:
+                    print(
+                        f"[Episode {self.episode_count}] Logged {len(metrics)} metrics to MLflow"
+                    )
+
         return True
 
 
@@ -311,8 +468,6 @@ class PlottingCallback(BaseCallback):
                     self._plot_best_designs()
                     if hasattr(self, "_plot_alternating_materials"):
                         self._plot_alternating_materials()
-                    # Save Pareto front to CSV periodically
-                    self.save_pareto_front_to_csv("pareto_front.csv")
 
         # Collect training loss if available
         if hasattr(self.model, "logger"):
@@ -686,11 +841,3 @@ class PlottingCallback(BaseCallback):
         save_path = self.save_dir / "pareto_front_designs.png"
         plt.savefig(save_path)
         plt.close(fig)
-
-    def save_pareto_front_to_csv(self, filename: str = "pareto_front.csv"):
-        """Save Pareto front from environment to CSV file.
-
-        Args:
-            filename: Name of CSV file to save (can be absolute, relative to cwd, or just a filename)
-        """
-        save_pareto_to_csv(self.env, filename, save_dir=self.save_dir)
