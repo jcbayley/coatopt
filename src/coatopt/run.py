@@ -110,9 +110,10 @@ def run_experiment(
 
     save_dir.mkdir(parents=True, exist_ok=True)
 
-    # Copy config file to run directory
+    # Write modified config to run directory (includes any overrides)
     config_backup = save_dir / "config.ini"
-    shutil.copy(config_path, config_backup)
+    with open(config_backup, "w") as f:
+        parser.write(f)
 
     # Setup MLflow
     mlflow.set_experiment(experiment_name)
@@ -131,22 +132,22 @@ def run_experiment(
     if algorithm == "sb3_discrete":
         from coatopt.algorithms.train_sb3_discrete import train
 
-        results = train(config_path=str(config_path), save_dir=str(save_dir))
+        results = train(config_path=str(config_backup), save_dir=str(save_dir))
 
     elif algorithm == "nsga2":
         from coatopt.algorithms.train_genetic_simple import train_genetic as train
 
-        results = train(config_path=str(config_path), save_dir=str(save_dir))
+        results = train(config_path=str(config_backup), save_dir=str(save_dir))
 
     elif algorithm == "sb3_dqn":
         from coatopt.algorithms.train_sb3_discrete_dqn import train
 
-        results = train(config_path=str(config_path), save_dir=str(save_dir))
+        results = train(config_path=str(config_backup), save_dir=str(save_dir))
 
     elif algorithm == "sb3_simple":
         from coatopt.algorithms.train_sb3_continuous import train
 
-        results = train(config_path=str(config_path), save_dir=str(save_dir))
+        results = train(config_path=str(config_backup), save_dir=str(save_dir))
 
     elif algorithm == "morl":
         from coatopt.algorithms.train_morl_simple import train
@@ -155,7 +156,7 @@ def run_experiment(
         morl_section = "morl" if parser.has_section("morl") else "general"
         sub_algo = parser.get(morl_section, "method", fallback="morld")
         results = train(
-            config_path=str(config_path),
+            config_path=str(config_backup),
             algorithm=sub_algo,
             save_dir=str(save_dir),
         )
@@ -165,7 +166,7 @@ def run_experiment(
 
         sub_algo = parser.get("morl_discrete", "sub_algorithm", fallback="gpipd")
         results = train(
-            config_path=str(config_path),
+            config_path=str(config_backup),
             algorithm=sub_algo,
             save_dir=str(save_dir),
         )
@@ -173,27 +174,27 @@ def run_experiment(
     elif algorithm == "sac_multiagent":
         from coatopt.algorithms.train_sac_multiagent import train
 
-        results = train(config_path=str(config_path), save_dir=str(save_dir))
+        results = train(config_path=str(config_backup), save_dir=str(save_dir))
 
     elif algorithm == "sac_hybrid":
         from coatopt.algorithms.train_sac_hybrid import train
 
-        results = train(config_path=str(config_path), save_dir=str(save_dir))
+        results = train(config_path=str(config_backup), save_dir=str(save_dir))
 
     elif algorithm == "hppo_multiagent":
         from coatopt.algorithms.train_hppo_multiagent import train
 
-        results = train(config_path=str(config_path), save_dir=str(save_dir))
+        results = train(config_path=str(config_backup), save_dir=str(save_dir))
 
     elif algorithm == "hppo_sequential":
         from coatopt.algorithms.train_hppo_sequential import train
 
-        results = train(config_path=str(config_path), save_dir=str(save_dir))
+        results = train(config_path=str(config_backup), save_dir=str(save_dir))
 
     elif algorithm == "hppo_hybrid":
         from coatopt.algorithms.train_hppo_hybrid import train
 
-        results = train(config_path=str(config_path), save_dir=str(save_dir))
+        results = train(config_path=str(config_backup), save_dir=str(save_dir))
 
     else:
         raise ValueError(
@@ -209,7 +210,7 @@ def run_experiment(
         algorithm_name=algorithm,
         start_time=start_time,
         end_time=end_time,
-        config_path=str(config_path),
+        config_path=str(config_backup),
     )
 
     # Generate interactive Pareto front visualization (only if results are non-empty)
