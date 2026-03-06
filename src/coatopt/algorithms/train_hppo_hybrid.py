@@ -1,31 +1,50 @@
 #!/usr/bin/env python3
 """
-Multi-agent PPO with hybrid action space (discrete material + continuous thickness).
+Hybrid multi-agent + sequential PPO with dynamic constraint exploration.
 
-Config section: [hppo_multiagent]
-  n_agents              = 6
-  total_episodes        = 10000       # total episodes to train (across all agents)
-  warmup_episodes       = 500         # per objective
-  n_steps               = 2048        # steps per agent before update
-  n_epochs              = 10          # optimization epochs per update
-  batch_size            = 256         # minibatch size for SGD
-  constraint_penalty    = 3.0
-  lr                    = 3e-4
-  lr_final              = 3e-4        # Final LR (same = no decay)
-  lr_decay_episodes     = 10000       # Decay over this many episodes
-  gamma                 = 0.99
-  gae_lambda            = 0.95
-  clip_range            = 0.2
-  ent_coef              = 0.01
-  ent_coef_final        = 0.01        # Final entropy (same = no decay)
-  ent_decay_episodes    = 10000       # Decay over this many episodes
-  vf_coef               = 0.5
-  max_grad_norm         = 0.5
-  hidden                = [256, 256]
-  min_layers_before_air = 4
-  shared_critic         = true        # Share value function across agents
-  seed                  = 42
-  verbose               = 1
+Combines the benefits of:
+- Multi-agent: Multiple agents explore in parallel with shared critic for knowledge transfer
+- Sequential: Agents cycle through objectives with gradually tightening constraint bounds
+
+Each agent:
+- Cycles through target objectives (like sequential)
+- Randomly samples constraint levels within current step bounds for better exploration
+- Has its own actor network but shares critic with other agents
+
+This prevents the local minima problem of multi-agent (small separate networks getting stuck)
+while maintaining better exploration than pure sequential (multiple constraint levels explored).
+
+Config section: [hppo_hybrid]
+  n_agents                 = 4              # Number of parallel agents
+  total_episodes           = 10000
+  warmup_episodes          = 500            # Per objective
+  epochs_per_step          = 200            # Episodes per constraint phase
+  steps_per_objective      = 10             # Constraint tightening steps (annealing schedule)
+  episodes_per_update      = 10             # Complete episodes per agent before update
+  n_epochs                 = 10             # SGD epochs per update
+  batch_size               = 256
+  constraint_penalty       = 3.0
+  random_objective_order   = false          # If true, random; if false, cycle through objectives
+  resample_constraints_freq = 1             # Resample constraints every N episodes per agent
+  lr                       = 3e-4
+  lr_final                 = 3e-5           # Final LR (annealing target)
+  lr_decay_episodes        = 10000          # Anneal over this many episodes per phase
+  gamma                    = 0.99
+  gae_lambda               = 0.95
+  clip_range               = 0.2
+  ent_coef                 = 0.01
+  ent_coef_final           = 0.001          # Final entropy coefficient (annealing target)
+  ent_decay_episodes       = 10000          # Anneal over this many episodes per phase
+  vf_coef                  = 0.5
+  max_grad_norm            = 0.5
+  min_layers_before_air    = 4
+  use_lstm                 = false          # Use shared LSTM for layer sequence processing
+  lstm_hidden              = 128            # LSTM hidden size (if use_lstm=true)
+  lstm_layers              = 1              # Number of LSTM layers (if use_lstm=true)
+  hidden                   = [256, 256]     # MLP layers after LSTM/before policy heads
+  seed                     = 42
+  verbose                  = 1
+  plot_freq                = 500
 """
 
 import configparser
@@ -58,7 +77,7 @@ from coatopt.utils.utils import load_materials
 class CoatOptHybridEnv(gym.Env):
     """
     Hybrid action wrapper: discrete material + continuous thickness.
-    Action space: Dict(material=Discrete(n_materials), thickness=Box([min, max]))
+    Supports dynamic constraint and objective switching.
     """
 
     metadata = {"render_modes": []}
@@ -102,7 +121,8 @@ class CoatOptHybridEnv(gym.Env):
         )
 
         n_features = 1 + self.n_materials + 2
-        obs_size = self.base_env.max_layers * n_features + 1 + len(self.objectives)
+        # Observation: [layer_seq, constraints] (no current_layer for LSTM)
+        obs_size = self.base_env.max_layers * n_features + len(self.objectives)
         self.observation_space = gym.spaces.Box(
             low=-np.inf, high=np.inf, shape=(obs_size,), dtype=np.float32
         )
@@ -130,7 +150,7 @@ class CoatOptHybridEnv(gym.Env):
         )
         for obj in self.objectives:
             obs = np.append(obs, self.constraints.get(obj, 0.0))
-        obs = np.append(obs, self.current_layer / self.base_env.max_layers)
+        # Note: NOT including current_layer - LSTM can track position from sequence
         return obs
 
     def reset(self, seed=None, options=None):
@@ -156,7 +176,7 @@ class CoatOptHybridEnv(gym.Env):
             coatopt_action
         )
         obs = self._obs(state)
-        reward = float(env_reward)  # Respects use_intermediate_reward
+        reward = float(env_reward)
         info = {"mask": self.get_action_mask()}
         if finished:
             info["rewards"] = rewards
@@ -177,33 +197,35 @@ class CoatOptHybridEnv(gym.Env):
 
 
 class RolloutBuffer:
-    """Stores trajectories for on-policy PPO updates."""
+    """Stores trajectories for on-policy PPO updates (episode-based collection)."""
 
     def __init__(
         self,
-        capacity: int,
+        max_layers: int,
+        episodes_per_update: int,
         obs_dim: int,
         n_materials: int,
         gamma: float,
         gae_lambda: float,
     ):
-        self.capacity = capacity
+        # Capacity: worst case = episodes_per_update * max_layers
+        self.capacity = episodes_per_update * max_layers
         self.gamma = gamma
         self.gae_lambda = gae_lambda
         self.pos = 0
 
-        self.obs = np.zeros((capacity, obs_dim), dtype=np.float32)
-        self.materials = np.zeros(capacity, dtype=np.int64)
-        self.thicknesses = np.zeros(capacity, dtype=np.float32)
-        self.rewards = np.zeros(capacity, dtype=np.float32)
-        self.values = np.zeros(capacity, dtype=np.float32)
-        self.log_probs = np.zeros(capacity, dtype=np.float32)
-        self.dones = np.zeros(capacity, dtype=np.float32)
-        self.masks = np.zeros((capacity, n_materials), dtype=bool)
+        self.obs = np.zeros((self.capacity, obs_dim), dtype=np.float32)
+        self.materials = np.zeros(self.capacity, dtype=np.int64)
+        self.thicknesses = np.zeros(self.capacity, dtype=np.float32)
+        self.rewards = np.zeros(self.capacity, dtype=np.float32)
+        self.values = np.zeros(self.capacity, dtype=np.float32)
+        self.log_probs = np.zeros(self.capacity, dtype=np.float32)
+        self.dones = np.zeros(self.capacity, dtype=np.float32)
+        self.masks = np.zeros((self.capacity, n_materials), dtype=bool)
 
         # Computed during finalize()
-        self.advantages = np.zeros(capacity, dtype=np.float32)
-        self.returns = np.zeros(capacity, dtype=np.float32)
+        self.advantages = np.zeros(self.capacity, dtype=np.float32)
+        self.returns = np.zeros(self.capacity, dtype=np.float32)
 
     def add(self, obs, material, thickness, reward, value, log_prob, done, mask):
         self.obs[self.pos] = obs
@@ -218,13 +240,13 @@ class RolloutBuffer:
 
     def finalize(self, last_value: float):
         """Compute advantages and returns using GAE."""
-        assert self.pos == self.capacity, "Buffer not full"
-
-        advantages = np.zeros_like(self.rewards)
+        # Use actual data collected (pos) not full capacity
+        n_steps = self.pos
+        advantages = np.zeros(n_steps, dtype=np.float32)
         last_gae = 0.0
 
-        for t in reversed(range(self.capacity)):
-            if t == self.capacity - 1:
+        for t in reversed(range(n_steps)):
+            if t == n_steps - 1:
                 next_value = last_value
                 next_non_terminal = 1.0 - self.dones[t]
             else:
@@ -241,19 +263,19 @@ class RolloutBuffer:
             )
 
         self.advantages = advantages
-        self.returns = advantages + self.values
+        self.returns = advantages + self.values[:n_steps]
 
     def get(self):
-        """Return all data as tensors."""
-        assert self.pos == self.capacity
+        """Return all data as tensors (only actual collected data, not full capacity)."""
+        n_steps = self.pos
         return {
-            "obs": torch.FloatTensor(self.obs),
-            "materials": torch.LongTensor(self.materials),
-            "thicknesses": torch.FloatTensor(self.thicknesses),
-            "old_log_probs": torch.FloatTensor(self.log_probs),
+            "obs": torch.FloatTensor(self.obs[:n_steps]),
+            "materials": torch.LongTensor(self.materials[:n_steps]),
+            "thicknesses": torch.FloatTensor(self.thicknesses[:n_steps]),
+            "old_log_probs": torch.FloatTensor(self.log_probs[:n_steps]),
             "advantages": torch.FloatTensor(self.advantages),
             "returns": torch.FloatTensor(self.returns),
-            "masks": torch.BoolTensor(self.masks),
+            "masks": torch.BoolTensor(self.masks[:n_steps]),
         }
 
     def clear(self):
@@ -281,6 +303,8 @@ class HybridActorCritic(nn.Module):
     π(material, thickness | s) = π_discrete(material | s) × π_continuous(thickness | s)
 
     Continuous action uses TruncatedNormalDist to ensure samples stay in [min_t, max_t].
+
+    Optional shared LSTM: processes layer sequence before features (shared across agents).
     """
 
     def __init__(
@@ -290,14 +314,33 @@ class HybridActorCritic(nn.Module):
         hidden: List[int],
         min_t: float,
         max_t: float,
+        shared_lstm: nn.Module = None,
+        max_layers: int = None,
+        n_constraints: int = None,
     ):
         super().__init__()
         self.n_materials = n_materials
         self.min_t = min_t
         self.max_t = max_t
+        self.shared_lstm = shared_lstm
+        self.use_lstm = shared_lstm is not None
 
-        # Shared feature extractor
-        self.features = _mlp(obs_dim, hidden[-1], hidden[:-1])
+        if self.use_lstm:
+            assert max_layers is not None and n_constraints is not None
+            # Observation structure: [layer_sequence (flattened), constraints]
+            n_features_per_layer = 1 + n_materials + 2
+            self.max_layers = max_layers
+            self.n_features_per_layer = n_features_per_layer
+            self.n_constraints = n_constraints
+
+            # LSTM output is shared, so input to features is lstm_hidden + constraints
+            lstm_hidden = shared_lstm.hidden_size
+            input_dim = lstm_hidden + n_constraints
+            self.features = _mlp(input_dim, hidden[-1], hidden[:-1])
+        else:
+            # Shared feature extractor (standard MLP)
+            self.features = _mlp(obs_dim, hidden[-1], hidden[:-1])
+
         feat_dim = hidden[-1]
 
         # Policy heads
@@ -315,7 +358,29 @@ class HybridActorCritic(nn.Module):
         Sample action and compute value.
         Returns: (material, thickness, log_prob, value)
         """
-        feat = self.features(obs)
+        if self.use_lstm:
+            # Extract components from observation (SAME AS SEQUENTIAL)
+            # obs = [layer_sequence (flattened), constraints]
+            batch_size = obs.shape[0]
+
+            # Extract constraints from the end
+            layer_seq_flat = obs[:, : -self.n_constraints]
+            constraints = obs[:, -self.n_constraints :]
+
+            # Reshape layer sequence for LSTM: (batch, max_layers, features)
+            layer_seq = layer_seq_flat.view(
+                batch_size, self.max_layers, self.n_features_per_layer
+            )
+
+            # LSTM: use last layer's hidden state
+            lstm_out, (h_n, c_n) = self.shared_lstm(layer_seq)
+            lstm_features = h_n[-1]  # Take last layer: (batch, lstm_hidden)
+
+            # Concatenate LSTM features with constraints (no current_layer)
+            combined = torch.cat([lstm_features, constraints], dim=1)
+            feat = self.features(combined)
+        else:
+            feat = self.features(obs)
 
         # Discrete: material selection with masking
         logits = self.material_head(feat)
@@ -373,7 +438,29 @@ class HybridActorCritic(nn.Module):
         Evaluate log_prob and value for given actions.
         Returns: (log_prob, value, entropy)
         """
-        feat = self.features(obs)
+        if self.use_lstm:
+            # Extract components from observation (SAME AS SEQUENTIAL)
+            # obs = [layer_sequence (flattened), constraints]
+            batch_size = obs.shape[0]
+
+            # Extract constraints from the end
+            layer_seq_flat = obs[:, : -self.n_constraints]
+            constraints = obs[:, -self.n_constraints :]
+
+            # Reshape layer sequence for LSTM: (batch, max_layers, features)
+            layer_seq = layer_seq_flat.view(
+                batch_size, self.max_layers, self.n_features_per_layer
+            )
+
+            # LSTM: use last layer's hidden state
+            lstm_out, (h_n, c_n) = self.shared_lstm(layer_seq)
+            lstm_features = h_n[-1]  # Take last layer: (batch, lstm_hidden)
+
+            # Concatenate LSTM features with constraints (no current_layer)
+            combined = torch.cat([lstm_features, constraints], dim=1)
+            feat = self.features(combined)
+        else:
+            feat = self.features(obs)
 
         # Discrete
         logits = self.material_head(feat).masked_fill(~mask, float("-inf"))
@@ -417,7 +504,7 @@ class HybridActorCritic(nn.Module):
 
 
 class PPOAgent:
-    """Single PPO agent with hybrid action space."""
+    """Single PPO agent with hybrid action space and optional shared critic."""
 
     def __init__(
         self,
@@ -435,6 +522,9 @@ class PPOAgent:
         max_grad_norm: float,
         device: str,
         shared_value_net: nn.Module = None,  # Optional shared critic
+        shared_lstm: nn.Module = None,  # Optional shared LSTM
+        max_layers: int = None,
+        n_constraints: int = None,
     ):
         self.device = device
         self.clip_range = clip_range
@@ -443,9 +533,16 @@ class PPOAgent:
         self.max_grad_norm = max_grad_norm
         self.shared_value_net = shared_value_net
 
-        self.policy = HybridActorCritic(obs_dim, n_materials, hidden, min_t, max_t).to(
-            device
-        )
+        self.policy = HybridActorCritic(
+            obs_dim,
+            n_materials,
+            hidden,
+            min_t,
+            max_t,
+            shared_lstm=shared_lstm,
+            max_layers=max_layers,
+            n_constraints=n_constraints,
+        ).to(device)
         # If using shared critic, only optimize policy parameters
         if shared_value_net is None:
             self.optimizer = Adam(self.policy.parameters(), lr=lr)
@@ -464,7 +561,20 @@ class PPOAgent:
 
         # Use shared critic if available
         if self.shared_value_net is not None:
-            feat = self.policy.features(obs_t)
+            # Process observation to get features (handles LSTM if enabled)
+            if self.policy.use_lstm:
+                batch_size = obs_t.shape[0]
+                layer_seq_flat = obs_t[:, : -self.policy.n_constraints]
+                constraints = obs_t[:, -self.policy.n_constraints :]
+                layer_seq = layer_seq_flat.view(
+                    batch_size, self.policy.max_layers, self.policy.n_features_per_layer
+                )
+                lstm_out, (h_n, c_n) = self.policy.shared_lstm(layer_seq)
+                lstm_features = h_n[-1]
+                combined = torch.cat([lstm_features, constraints], dim=1)
+                feat = self.policy.features(combined)
+            else:
+                feat = self.policy.features(obs_t)
             value = self.shared_value_net(feat).squeeze(-1)
             return material.item(), thickness.item(), log_prob.item(), value.item()
 
@@ -512,7 +622,22 @@ class PPOAgent:
 
                 # Use shared critic if available
                 if self.shared_value_net is not None:
-                    feat = self.policy.features(obs[batch_idx])
+                    # Process observation to get features (handles LSTM if enabled)
+                    if self.policy.use_lstm:
+                        batch_size_inner = obs[batch_idx].shape[0]
+                        layer_seq_flat = obs[batch_idx][:, : -self.policy.n_constraints]
+                        constraints = obs[batch_idx][:, -self.policy.n_constraints :]
+                        layer_seq = layer_seq_flat.view(
+                            batch_size_inner,
+                            self.policy.max_layers,
+                            self.policy.n_features_per_layer,
+                        )
+                        lstm_out, (h_n, c_n) = self.policy.shared_lstm(layer_seq)
+                        lstm_features = h_n[-1]
+                        combined = torch.cat([lstm_features, constraints], dim=1)
+                        feat = self.policy.features(combined)
+                    else:
+                        feat = self.policy.features(obs[batch_idx])
                     values = self.shared_value_net(feat).squeeze(-1)
 
                 # Policy loss (PPO clip objective)
@@ -559,23 +684,32 @@ class PPOAgent:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Multi-agent trainer
+# Hybrid multi-agent trainer
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-class MultiAgentPPO:
-    """N PPO agents with constraint-based targeting and shared Pareto front."""
+class HybridMultiAgentPPO:
+    """
+    Hybrid multi-agent + sequential PPO.
+
+    Multiple agents with shared critic, each cycling through objectives
+    with randomly sampled constraints within annealing bounds.
+    """
 
     def __init__(
         self,
         config: Config,
         materials: dict,
-        n_agents: int = 6,
-        n_steps: int = 2048,
+        n_agents: int = 4,
+        episodes_per_update: int = 2048,
         n_epochs: int = 10,
         batch_size: int = 256,
         warmup_episodes_per_obj: int = 500,
+        epochs_per_step: int = 200,
+        steps_per_objective: int = 10,
         constraint_penalty: float = 3.0,
+        random_objective_order: bool = False,
+        resample_constraints_freq: int = 1,
         hidden: List[int] = None,
         lr: float = 3e-4,
         lr_final: float = None,
@@ -589,27 +723,38 @@ class MultiAgentPPO:
         vf_coef: float = 0.5,
         max_grad_norm: float = 0.5,
         min_layers_before_air: int = 4,
-        shared_critic: bool = False,
+        use_lstm: bool = False,
+        lstm_hidden: int = 128,
+        lstm_layers: int = 1,
         device: str = "cpu",
         verbose: int = 1,
-        log_freq: int = 500,
-        plot_freq: int = 5000,
+        log_freq: int = 50,
+        plot_freq: int = 500,
         save_dir: str = None,
     ):
         if hidden is None:
             hidden = [256, 256]
 
         self.n_agents = n_agents
-        self.n_steps = n_steps
+        self.episodes_per_update = episodes_per_update
         self.n_epochs = n_epochs
         self.batch_size = batch_size
         self.device = device
         self.verbose = verbose
-        self.shared_critic = shared_critic
         self.objectives = list(config.data.optimise_parameters)
-        assert len(self.objectives) == 2
+        self.n_objectives = len(self.objectives)
 
-        # Decay settings
+        self.warmup_episodes_per_obj = warmup_episodes_per_obj
+        # Total warmup episodes accounts for multiple agents cycling through objectives
+        self.total_warmup_episodes = (
+            warmup_episodes_per_obj * self.n_objectives * n_agents
+        )
+        self.epochs_per_step = epochs_per_step
+        self.steps_per_objective = steps_per_objective
+        self.random_objective_order = random_objective_order
+        self.resample_constraints_freq = resample_constraints_freq
+
+        # Annealing settings
         self.lr_init = lr
         self.lr_final = lr_final if lr_final is not None else lr
         self.lr_decay_episodes = lr_decay_episodes
@@ -618,10 +763,9 @@ class MultiAgentPPO:
         self.ent_decay_episodes = ent_decay_episodes
         self.current_ent_coef = ent_coef
 
-        n_obj = len(self.objectives)
         self.warmup_best: Dict[str, float] = {o: 0.0 for o in self.objectives}
         max_layers = config.data.n_layers
-        self.warmup_steps = warmup_episodes_per_obj * n_obj * max_layers
+        self.max_layers = max_layers
 
         # Create environments (one per agent)
         self.envs = [
@@ -629,7 +773,7 @@ class MultiAgentPPO:
                 config,
                 materials,
                 constraint_penalty,
-                target_objective=self.objectives[i % n_obj],
+                target_objective=self.objectives[0],  # Will be updated
                 constraints={},
                 min_layers_before_air=min_layers_before_air,
             )
@@ -638,7 +782,7 @@ class MultiAgentPPO:
         for env in self.envs:
             env.base_env.is_warmup = True
 
-        # Share Pareto front
+        # Share Pareto front across all agents
         primary = self.envs[0].base_env
         for env in self.envs[1:]:
             env.base_env.pareto_front_rewards = primary.pareto_front_rewards
@@ -649,16 +793,34 @@ class MultiAgentPPO:
         min_t = self.envs[0].min_thickness
         max_t = self.envs[0].max_thickness
 
-        # Create shared critic if enabled
-        shared_value_net = None
-        if shared_critic:
-            feat_dim = hidden[-1]
-            shared_value_net = nn.Linear(feat_dim, 1).to(device)
-            self.value_optimizer = Adam(shared_value_net.parameters(), lr=lr)
-            if verbose:
-                print(f"Using shared critic across {n_agents} agents")
+        # Create shared critic (key feature of hybrid approach)
+        feat_dim = hidden[-1]
+        self.shared_value_net = nn.Linear(feat_dim, 1).to(device)
+        self.value_optimizer = Adam(self.shared_value_net.parameters(), lr=lr)
+        if verbose:
+            print(f"Using shared critic across {n_agents} agents")
 
-        # Create PPO agents and buffers (entropy will be updated dynamically)
+        # Create shared LSTM if enabled
+        self.use_lstm = use_lstm
+        if use_lstm:
+            n_features_per_layer = 1 + n_materials + 2
+            n_constraints = len(self.objectives)
+            self.shared_lstm = nn.LSTM(
+                input_size=n_features_per_layer,
+                hidden_size=lstm_hidden,
+                num_layers=lstm_layers,
+                batch_first=True,
+            ).to(device)
+            self.lstm_optimizer = Adam(self.shared_lstm.parameters(), lr=lr)
+            if verbose:
+                print(
+                    f"Using shared LSTM: {lstm_layers} layer(s), hidden_size={lstm_hidden}, across {n_agents} agents"
+                )
+        else:
+            self.shared_lstm = None
+            n_constraints = None
+
+        # Create PPO agents and buffers
         self.agents = [
             PPOAgent(
                 obs_dim,
@@ -670,31 +832,47 @@ class MultiAgentPPO:
                 gamma,
                 gae_lambda,
                 clip_range,
-                ent_coef,  # Will be updated during training
+                ent_coef,
                 vf_coef,
                 max_grad_norm,
                 device,
-                shared_value_net=shared_value_net,
+                shared_value_net=self.shared_value_net,
+                shared_lstm=self.shared_lstm,
+                max_layers=self.max_layers if use_lstm else None,
+                n_constraints=n_constraints,
             )
             for _ in range(n_agents)
         ]
         self.buffers = [
-            RolloutBuffer(n_steps, obs_dim, n_materials, gamma, gae_lambda)
+            RolloutBuffer(
+                self.max_layers,
+                episodes_per_update,
+                obs_dim,
+                n_materials,
+                gamma,
+                gae_lambda,
+            )
             for _ in range(n_agents)
         ]
-        self.shared_value_net = shared_value_net
 
         self._obs = [None] * n_agents
         self._mask = [None] * n_agents
         self.step_count = 0
-        self.episode_count = 0  # Total episodes completed (all agents)
+        self.episode_count = 0
         self.warmup_done = False
-        self._warmup_end_episode = 0  # Track when warmup ended for phase reset
-        self._base_constraints = [{} for _ in range(n_agents)]
-        self._agent_targets = [self.objectives[i % n_obj] for i in range(n_agents)]
+        self._warmup_end_episode = (
+            0  # Track when warmup ended for phase-based annealing reset
+        )
 
-        # Monitoring (episode-based)
-        self.log_freq = log_freq  # From [general] mlflow_log_freq
+        # Per-agent state tracking
+        self._agent_episode_count = [0] * n_agents  # Episodes per agent
+        self._agent_target_objectives = [
+            self.objectives[i % self.n_objectives] for i in range(n_agents)
+        ]
+        self._agent_constraints = [{} for _ in range(n_agents)]
+
+        # Monitoring
+        self.log_freq = log_freq
         self.plot_freq = plot_freq
         self.save_dir = Path(save_dir) if save_dir else None
         self._ep_rewards = []
@@ -706,54 +884,86 @@ class MultiAgentPPO:
         self._obs[i] = obs
         self._mask[i] = info["mask"]
 
-    def _assign_constraints(self):
-        """Assign constraint levels after warmup."""
-        obj0, obj1 = self.objectives
-        n, half = self.n_agents, self.n_agents // 2
+    def _update_agent_target_and_constraints(self, agent_idx: int):
+        """
+        Update target objective and constraints for a single agent.
 
-        print("\nPost-warmup constraint assignments:")
-        for i in range(n):
-            if i < half:
-                frac = i / max(half - 1, 1)
-                c = {obj1: frac * self.warmup_best[obj1]} if frac > 0 else {}
-                target = obj0
+        During warmup: cycle through objectives, no constraints
+        After warmup: cycle through objectives, randomly sample constraints within current step bounds
+        """
+        agent_ep = self._agent_episode_count[agent_idx]
+
+        if not self.warmup_done:
+            # Warmup: cycle through objectives
+            obj_idx = (agent_ep // self.warmup_episodes_per_obj) % self.n_objectives
+            target = self.objectives[obj_idx]
+            constraints = {}
+            self.envs[agent_idx].base_env.is_warmup = True
+        else:
+            # Constrained phase
+            self.envs[agent_idx].base_env.is_warmup = False
+
+            # Determine current constraint step (global across all agents)
+            constrained_episodes = self.episode_count - self.total_warmup_episodes
+            current_phase = constrained_episodes // self.epochs_per_step
+
+            # Which objective to target (cycle or random)
+            if self.random_objective_order:
+                obj_idx = random.randint(0, self.n_objectives - 1)
             else:
-                j = i - half
-                frac = j / max(n - half - 1, 1)
-                c = {obj0: frac * self.warmup_best[obj0]} if frac > 0 else {}
-                target = obj1
+                obj_idx = current_phase % self.n_objectives
+            target = self.objectives[obj_idx]
 
-            self.envs[i].set_target(target, c)
-            self.envs[i].base_env.is_warmup = False
-            self._base_constraints[i] = c
-            self._agent_targets[i] = target
-            c_str = ", ".join(f"{k}≥{v:.3f}" for k, v in c.items()) or "free"
-            print(f"  Agent {i:2d}: target={target:13s} constraint=[{c_str}]")
+            # Current constraint step (increases over time, resets after steps_per_objective)
+            step = (current_phase // self.n_objectives) % self.steps_per_objective
 
-        for i in range(self.n_agents):
-            self._reset(i)
+            # Maximum constraint level for this step
+            max_constraint_frac = (step + 1) / self.steps_per_objective
+
+            # Randomly sample constraint level for each non-target objective
+            # between 0 and max_constraint_frac * warmup_best
+            constraints = {}
+            for i, obj in enumerate(self.objectives):
+                if i != obj_idx:
+                    # Random constraint between 0 and current max
+                    random_frac = random.uniform(0, max_constraint_frac)
+                    constraints[obj] = random_frac * self.warmup_best[obj]
+
+        self._agent_target_objectives[agent_idx] = target
+        self._agent_constraints[agent_idx] = constraints
+        self.envs[agent_idx].set_target(target, constraints)
 
     def _log_progress(self, episode: int, step: int):
-        """Log to MLflow and print (works in warmup and constrained phases)."""
-        # Log every log_freq episodes
+        """Log to MLflow and print progress."""
         if episode % self.log_freq != 0 and episode != 0:
             return
 
         # Print progress
         if self.verbose:
-            ent = self._ppo_logs.get("entropy", 0.0)
             n_pareto = len(self.envs[0].base_env.pareto_front_rewards)
             phase = "warmup" if not self.warmup_done else "constrained"
             lr = self.agents[0].optimizer.param_groups[0]["lr"]
-            print(
-                f"  [{phase}] ep {episode:>6d} (step {step:>7d}) | "
-                f"pareto {n_pareto:>3d} | ent {self.current_ent_coef:.4f} | lr {lr:.2e}"
-            )
 
-        # Log to MLflow if active
+            # Show current constraint step
+            if not self.warmup_done:
+                print(
+                    f"  [{phase}] ep {episode:>6d} (step {step:>7d}) | "
+                    f"pareto {n_pareto:>3d} | ent {self.current_ent_coef:.4f} | lr {lr:.2e}"
+                )
+            else:
+                constrained_episodes = self.episode_count - self.total_warmup_episodes
+                current_phase = constrained_episodes // self.epochs_per_step
+                step_in_cycle = (
+                    current_phase // self.n_objectives
+                ) % self.steps_per_objective
+                print(
+                    f"  [{phase}] ep {episode:>6d} (step {step:>7d}) | "
+                    f"pareto {n_pareto:>3d} | constraint_step {step_in_cycle}/{self.steps_per_objective} | "
+                    f"ent {self.current_ent_coef:.4f} | lr {lr:.2e}"
+                )
+
+        # Log to MLflow
         if not mlflow.active_run():
-            if self.verbose and episode == self.log_freq:
-                print("  Warning: MLflow run not active")
             return
 
         metrics = {"episode": episode, "step": step}
@@ -763,10 +973,6 @@ class MultiAgentPPO:
             window = self._ep_rewards[-100:]
             metrics["episode.reward_mean"] = float(np.mean(window))
             metrics["episode.reward_std"] = float(np.std(window))
-            metrics["episode.reward_min"] = float(np.min(window))
-            metrics["episode.reward_max"] = float(np.max(window))
-            neg_frac = sum(1 for r in window if r < 0) / len(window)
-            metrics["episode.negative_fraction"] = neg_frac
 
         if self._ep_vals:
             window = self._ep_vals[-100:]
@@ -803,43 +1009,46 @@ class MultiAgentPPO:
                         self.objectives,
                         self.save_dir,
                         "vals",
-                        f"ppo_multiagent_ep{episode}",
+                        f"ppo_hybrid_ep{episode}",
                     )
             except Exception as e:
                 if self.verbose:
                     print(f"  [plot] skipped: {e}")
 
     def train(self, total_episodes: int) -> dict:
+        """Train the hybrid multi-agent system."""
+        # Initialize all agents
         for i in range(self.n_agents):
+            self._update_agent_target_and_constraints(i)
             self._reset(i)
 
-        warmup_eps_total = (
-            len(self.objectives) * self.warmup_steps // self.envs[0].base_env.max_layers
-        )
         if self.verbose:
-            print(
-                f"Warmup for {warmup_eps_total} episodes (~{self.warmup_steps} steps)..."
-            )
+            print(f"Warmup for {self.total_warmup_episodes} episodes...")
+            print(f"Training with {self.n_agents} agents, shared critic\n")
 
         while self.episode_count < total_episodes:
-            # Warmup transition
-            if not self.warmup_done and self.step_count >= self.warmup_steps:
+            # Check if warmup is complete
+            if (
+                not self.warmup_done
+                and self.episode_count >= self.total_warmup_episodes
+            ):
                 self.warmup_done = True
                 self._warmup_end_episode = (
                     self.episode_count
                 )  # Record when warmup ended
+                print(f"\nWarmup complete at episode {self.episode_count}")
+                print(f"Best warmup rewards: {self.warmup_best}")
+                print("Resetting LR and entropy decay for constrained phase...")
                 print(
-                    f"\nWarmup complete at step {self.step_count}, episode {self.episode_count}"
+                    "Starting constrained phase with random constraint exploration...\n"
                 )
-                print(f"Best: {self.warmup_best}")
-                print(f"Resetting LR and entropy decay for constrained phase...")
-                self._assign_constraints()
 
-            # Collect n_steps for each agent
+            # Collect episodes_per_update complete episodes for each agent
             for agent_idx in range(self.n_agents):
                 self.buffers[agent_idx].clear()
+                episodes_collected = 0
 
-                for _ in range(self.n_steps):
+                while episodes_collected < self.episodes_per_update:
                     obs = self._obs[agent_idx]
                     mask = self._mask[agent_idx]
 
@@ -861,21 +1070,38 @@ class MultiAgentPPO:
                         obs, material, thickness, reward, value, log_prob, done, mask
                     )
 
-                    # Update warmup bounds
-                    if not self.warmup_done and done and "vals" in info:
-                        norm = self.envs[agent_idx].base_env.compute_objective_rewards(
-                            info["vals"], normalised=True
-                        )
-                        for obj in self.objectives:
-                            self.warmup_best[obj] = max(
-                                self.warmup_best[obj], norm.get(obj, 0.0)
-                            )
+                    self.step_count += 1
 
-                    # Track episode stats
-                    if done and "vals" in info:
-                        self._ep_rewards.append(reward)
-                        self._ep_vals.append(info["vals"])
-                        self.episode_count += 1  # Increment total episode counter
+                    # Episode complete
+                    if done:
+                        # Update warmup bounds
+                        if not self.warmup_done and "vals" in info:
+                            norm = self.envs[
+                                agent_idx
+                            ].base_env.compute_objective_rewards(
+                                info["vals"], normalised=True
+                            )
+                            for obj in self.objectives:
+                                self.warmup_best[obj] = max(
+                                    self.warmup_best[obj], norm.get(obj, 0.0)
+                                )
+
+                        # Track episode stats
+                        if "vals" in info:
+                            self._ep_rewards.append(reward)
+                            self._ep_vals.append(info["vals"])
+                            self.episode_count += 1
+                            self._agent_episode_count[agent_idx] += 1
+                            episodes_collected += 1
+
+                        # Update target and constraints for this agent
+                        if (
+                            self._agent_episode_count[agent_idx]
+                            % self.resample_constraints_freq
+                            == 0
+                        ):
+                            self._update_agent_target_and_constraints(agent_idx)
+
                         self._reset(agent_idx)
                         obs = self._obs[agent_idx]
                         mask = self._mask[agent_idx]
@@ -884,8 +1110,6 @@ class MultiAgentPPO:
                         self._mask[agent_idx] = next_mask
                         obs = next_obs
                         mask = next_mask
-
-                    self.step_count += 1
 
                 # Finalize buffer with bootstrap value
                 _, _, _, last_value = self.agents[agent_idx].act(
@@ -896,12 +1120,7 @@ class MultiAgentPPO:
             # Update LR and entropy with cosine annealing (separate for warmup/constrained phases)
             if not self.warmup_done:
                 # Warmup phase: decay from init to final over warmup episodes
-                warmup_eps_total = (
-                    len(self.objectives)
-                    * self.warmup_steps
-                    // self.envs[0].base_env.max_layers
-                )
-                progress = min(1.0, self.episode_count / warmup_eps_total)
+                progress = min(1.0, self.episode_count / self.total_warmup_episodes)
             else:
                 # Constrained phase: reset and decay again over remaining episodes
                 constrained_episodes = self.episode_count - self._warmup_end_episode
@@ -921,57 +1140,78 @@ class MultiAgentPPO:
                     param_group["lr"] = current_lr
                 agent.ent_coef = self.current_ent_coef
 
-            # Update shared critic LR if used
-            if self.shared_critic:
-                for param_group in self.value_optimizer.param_groups:
+            # Update shared critic and LSTM LR
+            for param_group in self.value_optimizer.param_groups:
+                param_group["lr"] = current_lr
+            if self.use_lstm:
+                for param_group in self.lstm_optimizer.param_groups:
                     param_group["lr"] = current_lr
 
-            # Update all agents
-            if self.shared_critic:
-                # Update policies only (not value)
-                for agent_idx in range(self.n_agents):
-                    rollout_data = self.buffers[agent_idx].get()
-                    self._ppo_logs = self.agents[agent_idx].update(
-                        rollout_data, self.n_epochs, self.batch_size, update_value=False
-                    )
+            # Update all agents: policies first, then shared critic
 
-                # Update shared critic with all agents' data
-                all_obs, all_returns = [], []
-                for agent_idx in range(self.n_agents):
-                    rollout_data = self.buffers[agent_idx].get()
-                    all_obs.append(rollout_data["obs"])
-                    all_returns.append(rollout_data["returns"])
+            # Update policies only (not value)
+            for agent_idx in range(self.n_agents):
+                rollout_data = self.buffers[agent_idx].get()
+                self._ppo_logs = self.agents[agent_idx].update(
+                    rollout_data, self.n_epochs, self.batch_size, update_value=False
+                )
 
-                # Combine data from all agents
-                combined_obs = torch.cat(all_obs, dim=0).to(self.device)
-                combined_returns = torch.cat(all_returns, dim=0).to(self.device)
+            # Update shared critic with all agents' data
+            all_obs, all_returns = [], []
+            for agent_idx in range(self.n_agents):
+                rollout_data = self.buffers[agent_idx].get()
+                all_obs.append(rollout_data["obs"])
+                all_returns.append(rollout_data["returns"])
 
-                # Update shared critic
-                n_samples = combined_obs.shape[0]
-                for epoch in range(self.n_epochs):
-                    indices = torch.randperm(n_samples)
-                    for start in range(0, n_samples, self.batch_size):
-                        end = start + self.batch_size
-                        batch_idx = indices[start:end]
+            # Combine data from all agents
+            combined_obs = torch.cat(all_obs, dim=0).to(self.device)
+            combined_returns = torch.cat(all_returns, dim=0).to(self.device)
 
-                        feat = self.agents[0].policy.features(combined_obs[batch_idx])
-                        values = self.shared_value_net(feat).squeeze(-1)
-                        value_loss = F.mse_loss(values, combined_returns[batch_idx])
+            # Update shared critic
+            n_samples = combined_obs.shape[0]
+            for epoch in range(self.n_epochs):
+                indices = torch.randperm(n_samples)
+                for start in range(0, n_samples, self.batch_size):
+                    end = start + self.batch_size
+                    batch_idx = indices[start:end]
 
-                        self.value_optimizer.zero_grad()
-                        value_loss.backward()
-                        nn.utils.clip_grad_norm_(
-                            self.shared_value_net.parameters(),
-                            self.agents[0].max_grad_norm,
+                    # Process observation to get features (handles LSTM if enabled)
+                    if self.use_lstm:
+                        batch_size_inner = combined_obs[batch_idx].shape[0]
+                        n_constraints = len(self.objectives)
+                        layer_seq_flat = combined_obs[batch_idx][:, :-n_constraints]
+                        constraints = combined_obs[batch_idx][:, -n_constraints:]
+                        layer_seq = layer_seq_flat.view(
+                            batch_size_inner,
+                            self.max_layers,
+                            1 + self.envs[0].n_materials + 2,
                         )
-                        self.value_optimizer.step()
-            else:
-                # Standard update (policy + value per agent)
-                for agent_idx in range(self.n_agents):
-                    rollout_data = self.buffers[agent_idx].get()
-                    self._ppo_logs = self.agents[agent_idx].update(
-                        rollout_data, self.n_epochs, self.batch_size
+                        lstm_out, (h_n, c_n) = self.shared_lstm(layer_seq)
+                        lstm_features = h_n[-1]
+                        combined = torch.cat([lstm_features, constraints], dim=1)
+                        feat = self.agents[0].policy.features(combined)
+                    else:
+                        feat = self.agents[0].policy.features(combined_obs[batch_idx])
+                    values = self.shared_value_net(feat).squeeze(-1)
+                    value_loss = F.mse_loss(values, combined_returns[batch_idx])
+
+                    self.value_optimizer.zero_grad()
+                    if self.use_lstm:
+                        self.lstm_optimizer.zero_grad()
+
+                    value_loss.backward()
+
+                    nn.utils.clip_grad_norm_(
+                        self.shared_value_net.parameters(), self.agents[0].max_grad_norm
                     )
+                    self.value_optimizer.step()
+
+                    # Update shared LSTM if used
+                    if self.use_lstm:
+                        nn.utils.clip_grad_norm_(
+                            self.shared_lstm.parameters(), self.agents[0].max_grad_norm
+                        )
+                        self.lstm_optimizer.step()
 
             # Logging and progress
             self._log_progress(self.episode_count, self.step_count)
@@ -1000,7 +1240,7 @@ class MultiAgentPPO:
 def train(config_path: str, save_dir: str = None) -> dict:
     parser = configparser.ConfigParser()
     parser.read(config_path)
-    section = "hppo_multiagent"
+    section = "hppo_hybrid"
 
     def _get(key, fallback, cast=str):
         return cast(parser.get(section, key, fallback=str(fallback)))
@@ -1014,13 +1254,19 @@ def train(config_path: str, save_dir: str = None) -> dict:
     np.random.seed(seed)
     torch.manual_seed(seed)
 
-    n_agents = _get("n_agents", 6, int)
+    n_agents = _get("n_agents", 4, int)
     total_episodes = _get("total_episodes", 10000, int)
     warmup_episodes = _get("warmup_episodes", 500, int)
-    n_steps = _get("n_steps", 2048, int)
+    epochs_per_step = _get("epochs_per_step", 200, int)
+    steps_per_objective = _get("steps_per_objective", 10, int)
+    episodes_per_update = _get("episodes_per_update", 2048, int)
     n_epochs = _get("n_epochs", 10, int)
     batch_size = _get("batch_size", 256, int)
     constraint_penalty = _get("constraint_penalty", 3.0, float)
+    random_objective_order = _get(
+        "random_objective_order", False, lambda x: x.lower() == "true"
+    )
+    resample_constraints_freq = _get("resample_constraints_freq", 1, int)
     lr = _get("lr", 3e-4, float)
     lr_final = _get("lr_final", lr, float)
     lr_decay_episodes = _get("lr_decay_episodes", total_episodes, int)
@@ -1033,7 +1279,9 @@ def train(config_path: str, save_dir: str = None) -> dict:
     vf_coef = _get("vf_coef", 0.5, float)
     max_grad_norm = _get("max_grad_norm", 0.5, float)
     min_layers_before_air = _get("min_layers_before_air", 4, int)
-    shared_critic = _get("shared_critic", False, lambda x: x.lower() == "true")
+    use_lstm = _get("use_lstm", False, lambda x: x.lower() == "true")
+    lstm_hidden = _get("lstm_hidden", 128, int)
+    lstm_layers = _get("lstm_layers", 1, int)
     verbose = _get("verbose", 1, int)
     hidden_str = parser.get(section, "hidden", fallback="[256, 256]")
     hidden = eval(hidden_str)
@@ -1043,36 +1291,62 @@ def train(config_path: str, save_dir: str = None) -> dict:
     plot_freq = _get("plot_freq", 500, int)
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    config.data.n_layers = parser.getint(
-        "data", "n_layers", fallback=config.data.n_layers
-    )
 
     if save_dir is None:
         base = parser.get("general", "save_dir", fallback="./runs")
         run_name = parser.get("general", "run_name", fallback="")
         date_str = datetime.now().strftime("%Y%m%d")
         suffix = f"-{run_name}" if run_name else ""
-        save_dir = Path(base) / f"{date_str}-ppo_multiagent{suffix}"
+        save_dir = Path(base) / f"{date_str}-ppo_hybrid{suffix}"
     save_dir = Path(save_dir)
     save_dir.mkdir(parents=True, exist_ok=True)
 
     print(f"\n{'='*60}")
-    print(f"  Multi-agent PPO (hybrid discrete+continuous)")
+    print(f"  Hybrid Multi-Agent + Sequential PPO")
     print(f"  Agents      : {n_agents}")
     print(f"  Episodes    : {total_episodes:,}")
     print(f"  Device      : {device}")
     print(f"  Objectives  : {list(config.data.optimise_parameters)}")
+    print(f"  Constraint steps: {steps_per_objective}")
+    print(f"  Random obj order: {random_objective_order}")
     print(f"{'='*60}\n")
 
-    trainer = MultiAgentPPO(
+    # Log parameters to MLflow
+    if mlflow.active_run():
+        mlflow.log_params(
+            {
+                "algorithm": "hppo_hybrid",
+                "n_agents": n_agents,
+                "total_episodes": total_episodes,
+                "warmup_episodes": warmup_episodes,
+                "epochs_per_step": epochs_per_step,
+                "steps_per_objective": steps_per_objective,
+                "episodes_per_update": episodes_per_update,
+                "n_epochs": n_epochs,
+                "batch_size": batch_size,
+                "constraint_penalty": constraint_penalty,
+                "random_objective_order": random_objective_order,
+                "resample_constraints_freq": resample_constraints_freq,
+                "lr": lr,
+                "gamma": gamma,
+                "hidden": str(hidden),
+                "seed": seed,
+            }
+        )
+
+    trainer = HybridMultiAgentPPO(
         config=config,
         materials=materials,
         n_agents=n_agents,
-        n_steps=n_steps,
+        episodes_per_update=episodes_per_update,
         n_epochs=n_epochs,
         batch_size=batch_size,
         warmup_episodes_per_obj=warmup_episodes,
+        epochs_per_step=epochs_per_step,
+        steps_per_objective=steps_per_objective,
         constraint_penalty=constraint_penalty,
+        random_objective_order=random_objective_order,
+        resample_constraints_freq=resample_constraints_freq,
         hidden=hidden,
         lr=lr,
         lr_final=lr_final,
@@ -1086,7 +1360,9 @@ def train(config_path: str, save_dir: str = None) -> dict:
         vf_coef=vf_coef,
         max_grad_norm=max_grad_norm,
         min_layers_before_air=min_layers_before_air,
-        shared_critic=shared_critic,
+        use_lstm=use_lstm,
+        lstm_hidden=lstm_hidden,
+        lstm_layers=lstm_layers,
         device=device,
         verbose=verbose,
         log_freq=mlflow_log_freq,
@@ -1111,7 +1387,9 @@ def train(config_path: str, save_dir: str = None) -> dict:
 if __name__ == "__main__":
     import argparse
 
-    ap = argparse.ArgumentParser(description="Multi-agent PPO for CoatOpt")
+    ap = argparse.ArgumentParser(
+        description="Hybrid Multi-Agent + Sequential PPO for CoatOpt"
+    )
     ap.add_argument("--config", required=True, help="Path to config INI")
     ap.add_argument("--save-dir", default=None, help="Override save directory")
     args = ap.parse_args()

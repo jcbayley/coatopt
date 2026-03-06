@@ -22,6 +22,9 @@ Config section: [morl] or [morld]
   exchange_every           = 50000          # Weight exchange frequency
   gamma                    = 0.99
   learning_rate            = 3e-4
+  min_layers_before_air    = 4              # Min layers before air allowed
+  mask_consecutive_materials = true         # Correct consecutive material actions
+  consecutive_penalty      = 0.2            # Penalty for corrected actions
 """
 import time
 from pathlib import Path
@@ -58,6 +61,8 @@ class CoatOptMOGymWrapper(gym.Env):
         config: Config,
         materials: dict,
         consecutive_material_penalty: float = 0.2,
+        mask_consecutive_materials: bool = True,
+        min_layers_before_air: int = 4,
     ):
         super().__init__()
         self.env = CoatingEnvironment(config, materials)
@@ -65,9 +70,13 @@ class CoatOptMOGymWrapper(gym.Env):
         # Spec for MORL-baselines compatibility
         self.spec = CoatOptEnvSpec("CoatOpt-v0")
 
-        # Consecutive material penalty
+        # Action correction settings
         self.consecutive_material_penalty = consecutive_material_penalty
+        self.mask_consecutive_materials = mask_consecutive_materials
+        self.min_layers_before_air = min_layers_before_air
         self.previous_material_idx = None
+        self.current_layer_count = 0
+        self.air_material_idx = 0  # Assuming material 0 is air
 
         # Multi-objective settings
         self.objectives = config.data.optimise_parameters
@@ -115,6 +124,7 @@ class CoatOptMOGymWrapper(gym.Env):
 
         # Reset material tracking
         self.previous_material_idx = None
+        self.current_layer_count = 0
 
         return self._get_obs(state), {}
 
@@ -124,16 +134,42 @@ class CoatOptMOGymWrapper(gym.Env):
         material_idx = int(np.clip(np.round(action[0]), 0, self.env.n_materials - 1))
         thickness = float(action[1])
 
-        # Check for consecutive same material penalty
+        # Track if action was corrected
+        action_corrected = False
         consecutive_penalty = 0.0
-        if (
-            self.previous_material_idx is not None
-            and material_idx == self.previous_material_idx
-        ):
-            consecutive_penalty = self.consecutive_material_penalty
 
-        # Update previous material tracking
+        # Correct consecutive material selection
+        if (
+            self.mask_consecutive_materials
+            and self.previous_material_idx is not None
+            and material_idx == self.previous_material_idx
+            and material_idx != self.air_material_idx  # Air can repeat
+        ):
+            # Find a different material
+            for alt_idx in range(self.env.n_materials):
+                if alt_idx != material_idx:
+                    material_idx = alt_idx
+                    action_corrected = True
+                    consecutive_penalty = self.consecutive_material_penalty
+                    break
+
+        # Correct early air selection (before minimum layers)
+        if (
+            material_idx == self.air_material_idx
+            and self.current_layer_count < self.min_layers_before_air
+        ):
+            # Choose first non-air material
+            for alt_idx in range(1, self.env.n_materials):
+                if alt_idx != self.previous_material_idx:
+                    material_idx = alt_idx
+                    action_corrected = True
+                    consecutive_penalty = self.consecutive_material_penalty
+                    break
+
+        # Update tracking
         self.previous_material_idx = material_idx
+        if material_idx != self.air_material_idx:
+            self.current_layer_count += 1
 
         # Build CoatOpt action
         coatopt_action = np.zeros(self.env.n_materials + 1, dtype=np.float32)
@@ -155,6 +191,7 @@ class CoatOptMOGymWrapper(gym.Env):
             "vals": vals,
             "finished": finished,
             "consecutive_penalty": consecutive_penalty,
+            "action_corrected": action_corrected,
         }
 
         # Vector reward (MO-Gymnasium API)
@@ -217,9 +254,28 @@ def setup_morl_training(config_path: str, algorithm: str = "morld"):
         materials_path = Path(__file__).parent / "config" / "materials.json"
     materials = load_materials(str(materials_path))
 
+    # Action masking/correction parameters
+    consecutive_penalty = parser.getfloat(section, "consecutive_penalty", fallback=0.2)
+    mask_consecutive = parser.getboolean(
+        section, "mask_consecutive_materials", fallback=True
+    )
+    min_layers_before_air = parser.getint(section, "min_layers_before_air", fallback=4)
+
     # Create environments
-    env = CoatOptMOGymWrapper(config, materials)
-    eval_env = CoatOptMOGymWrapper(config, materials)
+    env = CoatOptMOGymWrapper(
+        config,
+        materials,
+        consecutive_material_penalty=consecutive_penalty,
+        mask_consecutive_materials=mask_consecutive,
+        min_layers_before_air=min_layers_before_air,
+    )
+    eval_env = CoatOptMOGymWrapper(
+        config,
+        materials,
+        consecutive_material_penalty=consecutive_penalty,
+        mask_consecutive_materials=mask_consecutive,
+        min_layers_before_air=min_layers_before_air,
+    )
 
     print(
         f"\nEnvironment: obs={env.observation_space.shape}, "

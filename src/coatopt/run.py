@@ -42,6 +42,7 @@ def run_experiment(config_path: str):
         "sac_hybrid",
         "hppo_multiagent",
         "hppo_sequential",
+        "hppo_hybrid",
     }
     algorithm = None
     for section in parser.sections():
@@ -172,9 +173,14 @@ def run_experiment(config_path: str):
 
         results = train(config_path=str(config_path), save_dir=str(save_dir))
 
+    elif algorithm == "hppo_hybrid":
+        from coatopt.algorithms.train_hppo_hybrid import train
+
+        results = train(config_path=str(config_path), save_dir=str(save_dir))
+
     else:
         raise ValueError(
-            f"Unknown algorithm: {algorithm}. Must be one of: sb3_discrete, sb3_discrete_lstm, sb3_dqn, sb3_simple, morl, morl_discrete, nsga2, hppo, sac_multiagent, sac_hybrid, ppo_multiagent, ppo_sequential"
+            f"Unknown algorithm: {algorithm}. Must be one of: sb3_discrete, sb3_discrete_lstm, sb3_dqn, sb3_simple, morl, morl_discrete, nsga2, hppo, sac_multiagent, sac_hybrid, ppo_multiagent, ppo_sequential, hppo_hybrid"
         )
 
     end_time = time.time()

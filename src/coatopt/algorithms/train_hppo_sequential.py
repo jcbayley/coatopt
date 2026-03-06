@@ -6,7 +6,7 @@ Uses discrete material selection + continuous thickness (TruncatedNormal) with
 constraint-based multi-objective training. Alternates between objectives during
 warmup, then applies gradually tightening constraints.
 
-Config section: [ppo_sequential]
+Config section: [hppo_sequential]
   total_episodes           = 10000
   warmup_episodes          = 500            # Per objective
   epochs_per_step          = 200            # Episodes per phase
@@ -17,15 +17,22 @@ Config section: [ppo_sequential]
   constraint_penalty       = 3.0
   pareto_bonus             = 0.0            # Hypervolume improvement bonus
   lr                       = 3e-4
+  lr_final                 = 3e-5           # Final LR (annealing target)
+  lr_decay_episodes        = 10000          # Anneal over this many episodes per phase
   gamma                    = 0.99
   gae_lambda               = 0.95
   clip_range               = 0.2
   ent_coef                 = 0.01
+  ent_coef_final           = 0.001          # Final entropy coefficient (annealing target)
+  ent_decay_episodes       = 10000          # Anneal over this many episodes per phase
   vf_coef                  = 0.5
   max_grad_norm            = 0.5
   min_layers_before_air    = 4
   mask_consecutive_materials = true
-  hidden                   = [256, 256]
+  use_lstm                 = false          # Use LSTM to process layer sequence
+  lstm_hidden              = 128            # LSTM hidden size (if use_lstm=true)
+  lstm_layers              = 1              # Number of LSTM layers (if use_lstm=true)
+  hidden                   = [256, 256]     # MLP layers after LSTM/before policy heads
   seed                     = 42
   verbose                  = 1
   plot_freq                = 500
@@ -276,6 +283,8 @@ class HybridActorCritic(nn.Module):
     Discrete head: material selection (masked categorical)
     Continuous head: thickness (TruncatedNormal with bounds [min_t, max_t])
     Value head: state value V(s)
+
+    Optional LSTM: processes layer sequence before MLP trunk.
     """
 
     def __init__(
@@ -285,19 +294,55 @@ class HybridActorCritic(nn.Module):
         min_thickness: float,
         max_thickness: float,
         hidden_dims: List[int] = [256, 256],
+        use_lstm: bool = False,
+        lstm_hidden: int = 128,
+        lstm_layers: int = 1,
+        max_layers: int = None,
+        n_constraints: int = None,
     ):
         super().__init__()
         self.n_materials = n_materials
         self.min_t = min_thickness
         self.max_t = max_thickness
+        self.use_lstm = use_lstm
 
-        # Shared trunk
-        layers = []
-        prev_dim = obs_dim
-        for h in hidden_dims:
-            layers.extend([nn.Linear(prev_dim, h), nn.ReLU()])
-            prev_dim = h
-        self.trunk = nn.Sequential(*layers)
+        if use_lstm:
+            assert (
+                max_layers is not None and n_constraints is not None
+            ), "max_layers and n_constraints required for LSTM"
+
+            # Observation structure: [layer_sequence (flattened), current_layer, constraints]
+            n_features_per_layer = 1 + n_materials + 2  # thickness + one-hot + 2
+            self.max_layers = max_layers
+            self.n_features_per_layer = n_features_per_layer
+            self.n_constraints = n_constraints
+
+            # LSTM processes layer sequence
+            self.lstm = nn.LSTM(
+                input_size=n_features_per_layer,
+                hidden_size=lstm_hidden,
+                num_layers=lstm_layers,
+                batch_first=True,
+            )
+
+            # After LSTM: concat [lstm_output, constraints]
+            combined_dim = lstm_hidden + n_constraints
+
+            # Trunk MLP
+            layers = []
+            prev_dim = combined_dim
+            for h in hidden_dims:
+                layers.extend([nn.Linear(prev_dim, h), nn.ReLU()])
+                prev_dim = h
+            self.trunk = nn.Sequential(*layers)
+        else:
+            # Standard MLP trunk (no LSTM)
+            layers = []
+            prev_dim = obs_dim
+            for h in hidden_dims:
+                layers.extend([nn.Linear(prev_dim, h), nn.ReLU()])
+                prev_dim = h
+            self.trunk = nn.Sequential(*layers)
 
         # Discrete head (material)
         self.material_head = nn.Linear(prev_dim, n_materials)
@@ -318,7 +363,29 @@ class HybridActorCritic(nn.Module):
             log_prob: total log probability (discrete + continuous)
             value: state value V(s)
         """
-        features = self.trunk(obs)
+        if self.use_lstm:
+            # Extract components from observation
+            # obs = [layer_sequence (flattened), constraints]
+            batch_size = obs.shape[0]
+
+            # Extract constraints from the end
+            layer_seq_flat = obs[:, : -self.n_constraints]
+            constraints = obs[:, -self.n_constraints :]
+
+            # Reshape layer sequence for LSTM: (batch, max_layers, features)
+            layer_seq = layer_seq_flat.view(
+                batch_size, self.max_layers, self.n_features_per_layer
+            )
+
+            # LSTM: use last layer's hidden state
+            lstm_out, (h_n, c_n) = self.lstm(layer_seq)
+            lstm_features = h_n[-1]  # Take last layer: (batch, lstm_hidden)
+
+            # Concatenate LSTM features with constraints (no current_layer)
+            combined = torch.cat([lstm_features, constraints], dim=1)
+            features = self.trunk(combined)
+        else:
+            features = self.trunk(obs)
 
         # Discrete material selection (masked)
         logits = self.material_head(features)
@@ -362,7 +429,26 @@ class HybridActorCritic(nn.Module):
 
     def evaluate_actions(self, obs, mask, materials, thicknesses):
         """Evaluate log_probs and values for given actions."""
-        features = self.trunk(obs)
+        if self.use_lstm:
+            # Extract components from observation (same as forward)
+            batch_size = obs.shape[0]
+
+            # Extract constraints from the end
+            layer_seq_flat = obs[:, : -self.n_constraints]
+            constraints = obs[:, -self.n_constraints :]
+
+            # Reshape and process with LSTM
+            layer_seq = layer_seq_flat.view(
+                batch_size, self.max_layers, self.n_features_per_layer
+            )
+            lstm_out, (h_n, c_n) = self.lstm(layer_seq)
+            lstm_features = h_n[-1]  # Take last layer: (batch, lstm_hidden)
+
+            # Concatenate and process (no current_layer)
+            combined = torch.cat([lstm_features, constraints], dim=1)
+            features = self.trunk(combined)
+        else:
+            features = self.trunk(obs)
 
         # Discrete
         logits = self.material_head(features)
@@ -524,6 +610,10 @@ def train(config_path: str, save_dir: str):
     """Train single-agent PPO with sequential constraints."""
     parser = configparser.ConfigParser()
     parser.read(config_path)
+    section = "hppo_sequential"
+
+    def _get(key, fallback, cast=str):
+        return cast(parser.get(section, key, fallback=str(fallback)))
 
     # Load config and materials
     config = load_config(config_path)
@@ -531,43 +621,42 @@ def train(config_path: str, save_dir: str):
     materials = load_materials(materials_path)
 
     # Read hyperparameters
-    total_episodes = parser.getint("ppo_sequential", "total_episodes", fallback=10000)
-    warmup_episodes = parser.getint("ppo_sequential", "warmup_episodes", fallback=500)
-    epochs_per_step = parser.getint("ppo_sequential", "epochs_per_step", fallback=200)
-    steps_per_objective = parser.getint(
-        "ppo_sequential", "steps_per_objective", fallback=10
+    total_episodes = _get("total_episodes", 10000, int)
+    warmup_episodes = _get("warmup_episodes", 500, int)
+    epochs_per_step = _get("epochs_per_step", 200, int)
+    steps_per_objective = _get("steps_per_objective", 10, int)
+    episodes_per_update = _get("episodes_per_update", 10, int)
+    n_epochs = _get("n_epochs", 5, int)
+    batch_size = _get("batch_size", 64, int)
+    constraint_penalty = _get("constraint_penalty", 3.0, float)
+    pareto_bonus = _get("pareto_bonus", 0.0, float)
+    lr = _get("lr", 3e-4, float)
+    lr_final = _get("lr_final", lr, float)
+    lr_decay_episodes = _get("lr_decay_episodes", total_episodes, int)
+    gamma = _get("gamma", 0.99, float)
+    gae_lambda = _get("gae_lambda", 0.95, float)
+    clip_range = _get("clip_range", 0.2, float)
+    ent_coef = _get("ent_coef", 0.01, float)
+    ent_coef_final = _get("ent_coef_final", ent_coef, float)
+    ent_decay_episodes = _get("ent_decay_episodes", total_episodes, int)
+    vf_coef = _get("vf_coef", 0.5, float)
+    max_grad_norm = _get("max_grad_norm", 0.5, float)
+    min_layers_before_air = _get("min_layers_before_air", 4, int)
+    mask_consecutive = _get(
+        "mask_consecutive_materials", True, lambda x: x.lower() == "true"
     )
-    episodes_per_update = parser.getint(
-        "ppo_sequential", "episodes_per_update", fallback=10
-    )
-    n_epochs = parser.getint("ppo_sequential", "n_epochs", fallback=5)
-    batch_size = parser.getint("ppo_sequential", "batch_size", fallback=64)
-    constraint_penalty = parser.getfloat(
-        "ppo_sequential", "constraint_penalty", fallback=3.0
-    )
-    pareto_bonus = parser.getfloat("ppo_sequential", "pareto_bonus", fallback=0.0)
-    lr = parser.getfloat("ppo_sequential", "lr", fallback=3e-4)
-    gamma = parser.getfloat("ppo_sequential", "gamma", fallback=0.99)
-    gae_lambda = parser.getfloat("ppo_sequential", "gae_lambda", fallback=0.95)
-    clip_range = parser.getfloat("ppo_sequential", "clip_range", fallback=0.2)
-    ent_coef = parser.getfloat("ppo_sequential", "ent_coef", fallback=0.01)
-    vf_coef = parser.getfloat("ppo_sequential", "vf_coef", fallback=0.5)
-    max_grad_norm = parser.getfloat("ppo_sequential", "max_grad_norm", fallback=0.5)
-    min_layers_before_air = parser.getint(
-        "ppo_sequential", "min_layers_before_air", fallback=4
-    )
-    mask_consecutive = parser.getboolean(
-        "ppo_sequential", "mask_consecutive_materials", fallback=True
-    )
-    verbose = parser.getint("ppo_sequential", "verbose", fallback=1)
-    seed = parser.getint("ppo_sequential", "seed", fallback=42)
+    use_lstm = _get("use_lstm", False, lambda x: x.lower() == "true")
+    lstm_hidden = _get("lstm_hidden", 128, int)
+    lstm_layers = _get("lstm_layers", 1, int)
+    verbose = _get("verbose", 1, int)
+    seed = _get("seed", 42, int)
 
-    # Read logging frequencies from [general] section
+    # Read logging frequencies
     mlflow_log_freq = parser.getint("general", "mlflow_log_freq", fallback=50)
-    plot_freq = parser.getint("ppo_sequential", "plot_freq", fallback=500)
+    plot_freq = _get("plot_freq", 500, int)
 
     # Parse hidden layers
-    hidden_str = parser.get("ppo_sequential", "hidden", fallback="[256, 256]")
+    hidden_str = _get("hidden", "[256, 256]")
     hidden = eval(hidden_str)
 
     # Set seeds
@@ -621,13 +710,25 @@ def train(config_path: str, save_dir: str):
     min_thickness = env.env.min_thickness
     max_thickness = env.env.max_thickness
 
+    # Get number of constraints for LSTM
+    n_constraints = len(config.data.optimise_parameters)
+    max_layers = config.data.n_layers
+
     policy = HybridActorCritic(
         obs_dim=obs_dim,
         n_materials=n_materials,
         min_thickness=min_thickness,
         max_thickness=max_thickness,
         hidden_dims=hidden,
+        use_lstm=use_lstm,
+        lstm_hidden=lstm_hidden,
+        lstm_layers=lstm_layers,
+        max_layers=max_layers if use_lstm else None,
+        n_constraints=n_constraints if use_lstm else None,
     )
+
+    if verbose and use_lstm:
+        print(f"Using LSTM: {lstm_layers} layer(s), hidden_size={lstm_hidden}")
 
     # Create agent and buffer
     agent = PPOAgent(
@@ -646,6 +747,14 @@ def train(config_path: str, save_dir: str):
     ep_rewards = []
     ep_vals = []
     objectives = list(config.data.optimise_parameters)
+
+    # Annealing tracking
+    lr_init = lr
+    ent_coef_init = ent_coef
+    current_ent_coef = ent_coef
+    total_warmup_episodes = warmup_episodes * len(objectives)
+    warmup_end_episode = 0  # Track when warmup ended for phase-based annealing reset
+    was_warmup = True  # Track warmup state to detect transition
 
     # Training loop
     obs, info = env.reset()
@@ -677,6 +786,7 @@ def train(config_path: str, save_dir: str):
                     ep_rewards.append(reward)
                     ep_vals.append(info["vals"])
                 episodes_collected += 1
+
                 obs, info = env.reset()
                 mask = info["mask"]
             else:
@@ -689,6 +799,37 @@ def train(config_path: str, save_dir: str):
         _, _, _, last_value = agent.act(obs, mask)
         buffer.finalize(last_value, gamma, gae_lambda)
 
+        # Detect warmup -> constrained transition
+        if was_warmup and not env.is_warmup:
+            warmup_end_episode = env.episode_count
+            was_warmup = False
+            if verbose:
+                print(f"  Warmup complete at episode {warmup_end_episode}")
+                print(f"  Resetting LR and entropy decay for constrained phase...")
+
+        # Update LR and entropy with cosine annealing (separate for warmup/constrained phases)
+        if env.is_warmup:
+            # Warmup phase: decay from init to final over warmup episodes
+            progress = min(1.0, env.episode_count / total_warmup_episodes)
+        else:
+            # Constrained phase: reset and decay again over remaining episodes
+            constrained_episodes = env.episode_count - warmup_end_episode
+            progress = min(1.0, constrained_episodes / lr_decay_episodes)
+
+        # Cosine annealing: smooth decay with slower finish
+        import math
+
+        decay_mult = 0.5 * (1 + math.cos(math.pi * progress))
+        current_lr = lr_final + (lr_init - lr_final) * decay_mult
+        current_ent_coef = (
+            ent_coef_final + (ent_coef_init - ent_coef_final) * decay_mult
+        )
+
+        # Update agent LR and entropy
+        for param_group in agent.optimizer.param_groups:
+            param_group["lr"] = current_lr
+        agent.ent_coef = current_ent_coef
+
         # Update policy
         rollout_data = buffer.get()
         ppo_logs = agent.update(rollout_data, n_epochs, batch_size)
@@ -698,8 +839,10 @@ def train(config_path: str, save_dir: str):
             if verbose:
                 n_pareto = len(env.env.pareto_front_rewards)
                 phase = "warmup" if env.is_warmup else "constrained"
+                current_lr_display = agent.optimizer.param_groups[0]["lr"]
                 print(
-                    f"  [{phase}] episode {env.episode_count}/{total_episodes} | step {step_count} | pareto {n_pareto}"
+                    f"  [{phase}] episode {env.episode_count}/{total_episodes} | step {step_count} | "
+                    f"pareto {n_pareto} | ent {current_ent_coef:.4f} | lr {current_lr_display:.2e}"
                 )
 
             if mlflow.active_run():

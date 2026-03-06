@@ -116,7 +116,11 @@ class TruncatedStandardNormal(Distribution):
         p = torch.empty(shape, device=self.a.device).uniform_(
             self._dtype_min_gt_0, self._dtype_max_lt_1
         )
-        return self.icdf(p)
+        # Sample via inverse CDF and clamp to be strictly within bounds
+        # Add small epsilon to avoid boundary values that fail validation
+        eps = torch.finfo(self.a.dtype).eps * 10
+        samples = self.icdf(p)
+        return samples.clamp(self.a + eps, self.b - eps)
 
 
 class TruncatedNormalDist(TruncatedStandardNormal):
@@ -156,6 +160,11 @@ class TruncatedNormalDist(TruncatedStandardNormal):
             super(TruncatedNormalDist, self).log_prob(self._to_std_rv(value))
             - self._log_scale
         )
+
+    def rsample(self, sample_shape=torch.Size()):
+        # Sample from standardized space and transform back
+        std_samples = super(TruncatedNormalDist, self).rsample(sample_shape)
+        return self._from_std_rv(std_samples)
 
     def entropy(
         self,
