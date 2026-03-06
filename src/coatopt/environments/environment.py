@@ -679,6 +679,57 @@ class CoatingEnvironment:
         else:
             return self.pareto_front_rewards.copy()
 
+    def export_pareto_dataframes(self):
+        """Export Pareto front as standardized DataFrames.
+
+        Returns:
+            Tuple of (designs_df, values_df, rewards_df)
+        """
+        import pandas as pd
+
+        if not self.pareto_front_values:
+            # Return empty DataFrames
+            return pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
+
+        design_data = []
+        value_data = []
+        reward_data = []
+
+        for (value_vec, state), (reward_vec, _) in zip(
+            self.pareto_front_values, self.pareto_front_rewards
+        ):
+            # Extract design from state
+            state_array = (
+                state.get_array()
+            )  # One-hot encoded: [thickness, mat_0, mat_1, ..., mat_n]
+            thicknesses = state_array[:, 0]
+            # Decode one-hot encoding: find which column (1+) has value 1.0
+            material_indices = np.argmax(state_array[:, 1:], axis=1).astype(int)
+
+            design_row = {}
+            for j in range(len(thicknesses)):
+                design_row[f"thickness_{j}"] = thicknesses[j]
+                design_row[f"material_{j}"] = material_indices[j]
+
+            # Extract objective values and rewards
+            value_row = {}
+            reward_row = {}
+            for i, param_name in enumerate(self.optimise_parameters):
+                if i < len(value_vec):
+                    value_row[param_name] = value_vec[i]
+                if i < len(reward_vec):
+                    reward_row[param_name] = reward_vec[i]
+
+            design_data.append(design_row)
+            value_data.append(value_row)
+            reward_data.append(reward_row)
+
+        designs_df = pd.DataFrame(design_data)
+        values_df = pd.DataFrame(value_data)
+        rewards_df = pd.DataFrame(reward_data)
+
+        return designs_df, values_df, rewards_df
+
     def compute_hypervolume(
         self, space: str = "reward", ref_point: List[float] = None
     ) -> float:

@@ -3,11 +3,14 @@ import argparse
 import configparser
 import shutil
 import sys
+import time
 import warnings
 from datetime import datetime
 from pathlib import Path
 
 import mlflow
+
+from coatopt.utils.utils import save_training_results
 
 
 def run_experiment(config_path: str):
@@ -33,8 +36,13 @@ def run_experiment(config_path: str):
         "sb3_dqn",
         "sb3_simple",
         "morl",
+        "morl_discrete",
         "nsga2",
-        "hppo",
+        "sac_multiagent",
+        "sac_hybrid",
+        "hppo_multiagent",
+        "hppo_sequential",
+        "hppo_hybrid",
     }
     algorithm = None
     for section in parser.sections():
@@ -100,41 +108,117 @@ def run_experiment(config_path: str):
     print(f"Save directory: {save_dir}")
     print(f"MLflow run: {run_dir_name}")
 
-    #  algorithm-specific training
+    # Algorithm-specific training
+    start_time = time.time()
+
     if algorithm == "sb3_discrete":
         from coatopt.algorithms.train_sb3_discrete import train
 
-        train(config_path=str(config_path), save_dir=str(save_dir))
+        results = train(config_path=str(config_path), save_dir=str(save_dir))
 
     elif algorithm == "nsga2":
         from coatopt.algorithms.train_genetic_simple import train_genetic as train
 
-        train(config_path=str(config_path), save_dir=str(save_dir))
+        results = train(config_path=str(config_path), save_dir=str(save_dir))
 
     elif algorithm == "sb3_dqn":
         from coatopt.algorithms.train_sb3_discrete_dqn import train
 
-        train(config_path=str(config_path), save_dir=str(save_dir))
+        results = train(config_path=str(config_path), save_dir=str(save_dir))
 
     elif algorithm == "sb3_simple":
         from coatopt.algorithms.train_sb3_continuous import train
 
-        train(config_path=str(config_path), save_dir=str(save_dir))
+        results = train(config_path=str(config_path), save_dir=str(save_dir))
 
     elif algorithm == "morl":
         from coatopt.algorithms.train_morl_simple import train
 
-        train(config_path=str(config_path), save_dir=str(save_dir))
+        # Read sub-algorithm from [morl] section (method = pgmorl / morld / moppo)
+        morl_section = "morl" if parser.has_section("morl") else "general"
+        sub_algo = parser.get(morl_section, "method", fallback="morld")
+        results = train(
+            config_path=str(config_path),
+            algorithm=sub_algo,
+            save_dir=str(save_dir),
+        )
 
-    elif algorithm == "hppo":
-        from coatopt.algorithms.train_hppo_simple import train
+    elif algorithm == "morl_discrete":
+        from coatopt.algorithms.train_morl_discrete import train
 
-        train(config_path=str(config_path), save_dir=str(save_dir))
+        sub_algo = parser.get("morl_discrete", "sub_algorithm", fallback="gpipd")
+        results = train(
+            config_path=str(config_path),
+            algorithm=sub_algo,
+            save_dir=str(save_dir),
+        )
+
+    elif algorithm == "sac_multiagent":
+        from coatopt.algorithms.train_sac_multiagent import train
+
+        results = train(config_path=str(config_path), save_dir=str(save_dir))
+
+    elif algorithm == "sac_hybrid":
+        from coatopt.algorithms.train_sac_hybrid import train
+
+        results = train(config_path=str(config_path), save_dir=str(save_dir))
+
+    elif algorithm == "hppo_multiagent":
+        from coatopt.algorithms.train_hppo_multiagent import train
+
+        results = train(config_path=str(config_path), save_dir=str(save_dir))
+
+    elif algorithm == "hppo_sequential":
+        from coatopt.algorithms.train_hppo_sequential import train
+
+        results = train(config_path=str(config_path), save_dir=str(save_dir))
+
+    elif algorithm == "hppo_hybrid":
+        from coatopt.algorithms.train_hppo_hybrid import train
+
+        results = train(config_path=str(config_path), save_dir=str(save_dir))
 
     else:
         raise ValueError(
-            f"Unknown algorithm: {algorithm}. Must be one of: sb3_discrete, sb3_discrete_lstm, sb3_dqn, sb3_simple, morl, nsga2, hppo"
+            f"Unknown algorithm: {algorithm}. Must be one of: sb3_discrete, sb3_discrete_lstm, sb3_dqn, sb3_simple, morl, morl_discrete, nsga2, hppo, sac_multiagent, sac_hybrid, ppo_multiagent, ppo_sequential, hppo_hybrid"
         )
+
+    end_time = time.time()
+
+    # Save all results in a standardized format
+    save_training_results(
+        results=results,
+        save_dir=save_dir,
+        algorithm_name=algorithm,
+        start_time=start_time,
+        end_time=end_time,
+        config_path=str(config_path),
+    )
+
+    # Generate interactive Pareto front visualization (only if results are non-empty)
+    try:
+        from coatopt.utils.plot_interactive_pareto import (
+            create_interactive_plot,
+            load_materials,
+        )
+        from coatopt.utils.utils import load_pareto_front
+
+        materials_path = parser.get("general", "materials_path")
+        materials = load_materials(materials_path)
+        designs_df, values_df, _ = load_pareto_front(save_dir)
+
+        if not values_df.empty:
+            print("\nGenerating interactive Pareto front visualization...")
+            fig = create_interactive_plot(
+                designs_df, values_df, materials, max_designs=10
+            )
+            html_path = save_dir / "pareto_interactive.html"
+            fig.write_html(str(html_path))
+            print(f"Saved interactive visualization to {html_path}")
+        else:
+            print("\nSkipping interactive visualization (empty Pareto front).")
+    except Exception as e:
+        print(f"\nWarning: could not generate interactive visualization: {e}")
 
     mlflow.end_run()
 

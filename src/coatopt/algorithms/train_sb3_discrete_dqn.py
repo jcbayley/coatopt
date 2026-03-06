@@ -1,4 +1,35 @@
 #!/usr/bin/env python3
+"""
+DQN with flattened discrete action space (no action masking in network).
+
+Flat action encoding: action = material_idx * n_thickness_bins + thickness_bin.
+Post-hoc correction for invalid actions (consecutive materials, early air).
+Two-phase training: warmup then constrained cycling.
+
+Config section: [sb3_dqn]
+  total_timesteps          = 100000
+  n_thickness_bins         = 20
+  verbose                  = 1
+  epochs_per_step          = 200
+  steps_per_objective      = 10
+  mask_consecutive_materials = true
+  mask_air_until_min_layers = true
+  min_layers_before_air    = 4
+  constraint_penalty       = 10.0
+  pareto_dominance_bonus   = 0.0
+  learning_rate            = 1e-4
+  buffer_size              = 50000
+  learning_starts          = 300
+  batch_size               = 128
+  gamma                    = 0.99
+  train_freq               = 4
+  gradient_steps           = 1
+  target_update_interval   = 100
+  exploration_fraction     = 0.3
+  exploration_initial_eps  = 1.0
+  exploration_final_eps    = 0.05
+  net_arch                 = [64, 64]
+"""
 import time
 from pathlib import Path
 

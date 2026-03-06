@@ -1,4 +1,32 @@
 #!/usr/bin/env python3
+"""
+MaskablePPO with discrete actions (material + thickness bins) and action masking.
+
+Two-phase training: warmup (per-objective) then constrained cycling with gradual
+constraint tightening. Supports both MLP and LSTM feature extractors. Action masks
+block consecutive materials and early air selection.
+
+Config section: [sb3_discrete]
+  total_timesteps          = 100000
+  n_thickness_bins         = 20
+  verbose                  = 1
+  seed                     = 42
+  mask_consecutive_materials = true
+  mask_air_until_min_layers = true
+  min_layers_before_air    = 4
+  epochs_per_step          = 200            # Episodes per phase
+  steps_per_objective      = 10             # Constraint levels
+  constraint_penalty       = 10.0
+  max_entropy              = 0.2            # Initial entropy coefficient
+  min_entropy              = 0.01           # Final entropy coefficient
+  pareto_dominance_bonus   = 0.0            # Hypervolume improvement bonus
+  adaptive_entropy_to_constraints = false
+  reset_policy_each_phase  = false          # Reset weights at phase transitions
+  # LSTM feature extractor (if pre_network=lstm):
+  lstm_hidden_size         = 128
+  lstm_num_layers          = 2
+  lstm_features_dim        = 128
+"""
 import configparser
 import random
 import shutil
@@ -21,13 +49,13 @@ from coatopt.environments.environment import CoatingEnvironment
 from coatopt.environments.state import CoatingState
 from coatopt.utils.callbacks import (
     EntropyAnnealingCallback,
+    MLflowLoggingCallback,
     PlottingCallback,
     PolicyResetCallback,
 )
 from coatopt.utils.configs import Config, DataConfig, TrainingConfig, load_config
-from coatopt.utils.metrics import save_pareto_to_csv
 from coatopt.utils.plotting import plot_coating_stack_from_state_array
-from coatopt.utils.utils import evaluate_model, load_materials, save_run_metadata
+from coatopt.utils.utils import evaluate_model, load_materials
 
 
 class CoatOptDiscreteGymWrapper(gym.Env):
@@ -557,6 +585,7 @@ def train(config_path: str, save_dir: str = None):
     reset_policy_each_phase = parser.getboolean(
         section, "reset_policy_each_phase", fallback=False
     )
+    mlflow_log_freq = parser.getint("general", "mlflow_log_freq", fallback=1)
 
     # [Data] section
     n_layers = parser.getint("data", "n_layers")
@@ -668,7 +697,9 @@ def train(config_path: str, save_dir: str = None):
         adaptive_to_constraints=adaptive_entropy_to_constraints,
         constraint_window=50,  # Track last 50 episodes
     )
-
+    mlflow_log_callback = MLflowLoggingCallback(
+        log_freq=mlflow_log_freq, verbose=verbose
+    )
     print(f"\nStarting training for {total_timesteps} timesteps...")
     # Combine callbacks
     callbacks = [
@@ -677,6 +708,18 @@ def train(config_path: str, save_dir: str = None):
     if reset_policy_each_phase:
         print("Policy reset enabled: weights will be reset at each phase transition")
         callbacks.append(PolicyResetCallback(verbose=verbose))
+    if not config.general.disable_mlflow:
+        # Log Pareto to MLflow less frequently to reduce overhead
+        pareto_mlflow_freq = mlflow_log_freq * 10  # 10x less frequent than metrics
+        callbacks.append(
+            MLflowLoggingCallback(
+                log_freq=mlflow_log_freq,
+                verbose=verbose,
+                save_dir=str(save_dir),
+                pareto_mlflow_freq=pareto_mlflow_freq,
+                materials=materials,
+            )
+        )
 
     # Start timing
     start_time = time.time()
@@ -690,54 +733,25 @@ def train(config_path: str, save_dir: str = None):
     print("\nRunning final evaluation..")
     evaluate_model(model, env, n_episodes=10, use_action_masks=True)
 
-    # Save Pareto front to CSV
-    print("\nSaving Pareto front...")
-    pareto_csv = save_dir / "pareto_front.csv"
-    save_pareto_to_csv(env, str(pareto_csv))
+    # Export Pareto front from environment
+    print("\nExporting Pareto front...")
+    # Unwrap to get base environment
+    base_env = env.env if hasattr(env, "env") else env
+    designs_df, values_df, rewards_df = base_env.export_pareto_dataframes()
 
-    # Log Pareto front to MLflow
-    if not config.general.disable_mlflow and mlflow.active_run():
-        print("Logging Pareto front to MLflow.....")
-
-        # Log the CSV as artifact
-        mlflow.log_artifact(str(pareto_csv))
-
-        pareto_df = pd.read_csv(pareto_csv)
-        mlflow.log_table(pareto_df, artifact_file="pareto_front_table.json")
-
-        # Log summary metrics (for easy comparison)
-        mlflow.log_metric("final_pareto_size", len(pareto_df))
-        if len(pareto_df) > 0:
-            for obj in config.data.optimise_parameters:
-                if obj in pareto_df.columns:
-                    mlflow.log_metric(f"pareto_best_{obj}", pareto_df[obj].max())
-                    mlflow.log_metric(f"pareto_worst_{obj}", pareto_df[obj].min())
-
-        # Log Pareto plots
-        for plot_file in save_dir.glob("pareto*.png"):
-            mlflow.log_artifact(str(plot_file))
-
-    # Save run metadata
-    import pandas as pd
-
-    pareto_df = pd.read_csv(save_dir / "pareto_front_values.csv")
-    save_run_metadata(
-        save_dir=save_dir,
-        algorithm_name="SB3_Discrete_MaskablePPO",
-        start_time=start_time,
-        end_time=end_time,
-        pareto_front_size=len(pareto_df),
-        total_episodes=None,
-        config_path=config_path,
-        additional_info={
+    # Return standardized results
+    return {
+        "pareto_designs": designs_df,
+        "pareto_values": values_df,
+        "pareto_rewards": rewards_df,
+        "model": model,
+        "metadata": {
             "total_timesteps": total_timesteps,
             "n_thickness_bins": n_thickness_bins,
             "constraint_schedule": constraint_schedule,
             "seed": seed,
         },
-    )
-
-    return model
+    }
 
 
 if __name__ == "__main__":
