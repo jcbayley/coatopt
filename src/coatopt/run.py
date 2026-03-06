@@ -13,7 +13,9 @@ import mlflow
 from coatopt.utils.utils import save_training_results
 
 
-def run_experiment(config_path: str, run_name_override: str = None):
+def run_experiment(
+    config_path: str, run_name_override: str = None, generate_comparison: bool = False
+):
     """Run experiment based on config file.
 
     Handles all MLflow setup, directory creation, and dispatches to algorithm-specific training.
@@ -21,6 +23,7 @@ def run_experiment(config_path: str, run_name_override: str = None):
     Args:
         config_path: Path to INI configuration file
         run_name_override: Optional run name to override config value
+        generate_comparison: Whether to run comparison after training
     """
     config_path = Path(config_path)
     if not config_path.exists():
@@ -225,6 +228,29 @@ def run_experiment(config_path: str, run_name_override: str = None):
     except Exception as e:
         print(f"\nWarning: could not generate interactive visualization: {e}")
 
+    # Run comparison across all runs in this experiment if requested
+    if generate_comparison:
+        import subprocess
+
+        print("\nRunning comparison across all runs in experiment...")
+        alldirs = Path(base_save_dir) / experiment_name
+        compare_cmd = [
+            "python",
+            "-m",
+            "coatopt.compare_outputs",
+            "--alldirs",
+            str(alldirs),
+            "--add-reference",
+            "--config",
+            str(config_path),
+            "--top-n",
+            "5",
+            "--reference-layers",
+            str(n_layers),
+        ]
+        subprocess.run(compare_cmd, check=True)
+        print("Comparison complete.")
+
     mlflow.end_run()
 
 
@@ -245,6 +271,15 @@ if __name__ == "__main__":
         default=None,
         help="Override run name from config file (useful for parallel runs)",
     )
+    parser.add_argument(
+        "--generate-comparison",
+        action="store_true",
+        help="Run comparison across all runs in experiment after training",
+    )
 
     args = parser.parse_args()
-    run_experiment(args.config, run_name_override=args.run_name)
+    run_experiment(
+        args.config,
+        run_name_override=args.run_name,
+        generate_comparison=args.generate_comparison,
+    )

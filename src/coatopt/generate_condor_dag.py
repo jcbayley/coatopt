@@ -46,6 +46,12 @@ def generate_submit_file(
     config_absolute = Path(config_file_path).resolve()
     materials_absolute = Path(materials_file).resolve()
 
+    # Check if comparison should be generated
+    generate_comparison = config.getboolean(
+        "condor", "generate_comparison", fallback=False
+    )
+    comparison_flag = " --generate-comparison" if generate_comparison else ""
+
     # Resource requirements
     request_cpus = config.get("condor", "request_cpus", fallback="1")
     request_memory = config.get("condor", "request_memory", fallback="4GB")
@@ -63,7 +69,7 @@ executable = {uv_executable}
 
 # Arguments - run_id will be set by DAG and appended to base run name
 # Use basename for config file since it will be transferred to scratch dir
-arguments = --project {project_path} run python -m coatopt.run --config {config_basename} --run-name {base_run_name}_$(run_id)
+arguments = --project {project_path} run python -m coatopt.run --config {config_basename} --run-name {base_run_name}_$(run_id){comparison_flag}
 
 # Output files - $(run_id) is substituted by DAG
 output = logs/job_$(run_id).out
