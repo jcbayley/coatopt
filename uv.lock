@@ -455,7 +455,6 @@ dependencies = [
     { name = "optuna-integration", extra = ["mlflow"] },
     { name = "pandas" },
     { name = "plotly" },
-    { name = "pycddlib" },
     { name = "pymoo" },
     { name = "sb3-contrib" },
     { name = "scipy", version = "1.13.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.10'" },
@@ -479,6 +478,9 @@ dev = [
     { name = "pytest-cov" },
     { name = "pytest-mock" },
     { name = "tox" },
+]
+gpipd = [
+    { name = "pycddlib" },
 ]
 
 [package.dev-dependencies]
@@ -504,7 +506,7 @@ requires-dist = [
     { name = "pandas", specifier = ">=1.3.0" },
     { name = "plotly", specifier = ">=6.5.2" },
     { name = "pre-commit", marker = "extra == 'dev'" },
-    { name = "pycddlib", specifier = "==2.1.6" },
+    { name = "pycddlib", marker = "extra == 'gpipd'", specifier = "==2.1.6" },
     { name = "pymoo", specifier = ">=0.6.0" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=7.0.0" },
     { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=4.0.0" },
@@ -517,7 +519,7 @@ requires-dist = [
     { name = "torchrl", specifier = ">=0.10.1" },
     { name = "tox", marker = "extra == 'dev'" },
 ]
-provides-extras = ["dev"]
+provides-extras = ["dev", "gpipd"]
 
 [package.metadata.requires-dev]
 dev = [
