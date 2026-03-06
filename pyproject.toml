@@ -24,7 +24,6 @@ dependencies = [
     "optuna>=4.7.0",
     "optuna-integration[mlflow]>=4.7.0",
     "plotly>=6.5.2",
-    "pycddlib==2.1.6",
     "torchrl>=0.10.1",
 ]
 
@@ -45,6 +44,9 @@ dev = [
     "pytest>=7.0.0",
     "pytest-cov>=4.0.0",
     "pytest-mock>=3.10.0"
+]
+gpipd = [
+    "pycddlib==2.1.6"
 ]
 
 [build-system]
