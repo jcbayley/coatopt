@@ -38,6 +38,14 @@ def generate_submit_file(
     # Get base run name to append run_id to
     base_run_name = config.get("general", "run_name", fallback="")
 
+    # Get basenames for transferred files (they'll be in job's scratch dir)
+    config_basename = Path(config_file_path).name
+    materials_basename = Path(materials_file).name
+
+    # Convert to absolute paths for transfer_input_files (relative to where script is run)
+    config_absolute = Path(config_file_path).resolve()
+    materials_absolute = Path(materials_file).resolve()
+
     # Resource requirements
     request_cpus = config.get("condor", "request_cpus", fallback="1")
     request_memory = config.get("condor", "request_memory", fallback="4GB")
@@ -54,7 +62,8 @@ universe = vanilla
 executable = {uv_executable}
 
 # Arguments - run_id will be set by DAG and appended to base run name
-arguments = --project {project_path} run python -m coatopt.run --config {config_file_path} --run-name {base_run_name}_$(run_id)
+# Use basename for config file since it will be transferred to scratch dir
+arguments = --project {project_path} run python -m coatopt.run --config {config_basename} --run-name {base_run_name}_$(run_id)
 
 # Output files - $(run_id) is substituted by DAG
 output = logs/job_$(run_id).out
@@ -68,7 +77,7 @@ request_disk = {request_disk}
 
 # File transfer
 should_transfer_files = {'YES' if use_file_transfer else 'IF_NEEDED'}
-transfer_input_files = {config_file_path}, {materials_file}
+transfer_input_files = {config_absolute}, {materials_absolute}
 {'transfer_output_files = ' + results_dir if use_file_transfer else '# Results written directly to ' + results_dir}
 {'when_to_transfer_output = ON_EXIT' if use_file_transfer else ''}
 
