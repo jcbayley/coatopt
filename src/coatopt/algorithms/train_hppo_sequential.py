@@ -207,7 +207,8 @@ class CoatOptHybridEnv(gym.Env):
         done = terminated or finished
 
         # Use reward from base environment (already has target objective and constraints applied)
-        reward = total_reward if done else 0.0
+        # The environment handles intermediate rewards via use_intermediate_reward flag
+        reward = total_reward
 
         obs = self._get_obs(state)
         info = {"mask": self.get_action_mask()}
