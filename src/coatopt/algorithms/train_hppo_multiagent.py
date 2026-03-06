@@ -13,6 +13,7 @@ Config section: [hppo_multiagent]
   lr                    = 3e-4
   lr_final              = 3e-4        # Final LR (same = no decay)
   lr_decay_episodes     = 10000       # Decay over this many episodes
+  restart_decay_on_phase = false      # Restart LR/entropy decay each constraint phase (like warm restarts)
   gamma                 = 0.99
   gae_lambda            = 0.95
   clip_range            = 0.2
@@ -580,6 +581,7 @@ class MultiAgentPPO:
         lr: float = 3e-4,
         lr_final: float = None,
         lr_decay_episodes: int = 10000,
+        restart_decay_on_phase: bool = False,
         gamma: float = 0.99,
         gae_lambda: float = 0.95,
         clip_range: float = 0.2,
@@ -613,6 +615,7 @@ class MultiAgentPPO:
         self.lr_init = lr
         self.lr_final = lr_final if lr_final is not None else lr
         self.lr_decay_episodes = lr_decay_episodes
+        self.restart_decay_on_phase = restart_decay_on_phase
         self.ent_coef_init = ent_coef
         self.ent_coef_final = ent_coef_final if ent_coef_final is not None else ent_coef
         self.ent_decay_episodes = ent_decay_episodes
@@ -903,9 +906,19 @@ class MultiAgentPPO:
                 )
                 progress = min(1.0, self.episode_count / warmup_eps_total)
             else:
-                # Constrained phase: reset and decay again over remaining episodes
+                # Constrained phase: decay over remaining episodes
                 constrained_episodes = self.episode_count - self._warmup_end_episode
-                progress = min(1.0, constrained_episodes / self.lr_decay_episodes)
+                if self.restart_decay_on_phase:
+                    # Restart decay every lr_decay_episodes (like cosine annealing with warm restarts)
+                    episode_in_current_phase = (
+                        (constrained_episodes - 1) % self.lr_decay_episodes
+                    ) + 1
+                    progress = min(
+                        1.0, episode_in_current_phase / self.lr_decay_episodes
+                    )
+                else:
+                    # Decay once over entire constrained phase
+                    progress = min(1.0, constrained_episodes / self.lr_decay_episodes)
 
             # Cosine annealing: smooth decay with slower finish
             decay_mult = 0.5 * (1 + math.cos(math.pi * progress))
@@ -1024,6 +1037,9 @@ def train(config_path: str, save_dir: str = None) -> dict:
     lr = _get("lr", 3e-4, float)
     lr_final = _get("lr_final", lr, float)
     lr_decay_episodes = _get("lr_decay_episodes", total_episodes, int)
+    restart_decay_on_phase = _get(
+        "restart_decay_on_phase", False, lambda x: x.lower() == "true"
+    )
     gamma = _get("gamma", 0.99, float)
     gae_lambda = _get("gae_lambda", 0.95, float)
     clip_range = _get("clip_range", 0.2, float)
@@ -1077,6 +1093,7 @@ def train(config_path: str, save_dir: str = None) -> dict:
         lr=lr,
         lr_final=lr_final,
         lr_decay_episodes=lr_decay_episodes,
+        restart_decay_on_phase=restart_decay_on_phase,
         gamma=gamma,
         gae_lambda=gae_lambda,
         clip_range=clip_range,
