@@ -659,9 +659,12 @@ def train(config_path: str, save_dir: str):
     hidden_str = _get("hidden", "[256, 256]")
     hidden = eval(hidden_str)
 
-    # Set seeds
+    # Set seeds for reproducibility
     np.random.seed(seed)
     torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed(seed)
+        torch.cuda.manual_seed_all(seed)
 
     # Log hyperparameters
     mlflow.log_params(
@@ -809,8 +812,12 @@ def train(config_path: str, save_dir: str):
 
         # Update LR and entropy with cosine annealing (separate for warmup/constrained phases)
         if env.is_warmup:
-            # Warmup phase: decay from init to final over warmup episodes
-            progress = min(1.0, env.episode_count / total_warmup_episodes)
+            # Warmup phase: reset decay for EACH objective
+            # Calculate progress within current objective's warmup phase
+            episode_in_current_objective = (
+                (env.episode_count - 1) % warmup_episodes
+            ) + 1
+            progress = min(1.0, episode_in_current_objective / warmup_episodes)
         else:
             # Constrained phase: reset and decay again over remaining episodes
             constrained_episodes = env.episode_count - warmup_end_episode

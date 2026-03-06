@@ -13,13 +13,14 @@ import mlflow
 from coatopt.utils.utils import save_training_results
 
 
-def run_experiment(config_path: str):
+def run_experiment(config_path: str, run_name_override: str = None):
     """Run experiment based on config file.
 
     Handles all MLflow setup, directory creation, and dispatches to algorithm-specific training.
 
     Args:
         config_path: Path to INI configuration file
+        run_name_override: Optional run name to override config value
     """
     config_path = Path(config_path)
     if not config_path.exists():
@@ -59,7 +60,11 @@ def run_experiment(config_path: str):
 
     # [General] section
     base_save_dir = parser.get("general", "save_dir")
-    run_name = parser.get("general", "run_name", fallback="")
+    run_name = (
+        run_name_override
+        if run_name_override
+        else parser.get("general", "run_name", fallback="")
+    )
 
     # Get or generate experiment name (problem definition)
     experiment_name = parser.get("general", "experiment_name", fallback=None)
@@ -234,6 +239,12 @@ if __name__ == "__main__":
         required=True,
         help="Path to experiment config file",
     )
+    parser.add_argument(
+        "--run-name",
+        type=str,
+        default=None,
+        help="Override run name from config file (useful for parallel runs)",
+    )
 
     args = parser.parse_args()
-    run_experiment(args.config)
+    run_experiment(args.config, run_name_override=args.run_name)
