@@ -19,6 +19,7 @@ Config section: [hppo_sequential]
   lr                       = 3e-4
   lr_final                 = 3e-5           # Final LR (annealing target)
   lr_decay_episodes        = 10000          # Anneal over this many episodes per phase
+  restart_decay_on_phase   = false          # Restart LR/entropy decay each constraint phase (like warm restarts)
   gamma                    = 0.99
   gae_lambda               = 0.95
   clip_range               = 0.2
@@ -633,6 +634,9 @@ def train(config_path: str, save_dir: str):
     lr = _get("lr", 3e-4, float)
     lr_final = _get("lr_final", lr, float)
     lr_decay_episodes = _get("lr_decay_episodes", total_episodes, int)
+    restart_decay_on_phase = _get(
+        "restart_decay_on_phase", False, lambda x: x.lower() == "true"
+    )
     gamma = _get("gamma", 0.99, float)
     gae_lambda = _get("gae_lambda", 0.95, float)
     clip_range = _get("clip_range", 0.2, float)
@@ -730,8 +734,13 @@ def train(config_path: str, save_dir: str):
         n_constraints=n_constraints if use_lstm else None,
     )
 
-    if verbose and use_lstm:
-        print(f"Using LSTM: {lstm_layers} layer(s), hidden_size={lstm_hidden}")
+    if verbose:
+        if use_lstm:
+            print(f"Using LSTM: {lstm_layers} layer(s), hidden_size={lstm_hidden}")
+        if restart_decay_on_phase:
+            print(
+                f"LR/entropy decay will restart every {lr_decay_episodes} episodes (warm restarts enabled)"
+            )
 
     # Create agent and buffer
     agent = PPOAgent(
@@ -819,9 +828,18 @@ def train(config_path: str, save_dir: str):
             ) + 1
             progress = min(1.0, episode_in_current_objective / warmup_episodes)
         else:
-            # Constrained phase: reset and decay again over remaining episodes
+            # Constrained phase: decay over remaining episodes
             constrained_episodes = env.episode_count - warmup_end_episode
-            progress = min(1.0, constrained_episodes / lr_decay_episodes)
+            if restart_decay_on_phase:
+                # Restart decay every lr_decay_episodes (like cosine annealing with warm restarts)
+                # Each constraint phase can get a fresh decay cycle
+                episode_in_current_phase = (
+                    (constrained_episodes - 1) % lr_decay_episodes
+                ) + 1
+                progress = min(1.0, episode_in_current_phase / lr_decay_episodes)
+            else:
+                # Decay once over entire constrained phase
+                progress = min(1.0, constrained_episodes / lr_decay_episodes)
 
         # Cosine annealing: smooth decay with slower finish
         import math
