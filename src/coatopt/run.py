@@ -14,7 +14,10 @@ from coatopt.utils.utils import save_training_results
 
 
 def run_experiment(
-    config_path: str, run_name_override: str = None, generate_comparison: bool = False
+    config_path: str,
+    run_name_override: str = None,
+    generate_comparison: bool = False,
+    seed_override: int = None,
 ):
     """Run experiment based on config file.
 
@@ -24,6 +27,7 @@ def run_experiment(
         config_path: Path to INI configuration file
         run_name_override: Optional run name to override config value
         generate_comparison: Whether to run comparison after training
+        seed_override: Optional seed to override config value
     """
     config_path = Path(config_path)
     if not config_path.exists():
@@ -58,6 +62,11 @@ def run_experiment(
         raise ValueError(
             f"Config must have one of these algorithm sections: {algorithm_sections}"
         )
+
+    # Override seed if provided
+    if seed_override is not None:
+        parser.set(algorithm, "seed", str(seed_override))
+        print(f"Overriding seed to: {seed_override}")
 
     print(f"Running algorithm: {algorithm}")
 
@@ -276,10 +285,17 @@ if __name__ == "__main__":
         action="store_true",
         help="Run comparison across all runs in experiment after training",
     )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=None,
+        help="Override random seed from config file (useful for parallel runs)",
+    )
 
     args = parser.parse_args()
     run_experiment(
         args.config,
         run_name_override=args.run_name,
         generate_comparison=args.generate_comparison,
+        seed_override=args.seed,
     )
