@@ -25,12 +25,14 @@ from pathlib import Path
 
 
 def generate_submit_file(
-    config: configparser.ConfigParser, config_file_path: str, output_dir: Path
+    config: configparser.ConfigParser,
+    config_file_path: str,
+    materials_file_path: str,
+    output_dir: Path,
 ) -> Path:
     """Generate HTCondor submit file with variable substitution."""
 
     # Get config values
-    materials_file = config.get("condor", "materials_file")
     project_path = config.get("condor", "project_path")
     results_dir = config.get("condor", "results_dir", fallback="runs/")
     uv_executable = config.get("condor", "uv_executable", fallback="/usr/bin/uv")
@@ -40,11 +42,11 @@ def generate_submit_file(
 
     # Get basenames for transferred files (they'll be in job's scratch dir)
     config_basename = Path(config_file_path).name
-    materials_basename = Path(materials_file).name
+    materials_basename = Path(materials_file_path).name
 
-    # Convert to absolute paths for transfer_input_files (relative to where script is run)
+    # Convert to absolute paths for transfer_input_files
     config_absolute = Path(config_file_path).resolve()
-    materials_absolute = Path(materials_file).resolve()
+    materials_absolute = Path(materials_file_path).resolve()
 
     # Check if comparison should be generated
     generate_comparison = config.getboolean(
@@ -157,14 +159,39 @@ def main():
     else:
         output_dir = Path(config.get("condor", "output_dir", fallback="condor_runs"))
 
+    # Check if output directory already exists
+    if output_dir.exists():
+        print(f"\nWARNING: Output directory already exists: {output_dir}")
+        print("This may overwrite existing submit/DAG files.")
+        response = input("Continue? [y/N]: ")
+        if response.lower() != "y":
+            print("Aborted.")
+            return
+
     output_dir.mkdir(parents=True, exist_ok=True)
 
     # Create logs directory
     logs_dir = output_dir / "logs"
     logs_dir.mkdir(exist_ok=True)
 
+    # Copy config and materials files to output directory to freeze them for this DAG
+    import shutil
+
+    config_source = Path(args.config).resolve()
+    config_copy = output_dir / config_source.name
+    shutil.copy(config_source, config_copy)
+    print(f"Copied config to: {config_copy}")
+
+    materials_file = config.get("condor", "materials_file")
+    materials_source = Path(materials_file).resolve()
+    materials_copy = output_dir / materials_source.name
+    shutil.copy(materials_source, materials_copy)
+    print(f"Copied materials to: {materials_copy}")
+
     # Generate files
-    submit_file = generate_submit_file(config, args.config, output_dir)
+    submit_file = generate_submit_file(
+        config, str(config_copy), str(materials_copy), output_dir
+    )
     dag_file = generate_dag_file(config, output_dir, submit_file)
 
     print(f"\n✓ Files generated successfully in {output_dir}/")
