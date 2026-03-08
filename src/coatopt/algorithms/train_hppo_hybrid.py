@@ -898,7 +898,10 @@ class HybridMultiAgentPPO:
 
         if not self.warmup_done:
             # Warmup: cycle through objectives
-            obj_idx = (agent_ep // self.warmup_episodes_per_obj) % self.n_objectives
+            # Offset by agent_idx so each agent starts with different objective
+            obj_idx = (
+                (agent_ep // self.warmup_episodes_per_obj) + agent_idx
+            ) % self.n_objectives
             target = self.objectives[obj_idx]
             constraints = {}
             self.envs[agent_idx].base_env.is_warmup = True
