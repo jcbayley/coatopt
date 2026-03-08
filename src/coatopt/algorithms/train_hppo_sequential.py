@@ -349,9 +349,10 @@ class HybridActorCritic(nn.Module):
         # Discrete head (material)
         self.material_head = nn.Linear(prev_dim, n_materials)
 
-        # Continuous head (thickness) - outputs mean and log_std
-        self.thickness_mean = nn.Linear(prev_dim, 1)
-        self.thickness_logstd = nn.Linear(prev_dim, 1)
+        # Continuous head (thickness) - conditioned on material choice
+        # Takes concatenated features + one-hot material
+        self.thickness_mean = nn.Linear(prev_dim + n_materials, 1)
+        self.thickness_logstd = nn.Linear(prev_dim + n_materials, 1)
 
         # Value head
         self.value_head = nn.Linear(prev_dim, 1)
@@ -399,12 +400,18 @@ class HybridActorCritic(nn.Module):
             material = dist_d.sample()
         log_prob_d = dist_d.log_prob(material)
 
-        # Continuous thickness (TruncatedNormal)
-        mean_raw = self.thickness_mean(features).squeeze(-1)
+        # Continuous thickness (TruncatedNormal) - conditioned on material
+        # Concatenate features with one-hot encoded material
+        material_onehot = torch.nn.functional.one_hot(
+            material, num_classes=self.n_materials
+        ).float()
+        thickness_input = torch.cat([features, material_onehot], dim=-1)
+
+        mean_raw = self.thickness_mean(thickness_input).squeeze(-1)
         # Use sigmoid to softly constrain mean to valid range
         mean = self.min_t + (self.max_t - self.min_t) * torch.sigmoid(mean_raw)
 
-        log_std = self.thickness_logstd(features).squeeze(-1)
+        log_std = self.thickness_logstd(thickness_input).squeeze(-1)
         log_std = torch.clamp(log_std, -4, 0)  # Clamp log_std
         std = torch.exp(log_std)
 
@@ -459,12 +466,18 @@ class HybridActorCritic(nn.Module):
         log_prob_d = dist_d.log_prob(materials)
         entropy_d = dist_d.entropy()
 
-        # Continuous
-        mean_raw = self.thickness_mean(features).squeeze(-1)
+        # Continuous - conditioned on material
+        # Concatenate features with one-hot encoded material
+        material_onehot = torch.nn.functional.one_hot(
+            materials, num_classes=self.n_materials
+        ).float()
+        thickness_input = torch.cat([features, material_onehot], dim=-1)
+
+        mean_raw = self.thickness_mean(thickness_input).squeeze(-1)
         # Use sigmoid to softly constrain mean to valid range
         mean = self.min_t + (self.max_t - self.min_t) * torch.sigmoid(mean_raw)
 
-        log_std = self.thickness_logstd(features).squeeze(-1)
+        log_std = self.thickness_logstd(thickness_input).squeeze(-1)
         log_std = torch.clamp(log_std, -4, 0)
         std = torch.exp(log_std)
 
