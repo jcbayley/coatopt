@@ -16,6 +16,7 @@ Config section: [hppo_sequential]
   batch_size               = 64
   constraint_penalty       = 3.0
   pareto_bonus             = 0.0            # Hypervolume improvement bonus
+  bc_weight                = 0.1            # Behavior cloning weight from Pareto episodes (0.0 = disabled)
   lr                       = 3e-4
   lr_final                 = 3e-5           # Final LR (annealing target)
   lr_decay_episodes        = 10000          # Anneal over this many episodes per phase
@@ -192,14 +193,15 @@ class CoatOptHybridEnv(gym.Env):
         info = {"mask": self.get_action_mask()}
         return obs, info
 
-    def step(self, action):
+    def step(self, action, **kwargs):
         """Execute action (dict with material and thickness)."""
         material_idx = int(action["material"])
         thickness = float(action["thickness"][0])
 
         # CoatingEnvironment.step returns: state, rewards, terminated, finished, total_reward, full_action, vals
+        # Pass through any kwargs (e.g., episode_data for Pareto tracking)
         state, rewards, terminated, finished, total_reward, full_action, vals = (
-            self.env.step([material_idx, thickness])
+            self.env.step([material_idx, thickness], **kwargs)
         )
         self.prev_material = material_idx
         self.current_layer += 1
@@ -500,6 +502,81 @@ class HybridActorCritic(nn.Module):
         return log_prob, value, entropy
 
 
+def compute_bc_loss_from_pareto(
+    policy, pareto_episodes, env_wrapper, bc_weight=0.1, batch_size=32
+):
+    """Compute behavior cloning loss from Pareto front episodes stored in environment."""
+    if not pareto_episodes or len(pareto_episodes) == 0:
+        return 0.0
+
+    # Filter out None episodes
+    valid_episodes = [ep for ep in pareto_episodes if ep is not None]
+    if not valid_episodes:
+        return 0.0
+
+    # Sample transitions from Pareto episodes
+    transitions = []
+    for episode in valid_episodes:
+        if (
+            episode.get("states")
+            and episode.get("discrete_actions")
+            and episode.get("continuous_actions")
+        ):
+            for i in range(len(episode["states"])):
+                transitions.append(
+                    {
+                        "state": episode["states"][i],
+                        "material": episode["discrete_actions"][i],
+                        "thickness": episode["continuous_actions"][i],
+                    }
+                )
+
+    if not transitions:
+        return 0.0
+
+    # Sample batch
+    n_samples = min(batch_size, len(transitions))
+    import random
+
+    sampled = random.sample(transitions, n_samples)
+
+    # Prepare batch tensors
+    obs_list = []
+    mat_list = []
+    thick_list = []
+    mask_list = []
+
+    for trans in sampled:
+        state = trans["state"]
+        # Get observation using wrapper's method (includes constraints)
+        if hasattr(env_wrapper, "_get_obs"):
+            obs = env_wrapper._get_obs(state)
+        elif hasattr(state, "get_observation_tensor"):
+            obs = state.get_observation_tensor(pre_type="lstm").numpy().flatten()
+        else:
+            obs = state
+        obs_list.append(obs)
+
+        # Actions
+        mat = trans["material"]
+        thick = trans["thickness"]
+        mat_list.append(mat.item() if torch.is_tensor(mat) else mat)
+        thick_list.append(thick.item() if torch.is_tensor(thick) else thick)
+        mask_list.append(np.ones(policy.n_materials))  # Default mask
+
+    # Convert to tensors
+    obs_t = torch.FloatTensor(np.array(obs_list))
+    mat_t = torch.LongTensor(mat_list)
+    thick_t = torch.FloatTensor(thick_list)
+    mask_t = torch.FloatTensor(np.array(mask_list))
+
+    # Compute log probs from policy
+    log_probs, _, _ = policy.evaluate_actions(obs_t, mask_t, mat_t, thick_t)
+    bc_loss = -log_probs.mean()  # Negative log likelihood
+
+    return bc_weight * bc_loss
+
+
 class PPOAgent:
     """PPO agent with hybrid actions."""
 
@@ -536,8 +613,16 @@ class PPOAgent:
                 value.item(),
             )
 
-    def update(self, rollout_data: dict, n_epochs: int, batch_size: int):
-        """PPO update using rollout data."""
+    def update(
+        self,
+        rollout_data: dict,
+        n_epochs: int,
+        batch_size: int,
+        pareto_episodes=None,
+        bc_weight=0.1,
+        env_wrapper=None,
+    ):
+        """PPO update using rollout data with optional BC loss from Pareto episodes."""
         obs = rollout_data["observations"]
         materials = rollout_data["materials"]
         thicknesses = rollout_data["thicknesses"]
@@ -550,7 +635,13 @@ class PPOAgent:
         advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
 
         n_samples = len(obs)
-        logs = {"policy_loss": 0.0, "value_loss": 0.0, "entropy": 0.0, "clip_frac": 0.0}
+        logs = {
+            "policy_loss": 0.0,
+            "value_loss": 0.0,
+            "entropy": 0.0,
+            "clip_frac": 0.0,
+            "bc_loss": 0.0,
+        }
         n_updates = 0
 
         for epoch in range(n_epochs):
@@ -582,11 +673,29 @@ class PPOAgent:
                 # Value loss
                 value_loss = ((values - returns[batch_idx]) ** 2).mean()
 
+                # BC loss from Pareto episodes (if available)
+                bc_loss = 0.0
+                if (
+                    pareto_episodes is not None
+                    and bc_weight > 0
+                    and env_wrapper is not None
+                ):
+                    bc_loss = compute_bc_loss_from_pareto(
+                        self.policy,
+                        pareto_episodes,
+                        env_wrapper,
+                        bc_weight,
+                        batch_size=32,
+                    )
+                    if torch.is_tensor(bc_loss):
+                        logs["bc_loss"] += bc_loss.item()
+
                 # Total loss
                 loss = (
                     policy_loss
                     + self.vf_coef * value_loss
                     - self.ent_coef * entropy.mean()
+                    + (bc_loss if torch.is_tensor(bc_loss) else 0.0)
                 )
 
                 self.optimizer.zero_grad()
@@ -645,6 +754,7 @@ def train(config_path: str, save_dir: str):
     batch_size = _get("batch_size", 64, int)
     constraint_penalty = _get("constraint_penalty", 3.0, float)
     pareto_bonus = _get("pareto_bonus", 0.0, float)
+    bc_weight = _get("bc_weight", 0.0, float)
     lr = _get("lr", 3e-4, float)
     lr_final = _get("lr_final", lr, float)
     lr_decay_episodes = _get("lr_decay_episodes", total_episodes, int)
@@ -696,6 +806,7 @@ def train(config_path: str, save_dir: str):
             "batch_size": batch_size,
             "constraint_penalty": constraint_penalty,
             "pareto_bonus": pareto_bonus,
+            "bc_weight": bc_weight,
             "lr": lr,
             "gamma": gamma,
             "gae_lambda": gae_lambda,
@@ -755,6 +866,8 @@ def train(config_path: str, save_dir: str):
             print(
                 f"LR/entropy decay will restart every {lr_decay_episodes} episodes (warm restarts enabled)"
             )
+        if bc_weight > 0:
+            print(f"Behavior cloning from Pareto episodes enabled: weight={bc_weight}")
 
     # Create agent and buffer
     agent = PPOAgent(
@@ -796,30 +909,57 @@ def train(config_path: str, save_dir: str):
         episodes_collected = 0
 
         while episodes_collected < episodes_per_update:
-            material, thickness, log_prob, value = agent.act(obs, mask)
-            action = {
-                "material": material,
-                "thickness": np.array([thickness], dtype=np.float32),
-            }
+            # Track episode data for Pareto BC loss (only if enabled)
+            if bc_weight > 0:
+                episode_states = []
+                episode_materials = []
+                episode_thicknesses = []
 
-            next_obs, reward, done, _, info = env.step(action)
-            next_mask = info["mask"]
+            # Collect single episode
+            episode_done = False
+            while not episode_done:
+                material, thickness, log_prob, value = agent.act(obs, mask)
+                action = {
+                    "material": material,
+                    "thickness": np.array([thickness], dtype=np.float32),
+                }
 
-            buffer.add(obs, material, thickness, reward, value, log_prob, done, mask)
+                # Track trajectory if BC loss enabled
+                if bc_weight > 0:
+                    episode_states.append(env.env.current_state.copy())
+                    episode_materials.append(torch.tensor(material))
+                    episode_thicknesses.append(torch.tensor(thickness))
 
-            if done:
-                if "vals" in info:
-                    ep_rewards.append(reward)
-                    ep_vals.append(info["vals"])
-                episodes_collected += 1
+                # Step environment (pass episode data on every step, used only when done=True)
+                step_kwargs = {}
+                if bc_weight > 0 and len(episode_states) > 0:
+                    step_kwargs["episode_data"] = {
+                        "states": episode_states,
+                        "discrete_actions": episode_materials,
+                        "continuous_actions": episode_thicknesses,
+                    }
 
-                obs, info = env.reset()
-                mask = info["mask"]
-            else:
-                obs = next_obs
-                mask = next_mask
+                next_obs, reward, done, _, info = env.step(action, **step_kwargs)
+                next_mask = info["mask"]
 
-            step_count += 1
+                buffer.add(
+                    obs, material, thickness, reward, value, log_prob, done, mask
+                )
+
+                if done:
+                    episode_done = True
+                    if "vals" in info:
+                        ep_rewards.append(reward)
+                        ep_vals.append(info["vals"])
+                    episodes_collected += 1
+
+                    obs, info = env.reset()
+                    mask = info["mask"]
+                else:
+                    obs = next_obs
+                    mask = next_mask
+
+                step_count += 1
 
         # Finalize buffer
         _, _, _, last_value = agent.act(obs, mask)
@@ -869,9 +1009,17 @@ def train(config_path: str, save_dir: str):
             param_group["lr"] = current_lr
         agent.ent_coef = current_ent_coef
 
-        # Update policy
+        # Update policy with BC loss from Pareto episodes
         rollout_data = buffer.get()
-        ppo_logs = agent.update(rollout_data, n_epochs, batch_size)
+        pareto_episodes = env.env.pareto_front_episodes if bc_weight > 0 else None
+        ppo_logs = agent.update(
+            rollout_data,
+            n_epochs,
+            batch_size,
+            pareto_episodes=pareto_episodes,
+            bc_weight=bc_weight,
+            env_wrapper=env,
+        )
 
         # Logging
         if env.episode_count % mlflow_log_freq == 0:
@@ -889,6 +1037,13 @@ def train(config_path: str, save_dir: str):
                     "step": step_count,
                     "pareto.size": len(env.env.pareto_front_rewards),
                 }
+                # Add pareto episodes count if BC loss enabled
+                if bc_weight > 0 and hasattr(env.env, "pareto_front_episodes"):
+                    n_episodes_stored = sum(
+                        1 for ep in env.env.pareto_front_episodes if ep is not None
+                    )
+                    metrics["pareto.episodes_stored"] = n_episodes_stored
+
                 metrics.update({f"ppo.{k}": v for k, v in ppo_logs.items()})
 
                 # Episode rewards
