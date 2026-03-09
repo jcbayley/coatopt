@@ -478,8 +478,8 @@ class CoatingEnvironment:
                 if max_reward <= min_reward:
                     rewards[objective] = 0.5
                 else:
-                    rewards[objective] = np.exp(
-                        (raw_reward - min_reward) / (max_reward - min_reward)
+                    rewards[objective] = (raw_reward - min_reward) / (
+                        max_reward - min_reward
                     )
             else:
                 rewards[objective] = raw_reward
