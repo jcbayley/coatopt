@@ -343,6 +343,7 @@ def plot_both_spaces_comparison_interactive(
     title: str = "Pareto Front Comparison",
     reference_values: Optional[pd.DataFrame] = None,
     reference_rewards: Optional[pd.DataFrame] = None,
+    group_runs: bool = True,
 ):
     """Plot both VALUE and REWARD space Pareto fronts side by side using Plotly (interactive).
 
@@ -352,7 +353,116 @@ def plot_both_spaces_comparison_interactive(
         title: Overall plot title
         reference_values: Reference designs in value space
         reference_rewards: Reference designs in reward space
+        group_runs: If True, group runs with similar names (e.g., run001, run002) with color gradients
     """
+    import re
+
+    # Helper function to extract base name and run number
+    def parse_run_name(label: str) -> Tuple[str, Optional[int]]:
+        """Extract base name and run number from a label.
+
+        Examples:
+            'experiment_run001' -> ('experiment', 1)
+            'experiment_run1' -> ('experiment', 1)
+            'experiment' -> ('experiment', None)
+        """
+        # Try to match patterns like _run001, _run1, -run001, -run1
+        match = re.search(r"[_-]run(\d+)$", label, re.IGNORECASE)
+        if match:
+            base_name = label[: match.start()]
+            run_num = int(match.group(1))
+            return base_name, run_num
+        return label, None
+
+    # Helper function to generate color gradient
+    def hex_to_rgb(hex_color: str) -> Tuple[int, int, int]:
+        """Convert hex color to RGB tuple."""
+        hex_color = hex_color.lstrip("#")
+        return tuple(int(hex_color[i : i + 2], 16) for i in (0, 2, 4))
+
+    def rgb_to_hex(rgb: Tuple[int, int, int]) -> str:
+        """Convert RGB tuple to hex color."""
+        return "#{:02x}{:02x}{:02x}".format(int(rgb[0]), int(rgb[1]), int(rgb[2]))
+
+    def create_color_gradient(base_color: str, n_colors: int) -> List[str]:
+        """Create a gradient of colors from base color to a lighter/darker version."""
+        if n_colors == 1:
+            return [base_color]
+
+        base_rgb = hex_to_rgb(base_color)
+        colors = []
+
+        for i in range(n_colors):
+            # Create gradient from darker to lighter
+            # Factor ranges from 0.6 (darker) to 1.0 (base) to 1.3 (lighter)
+            if n_colors > 1:
+                factor = 0.6 + (0.7 * i / (n_colors - 1))
+            else:
+                factor = 1.0
+
+            # Adjust brightness
+            new_rgb = tuple(min(255, max(0, int(c * factor))) for c in base_rgb)
+            colors.append(rgb_to_hex(new_rgb))
+
+        return colors
+
+    # Group runs if requested
+    if group_runs:
+        # Parse all labels and group by base name
+        run_groups = {}
+        for values_df, rewards_df, label in pareto_fronts:
+            base_name, run_num = parse_run_name(label)
+            if base_name not in run_groups:
+                run_groups[base_name] = []
+            run_groups[base_name].append((values_df, rewards_df, label, run_num))
+
+        # Sort runs within each group by run number
+        for base_name in run_groups:
+            run_groups[base_name].sort(key=lambda x: x[3] if x[3] is not None else -1)
+
+        # Assign colors to groups
+        base_colors = [
+            "#1f77b4",
+            "#ff7f0e",
+            "#2ca02c",
+            "#d62728",
+            "#9467bd",
+            "#8c564b",
+            "#e377c2",
+            "#7f7f7f",
+            "#bcbd22",
+            "#17becf",
+        ]
+
+        # Create color mapping for all runs
+        color_map = {}
+        group_idx = 0
+        for base_name, runs in run_groups.items():
+            base_color = base_colors[group_idx % len(base_colors)]
+            gradient_colors = create_color_gradient(base_color, len(runs))
+
+            for i, (values_df, rewards_df, label, run_num) in enumerate(runs):
+                color_map[label] = gradient_colors[i]
+
+            group_idx += 1
+    else:
+        # Use original color assignment
+        base_colors = [
+            "#1f77b4",
+            "#ff7f0e",
+            "#2ca02c",
+            "#d62728",
+            "#9467bd",
+            "#8c564b",
+            "#e377c2",
+            "#7f7f7f",
+            "#bcbd22",
+            "#17becf",
+        ]
+        color_map = {}
+        for i, (values_df, rewards_df, label) in enumerate(pareto_fronts):
+            color_map[label] = base_colors[i % len(base_colors)]
+
     # Create subplots with plotly
     fig = make_subplots(
         rows=1,
@@ -360,20 +470,6 @@ def plot_both_spaces_comparison_interactive(
         subplot_titles=("VALUE Space", "REWARD Space"),
         horizontal_spacing=0.12,
     )
-
-    # Use a diverse color palette
-    colors = [
-        "#1f77b4",
-        "#ff7f0e",
-        "#2ca02c",
-        "#d62728",
-        "#9467bd",
-        "#8c564b",
-        "#e377c2",
-        "#7f7f7f",
-        "#bcbd22",
-        "#17becf",
-    ]
 
     # VALUE SPACE (left plot)
     # Add reference points to VALUE space if provided
@@ -448,7 +544,24 @@ def plot_both_spaces_comparison_interactive(
         sorted_idx = np.argsort(x)
         x_sorted, y_loss_sorted = x[sorted_idx], y_loss[sorted_idx]
 
-        color = colors[i % len(colors)]
+        color = color_map.get(label, "#808080")
+
+        # Determine legend group (base name for grouped runs)
+        if group_runs:
+            base_name, run_num = parse_run_name(label)
+            legend_group = base_name
+            # Create a shortened label for the legend (just show run number if part of group)
+            if run_num is not None:
+                legend_label = (
+                    f"run{run_num:03d} (HV: {hv_value:.4f})"
+                    if hv_value > 0
+                    else f"run{run_num:03d}"
+                )
+            else:
+                legend_label = label_with_hv
+        else:
+            legend_group = label
+            legend_label = label_with_hv
 
         # Add line trace
         fig.add_trace(
@@ -458,8 +571,9 @@ def plot_both_spaces_comparison_interactive(
                 mode="lines",
                 line=dict(color=color, width=2, dash="dash"),
                 opacity=0.4,
-                name=label_with_hv,
-                legendgroup=label,
+                name=legend_label,
+                legendgroup=legend_group,
+                legendgrouptitle_text=legend_group if group_runs else None,
                 showlegend=False,
                 hoverinfo="skip",
             ),
@@ -478,8 +592,9 @@ def plot_both_spaces_comparison_interactive(
                     size=8,
                     line=dict(width=1, color="black"),
                 ),
-                name=label_with_hv,
-                legendgroup=label,
+                name=legend_label,
+                legendgroup=legend_group,
+                legendgrouptitle_text=legend_group if group_runs else None,
                 showlegend=True,
                 hovertemplate="<b>%{fullData.name}</b><br>"
                 + "Absorption: %{x:.2e} ppm<br>"
@@ -549,7 +664,24 @@ def plot_both_spaces_comparison_interactive(
         sorted_idx = np.argsort(x)
         x_sorted, y_sorted = x[sorted_idx], y[sorted_idx]
 
-        color = colors[i % len(colors)]
+        color = color_map.get(label, "#808080")
+
+        # Determine legend group (base name for grouped runs)
+        if group_runs:
+            base_name, run_num = parse_run_name(label)
+            legend_group = base_name
+            # Create a shortened label for the legend (just show run number if part of group)
+            if run_num is not None:
+                legend_label = (
+                    f"run{run_num:03d} (HV: {hv_reward:.4f})"
+                    if hv_reward > 0
+                    else f"run{run_num:03d}"
+                )
+            else:
+                legend_label = label_with_hv
+        else:
+            legend_group = label
+            legend_label = label_with_hv
 
         # Add line trace
         fig.add_trace(
@@ -559,8 +691,9 @@ def plot_both_spaces_comparison_interactive(
                 mode="lines",
                 line=dict(color=color, width=2, dash="dash"),
                 opacity=0.4,
-                name=label_with_hv,
-                legendgroup=label,
+                name=legend_label,
+                legendgroup=legend_group,
+                legendgrouptitle_text=legend_group if group_runs else None,
                 showlegend=False,
                 hoverinfo="skip",
             ),
@@ -579,8 +712,9 @@ def plot_both_spaces_comparison_interactive(
                     size=8,
                     line=dict(width=1, color="black"),
                 ),
-                name=label_with_hv,
-                legendgroup=label,
+                name=legend_label,
+                legendgroup=legend_group,
+                legendgrouptitle_text=legend_group if group_runs else None,
                 showlegend=False,  # Already shown in value space
                 hovertemplate="<b>%{fullData.name}</b><br>"
                 + "Absorption Reward: %{x:.4f}<br>"
@@ -644,6 +778,7 @@ def plot_both_spaces_comparison_interactive(
             bgcolor="rgba(255, 255, 255, 0.9)",
             bordercolor="black",
             borderwidth=1,
+            tracegroupgap=5,  # Add space between groups
         ),
         hovermode="closest",
         template="plotly_white",
@@ -1315,6 +1450,18 @@ Examples:
         dest="interactive",
         help="Disable interactive HTML plots and use static matplotlib plots only",
     )
+    parser.add_argument(
+        "--group-runs",
+        action="store_true",
+        default=True,
+        help="Group runs with similar names (e.g., run001, run002) with color gradients (default: True)",
+    )
+    parser.add_argument(
+        "--no-group-runs",
+        action="store_false",
+        dest="group_runs",
+        help="Disable run grouping - each run gets a unique color",
+    )
 
     args = parser.parse_args()
 
@@ -1432,6 +1579,7 @@ Examples:
             title=args.title,
             reference_values=reference_values,
             reference_rewards=reference_rewards,
+            group_runs=args.group_runs,
         )
     else:
         print("\nGenerating static VALUE + REWARD space comparison plot...")
@@ -1474,6 +1622,7 @@ Examples:
                     title=f"{args.title} (Top {args.top_n} by Reward Hypervolume)",
                     reference_values=reference_values,
                     reference_rewards=reference_rewards,
+                    group_runs=args.group_runs,
                 )
             else:
                 plot_both_spaces_comparison(

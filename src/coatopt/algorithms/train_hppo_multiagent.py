@@ -796,11 +796,27 @@ class MultiAgentPPO:
 
         mlflow.log_metrics(metrics, step=step)
 
-        # Plot
+        # Periodic checkpointing
         if self.save_dir and episode % self.plot_freq == 0:
             try:
-                _, values_df, _ = self.envs[0].base_env.export_pareto_dataframes()
+                designs_df, values_df, rewards_df = self.envs[
+                    0
+                ].base_env.export_pareto_dataframes()
                 if not values_df.empty:
+                    # Save CSVs
+                    save_path = Path(self.save_dir)
+                    save_path.mkdir(parents=True, exist_ok=True)
+                    designs_df.to_csv(
+                        save_path / f"pareto_designs_ep{episode}.csv", index=False
+                    )
+                    values_df.to_csv(
+                        save_path / f"pareto_values_ep{episode}.csv", index=False
+                    )
+                    rewards_df.to_csv(
+                        save_path / f"pareto_rewards_ep{episode}.csv", index=False
+                    )
+
+                    # Plot
                     plot_pareto_front(
                         values_df,
                         self.objectives,
@@ -808,9 +824,12 @@ class MultiAgentPPO:
                         "vals",
                         f"ppo_multiagent_ep{episode}",
                     )
+
+                    if self.verbose:
+                        print(f"  Saved Pareto front checkpoint at episode {episode}")
             except Exception as e:
                 if self.verbose:
-                    print(f"  [plot] skipped: {e}")
+                    print(f"  [checkpoint] skipped: {e}")
 
     def train(self, total_episodes: int) -> dict:
         for i in range(self.n_agents):

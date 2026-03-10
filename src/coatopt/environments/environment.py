@@ -124,6 +124,7 @@ class CoatingEnvironment:
         self.pareto_front_values = (
             []
         )  # List of (value_vector, state) - used for plotting
+        self.pareto_front_episodes = []  # List of episode data dicts (for BC loss)
         self.all_points = []
 
         # Observation space shape
@@ -206,7 +207,10 @@ class CoatingEnvironment:
 
             # Always update pareto front when episode finishes (for tracking and optional bonus)
             if finished and self.multi_objective:
-                self.update_pareto_front(vals, self.current_state)
+                episode_data = kwargs.get("episode_data", None)
+                self.update_pareto_front(
+                    vals, self.current_state, episode_data=episode_data
+                )
         else:
             total_reward = 0.0
             vals = {}
@@ -299,12 +303,19 @@ class CoatingEnvironment:
         self.use_pareto_bonus = True
         self.pareto_dominance_bonus = bonus
 
-    def update_pareto_front(self, objectives: Dict[str, float], state: CoatingState):
-        """Update both reward and value space Pareto fronts.
+    def update_pareto_front(
+        self,
+        objectives: Dict[str, float],
+        state: CoatingState,
+        episode_data: Dict = None,
+    ):
+        """Update both reward and value space Pareto fronts, and optionally episode data.
 
         Args:
             objectives: Dictionary of objective values (reflectivity, absorption, etc.)
             state: Current coating state
+            episode_data: Optional dict containing episode trajectory for BC loss
+                         {'states': [...], 'discrete_actions': [...], 'continuous_actions': [...]}
         """
         if not self.multi_objective:
             return
@@ -346,6 +357,7 @@ class CoatingEnvironment:
         # Rebuild fronts with states, keeping only non-dominated points
         new_reward_front = []
         new_value_front = []
+        new_episode_front = []
 
         for updated_vec in updated_reward_vectors:
             # Find which original point this corresponds to (if any)
@@ -354,6 +366,11 @@ class CoatingEnvironment:
                 if np.allclose(updated_vec, orig_vec):
                     new_reward_front.append((orig_vec, orig_state))
                     new_value_front.append(self.pareto_front_values[i])
+                    # Keep existing episode data if available
+                    if i < len(self.pareto_front_episodes):
+                        new_episode_front.append(self.pareto_front_episodes[i])
+                    else:
+                        new_episode_front.append(None)
                     found = True
                     break
 
@@ -361,9 +378,11 @@ class CoatingEnvironment:
             if not found and np.allclose(updated_vec, reward_vector):
                 new_reward_front.append((list(reward_vector), state.copy()))
                 new_value_front.append((list(val_vector), state.copy()))
+                new_episode_front.append(episode_data)  # Add new episode data
 
         self.pareto_front_rewards = new_reward_front
         self.pareto_front_values = new_value_front
+        self.pareto_front_episodes = new_episode_front
 
     # Reward computation
     def compute_state_value(

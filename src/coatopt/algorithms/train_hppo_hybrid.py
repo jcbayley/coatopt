@@ -56,6 +56,7 @@ from typing import Dict, List, Tuple
 import gymnasium as gym
 import mlflow
 import numpy as np
+import pandas as pd
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -315,6 +316,7 @@ class HybridActorCritic(nn.Module):
         shared_lstm: nn.Module = None,
         max_layers: int = None,
         n_constraints: int = None,
+        n_objectives: int = None,
     ):
         super().__init__()
         self.n_materials = n_materials
@@ -322,6 +324,11 @@ class HybridActorCritic(nn.Module):
         self.max_t = max_t
         self.shared_lstm = shared_lstm
         self.use_lstm = shared_lstm is not None
+        self.n_objectives = (
+            n_objectives
+            if n_objectives is not None
+            else (n_constraints if n_constraints is not None else 2)
+        )
 
         if self.use_lstm:
             assert max_layers is not None and n_constraints is not None
@@ -346,14 +353,28 @@ class HybridActorCritic(nn.Module):
         self.thickness_mean = nn.Linear(feat_dim, 1)
         self.thickness_logstd = nn.Linear(feat_dim, 1)  # learnable per-state std
 
-        # Value head
-        self.value_head = nn.Linear(feat_dim, 1)
+        # Value heads - one per objective for stable learning
+        # Each head learns value function for when that objective is the target
+        self.value_heads = nn.ModuleList(
+            [nn.Linear(feat_dim, 1) for _ in range(self.n_objectives)]
+        )
 
     def forward(
-        self, obs: torch.Tensor, mask: torch.Tensor = None, deterministic: bool = False
+        self,
+        obs: torch.Tensor,
+        mask: torch.Tensor = None,
+        target_obj_idx: int = 0,
+        deterministic: bool = False,
     ) -> Tuple:
         """
         Sample action and compute value.
+
+        Args:
+            obs: observation tensor
+            mask: action mask
+            target_obj_idx: index of target objective (selects which value head to use)
+            deterministic: whether to sample or take argmax
+
         Returns: (material, thickness, log_prob, value)
         """
         if self.use_lstm:
@@ -420,8 +441,8 @@ class HybridActorCritic(nn.Module):
         # Joint log prob
         log_prob = log_prob_d + log_prob_c
 
-        # Value
-        value = self.value_head(feat).squeeze(-1)
+        # Value - select head based on target objective
+        value = self.value_heads[target_obj_idx](feat).squeeze(-1)
 
         return material, thickness, log_prob, value
 
@@ -431,9 +452,18 @@ class HybridActorCritic(nn.Module):
         materials: torch.Tensor,
         thicknesses: torch.Tensor,
         mask: torch.Tensor,
+        target_obj_idx: int = 0,
     ) -> Tuple:
         """
         Evaluate log_prob and value for given actions.
+
+        Args:
+            obs: observation tensor
+            materials: material actions
+            thicknesses: thickness actions
+            mask: action mask
+            target_obj_idx: index of target objective (selects which value head to use)
+
         Returns: (log_prob, value, entropy)
         """
         if self.use_lstm:
@@ -490,8 +520,8 @@ class HybridActorCritic(nn.Module):
         log_prob = log_prob_d + log_prob_c
         entropy = entropy_d + entropy_c
 
-        # Value
-        value = self.value_head(feat).squeeze(-1)
+        # Value - select head based on target objective
+        value = self.value_heads[target_obj_idx](feat).squeeze(-1)
 
         return log_prob, value, entropy
 
@@ -523,6 +553,7 @@ class PPOAgent:
         shared_lstm: nn.Module = None,  # Optional shared LSTM
         max_layers: int = None,
         n_constraints: int = None,
+        n_objectives: int = None,
     ):
         self.device = device
         self.clip_range = clip_range
@@ -540,22 +571,31 @@ class PPOAgent:
             shared_lstm=shared_lstm,
             max_layers=max_layers,
             n_constraints=n_constraints,
+            n_objectives=n_objectives,
         ).to(device)
         # If using shared critic, only optimize policy parameters
         if shared_value_net is None:
             self.optimizer = Adam(self.policy.parameters(), lr=lr)
         else:
-            # Only optimize policy heads, not value head
+            # Only optimize policy heads, not value heads
             policy_params = [
-                p for n, p in self.policy.named_parameters() if "value_head" not in n
+                p for n, p in self.policy.named_parameters() if "value_heads" not in n
             ]
             self.optimizer = Adam(policy_params, lr=lr)
 
     @torch.no_grad()
-    def act(self, obs: np.ndarray, mask: np.ndarray, deterministic: bool = False):
+    def act(
+        self,
+        obs: np.ndarray,
+        mask: np.ndarray,
+        target_obj_idx: int,
+        deterministic: bool = False,
+    ):
         obs_t = torch.FloatTensor(obs).unsqueeze(0).to(self.device)
         mask_t = torch.BoolTensor(mask).unsqueeze(0).to(self.device)
-        material, thickness, log_prob, value = self.policy(obs_t, mask_t, deterministic)
+        material, thickness, log_prob, value = self.policy(
+            obs_t, mask_t, target_obj_idx, deterministic
+        )
 
         # Use shared critic if available
         if self.shared_value_net is not None:
@@ -583,9 +623,18 @@ class PPOAgent:
         rollout_data: dict,
         n_epochs: int,
         batch_size: int,
+        target_obj_idx: int,
         update_value: bool = True,
     ) -> Dict[str, float]:
-        """PPO update using collected rollout."""
+        """PPO update using collected rollout.
+
+        Args:
+            rollout_data: dict with observations, actions, returns, etc.
+            n_epochs: number of optimization epochs
+            batch_size: minibatch size
+            target_obj_idx: index of target objective (for value head selection)
+            update_value: whether to update value network
+        """
         # Move to device
         for k in rollout_data:
             rollout_data[k] = rollout_data[k].to(self.device)
@@ -616,6 +665,7 @@ class PPOAgent:
                     materials[batch_idx],
                     thicknesses[batch_idx],
                     masks[batch_idx],
+                    target_obj_idx,
                 )
 
                 # Use shared critic if available
@@ -743,6 +793,9 @@ class HybridMultiAgentPPO:
         self.objectives = list(config.data.optimise_parameters)
         self.n_objectives = len(self.objectives)
 
+        # Create objective name -> index mapping for value head selection
+        self.objective_to_idx = {obj: idx for idx, obj in enumerate(self.objectives)}
+
         self.warmup_episodes_per_obj = warmup_episodes_per_obj
         # Total warmup episodes accounts for multiple agents cycling through objectives
         self.total_warmup_episodes = (
@@ -840,6 +893,7 @@ class HybridMultiAgentPPO:
                 shared_lstm=self.shared_lstm,
                 max_layers=self.max_layers if use_lstm else None,
                 n_constraints=n_constraints,
+                n_objectives=self.n_objectives,
             )
             for _ in range(n_agents)
         ]
@@ -1002,11 +1056,25 @@ class HybridMultiAgentPPO:
 
         mlflow.log_metrics(metrics, step=step)
 
-        # Plot
-        if self.save_dir and episode % self.plot_freq == 0:
+        # Periodic checkpointing
+        if self.save_dir and episode % self.plot_freq == 0 and episode > 0:
             try:
-                _, values_df, _ = self.envs[0].base_env.export_pareto_dataframes()
+                designs_df, values_df, rewards_df = self.envs[
+                    0
+                ].base_env.export_pareto_dataframes()
                 if not values_df.empty:
+                    save_path = Path(self.save_dir)
+                    save_path.mkdir(parents=True, exist_ok=True)
+
+                    # Save combined Pareto front CSV (like end-of-training)
+                    combined_pareto = pd.concat(
+                        [designs_df, values_df, rewards_df.add_suffix("_reward")],
+                        axis=1,
+                    )
+                    pareto_path = save_path / f"pareto_front_ep{episode}.csv"
+                    combined_pareto.to_csv(pareto_path, index=False)
+
+                    # Save plot
                     plot_pareto_front(
                         values_df,
                         self.objectives,
@@ -1014,9 +1082,12 @@ class HybridMultiAgentPPO:
                         "vals",
                         f"ppo_hybrid_ep{episode}",
                     )
+
+                    if self.verbose:
+                        print(f"  Saved Pareto front checkpoint at episode {episode}")
             except Exception as e:
                 if self.verbose:
-                    print(f"  [plot] skipped: {e}")
+                    print(f"  [checkpoint] skipped: {e}")
 
     def train(self, total_episodes: int) -> dict:
         """Train the hybrid multi-agent system."""
@@ -1056,8 +1127,11 @@ class HybridMultiAgentPPO:
                     mask = self._mask[agent_idx]
 
                     # Sample action
+                    target_obj_idx = self.objective_to_idx[
+                        self._agent_target_objectives[agent_idx]
+                    ]
                     material, thickness, log_prob, value = self.agents[agent_idx].act(
-                        obs, mask
+                        obs, mask, target_obj_idx
                     )
                     action = {
                         "material": material,
@@ -1115,8 +1189,11 @@ class HybridMultiAgentPPO:
                         mask = next_mask
 
                 # Finalize buffer with bootstrap value
+                target_obj_idx = self.objective_to_idx[
+                    self._agent_target_objectives[agent_idx]
+                ]
                 _, _, _, last_value = self.agents[agent_idx].act(
-                    self._obs[agent_idx], self._mask[agent_idx]
+                    self._obs[agent_idx], self._mask[agent_idx], target_obj_idx
                 )
                 self.buffers[agent_idx].finalize(last_value)
 
@@ -1165,8 +1242,15 @@ class HybridMultiAgentPPO:
             # Update policies only (not value)
             for agent_idx in range(self.n_agents):
                 rollout_data = self.buffers[agent_idx].get()
+                target_obj_idx = self.objective_to_idx[
+                    self._agent_target_objectives[agent_idx]
+                ]
                 self._ppo_logs = self.agents[agent_idx].update(
-                    rollout_data, self.n_epochs, self.batch_size, update_value=False
+                    rollout_data,
+                    self.n_epochs,
+                    self.batch_size,
+                    target_obj_idx,
+                    update_value=False,
                 )
 
             # Update shared critic with all agents' data
