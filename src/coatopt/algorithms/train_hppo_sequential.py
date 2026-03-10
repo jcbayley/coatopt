@@ -356,17 +356,27 @@ class HybridActorCritic(nn.Module):
         self.thickness_mean = nn.Linear(prev_dim + n_materials, 1)
         self.thickness_logstd = nn.Linear(prev_dim + n_materials, 1)
 
-        # Value head
-        self.value_head = nn.Linear(prev_dim, 1)
+        # Value heads - one per objective for stable learning
+        # Each head learns value function for when that objective is the target
+        self.n_objectives = n_constraints  # Number of objectives
+        self.value_heads = nn.ModuleList(
+            [nn.Linear(prev_dim, 1) for _ in range(self.n_objectives)]
+        )
 
-    def forward(self, obs, mask, deterministic=False):
+    def forward(self, obs, mask, target_obj_idx, deterministic=False):
         """Forward pass returning actions, log_probs, and value.
+
+        Args:
+            obs: observation tensor
+            mask: action mask
+            target_obj_idx: index of target objective (selects which value head to use)
+            deterministic: whether to sample or take argmax
 
         Returns:
             material: sampled material index
             thickness: sampled thickness value
             log_prob: total log probability (discrete + continuous)
-            value: state value V(s)
+            value: state value V(s) for target objective
         """
         if self.use_lstm:
             # Extract components from observation
@@ -433,13 +443,21 @@ class HybridActorCritic(nn.Module):
         # Total log probability (joint = product of independent)
         log_prob = log_prob_d + log_prob_c
 
-        # Value
-        value = self.value_head(features).squeeze(-1)
+        # Value - select head based on target objective
+        value = self.value_heads[target_obj_idx](features).squeeze(-1)
 
         return material, thickness, log_prob, value
 
-    def evaluate_actions(self, obs, mask, materials, thicknesses):
-        """Evaluate log_probs and values for given actions."""
+    def evaluate_actions(self, obs, mask, materials, thicknesses, target_obj_idx):
+        """Evaluate log_probs and values for given actions.
+
+        Args:
+            obs: observation tensor
+            mask: action mask
+            materials: material actions
+            thicknesses: thickness actions
+            target_obj_idx: index of target objective (selects which value head to use)
+        """
         if self.use_lstm:
             # Extract components from observation (same as forward)
             batch_size = obs.shape[0]
@@ -497,15 +515,29 @@ class HybridActorCritic(nn.Module):
         # Use normal entropy (removed 3x weighting to allow convergence)
         entropy = entropy_d + entropy_c
 
-        value = self.value_head(features).squeeze(-1)
+        # Value - select head based on target objective
+        value = self.value_heads[target_obj_idx](features).squeeze(-1)
 
         return log_prob, value, entropy
 
 
 def compute_bc_loss_from_pareto(
-    policy, pareto_episodes, env_wrapper, bc_weight=0.1, batch_size=32
+    policy, pareto_episodes, env_wrapper, target_obj_idx, bc_weight=0.1, batch_size=32
 ):
-    """Compute behavior cloning loss from Pareto front episodes stored in environment."""
+    """Compute behavior cloning loss from Pareto front episodes stored in environment.
+
+    Args:
+        policy: policy network
+        pareto_episodes: list of Pareto front episodes
+        env_wrapper: environment wrapper
+        target_obj_idx: index of target objective (for value head selection)
+        bc_weight: weight for BC loss
+        batch_size: batch size for sampling
+
+    Loss is normalized by sqrt(n_episodes / 10) to prevent the loss from growing
+    unboundedly as the Pareto front size increases. This encourages quality over
+    just adding more episodes.
+    """
     if not pareto_episodes or len(pareto_episodes) == 0:
         return 0.0
 
@@ -513,6 +545,12 @@ def compute_bc_loss_from_pareto(
     valid_episodes = [ep for ep in pareto_episodes if ep is not None]
     if not valid_episodes:
         return 0.0
+
+    # Normalize by Pareto front size to prevent encouraging just adding episodes
+    # Use sqrt to still give some weight to larger fronts, but sublinearly
+    # Reference size of 10 episodes
+    n_episodes = len(valid_episodes)
+    size_normalization = (n_episodes / 10.0) ** 0.5
 
     # Sample transitions from Pareto episodes
     transitions = []
@@ -571,10 +609,13 @@ def compute_bc_loss_from_pareto(
     mask_t = torch.FloatTensor(np.array(mask_list))
 
     # Compute log probs from policy
-    log_probs, _, _ = policy.evaluate_actions(obs_t, mask_t, mat_t, thick_t)
+    log_probs, _, _ = policy.evaluate_actions(
+        obs_t, mask_t, mat_t, thick_t, target_obj_idx
+    )
     bc_loss = -log_probs.mean()  # Negative log likelihood
 
-    return bc_weight * bc_loss
+    # Apply size normalization and weight
+    return bc_weight * bc_loss / size_normalization
 
 
 class PPOAgent:
@@ -598,13 +639,20 @@ class PPOAgent:
         self.vf_coef = vf_coef
         self.max_grad_norm = max_grad_norm
 
-    def act(self, obs, mask, deterministic=False):
-        """Sample action from policy."""
+    def act(self, obs, mask, target_obj_idx, deterministic=False):
+        """Sample action from policy.
+
+        Args:
+            obs: observation
+            mask: action mask
+            target_obj_idx: index of target objective
+            deterministic: whether to sample or take argmax
+        """
         with torch.no_grad():
             obs_t = torch.FloatTensor(obs).unsqueeze(0)
             mask_t = torch.FloatTensor(mask).unsqueeze(0)
             material, thickness, log_prob, value = self.policy(
-                obs_t, mask_t, deterministic
+                obs_t, mask_t, target_obj_idx, deterministic
             )
             return (
                 material.item(),
@@ -618,11 +666,22 @@ class PPOAgent:
         rollout_data: dict,
         n_epochs: int,
         batch_size: int,
+        target_obj_idx: int,
         pareto_episodes=None,
         bc_weight=0.1,
         env_wrapper=None,
     ):
-        """PPO update using rollout data with optional BC loss from Pareto episodes."""
+        """PPO update using rollout data with optional BC loss from Pareto episodes.
+
+        Args:
+            rollout_data: dict with observations, actions, returns, etc.
+            n_epochs: number of optimization epochs
+            batch_size: minibatch size
+            target_obj_idx: index of target objective (for value head selection)
+            pareto_episodes: optional list of Pareto front episodes for BC loss
+            bc_weight: weight for behavior cloning loss
+            env_wrapper: environment wrapper (for BC loss)
+        """
         obs = rollout_data["observations"]
         materials = rollout_data["materials"]
         thicknesses = rollout_data["thicknesses"]
@@ -655,6 +714,7 @@ class PPOAgent:
                     masks[batch_idx],
                     materials[batch_idx],
                     thicknesses[batch_idx],
+                    target_obj_idx,
                 )
 
                 # Policy loss (clipped surrogate)
@@ -684,6 +744,7 @@ class PPOAgent:
                         self.policy,
                         pareto_episodes,
                         env_wrapper,
+                        target_obj_idx,
                         bc_weight,
                         batch_size=32,
                     )
@@ -887,6 +948,9 @@ def train(config_path: str, save_dir: str):
     ep_vals = []
     objectives = list(config.data.optimise_parameters)
 
+    # Create objective name -> index mapping for value head selection
+    objective_to_idx = {obj: idx for idx, obj in enumerate(objectives)}
+
     # Annealing tracking
     lr_init = lr
     ent_coef_init = ent_coef
@@ -918,7 +982,11 @@ def train(config_path: str, save_dir: str):
             # Collect single episode
             episode_done = False
             while not episode_done:
-                material, thickness, log_prob, value = agent.act(obs, mask)
+                # Get target objective index for value head selection
+                target_obj_idx = objective_to_idx[env.env.target_objective]
+                material, thickness, log_prob, value = agent.act(
+                    obs, mask, target_obj_idx
+                )
                 action = {
                     "material": material,
                     "thickness": np.array([thickness], dtype=np.float32),
@@ -962,7 +1030,8 @@ def train(config_path: str, save_dir: str):
                 step_count += 1
 
         # Finalize buffer
-        _, _, _, last_value = agent.act(obs, mask)
+        target_obj_idx = objective_to_idx[env.env.target_objective]
+        _, _, _, last_value = agent.act(obs, mask, target_obj_idx)
         buffer.finalize(last_value, gamma, gae_lambda)
 
         # Detect warmup -> constrained transition
@@ -1009,13 +1078,20 @@ def train(config_path: str, save_dir: str):
             param_group["lr"] = current_lr
         agent.ent_coef = current_ent_coef
 
-        # Update policy with BC loss from Pareto episodes
+        # Update policy with BC loss from Pareto episodes (disabled during warmup)
         rollout_data = buffer.get()
-        pareto_episodes = env.env.pareto_front_episodes if bc_weight > 0 else None
+        # Only use BC loss during constrained phase when exploring tradeoff region
+        pareto_episodes = (
+            env.env.pareto_front_episodes
+            if (bc_weight > 0 and not env.is_warmup)
+            else None
+        )
+        target_obj_idx = objective_to_idx[env.env.target_objective]
         ppo_logs = agent.update(
             rollout_data,
             n_epochs,
             batch_size,
+            target_obj_idx,
             pareto_episodes=pareto_episodes,
             bc_weight=bc_weight,
             env_wrapper=env,
@@ -1078,6 +1154,35 @@ def train(config_path: str, save_dir: str):
                     metrics[f"warmup_best.{obj}"] = best
 
                 mlflow.log_metrics(metrics, step=env.episode_count)
+
+        # Periodic checkpointing
+        if env.episode_count % plot_freq == 0 and env.episode_count > 0:
+            try:
+                designs_df, values_df, rewards_df = env.env.export_pareto_dataframes()
+                if not values_df.empty:
+                    # Save CSVs
+                    save_path = Path(save_dir)
+                    save_path.mkdir(parents=True, exist_ok=True)
+                    designs_df.to_csv(
+                        save_path / f"pareto_designs_ep{env.episode_count}.csv",
+                        index=False,
+                    )
+                    values_df.to_csv(
+                        save_path / f"pareto_values_ep{env.episode_count}.csv",
+                        index=False,
+                    )
+                    rewards_df.to_csv(
+                        save_path / f"pareto_rewards_ep{env.episode_count}.csv",
+                        index=False,
+                    )
+
+                    if verbose:
+                        print(
+                            f"  Saved Pareto front checkpoint at episode {env.episode_count}"
+                        )
+            except Exception as e:
+                if verbose:
+                    print(f"  [checkpoint] skipped: {e}")
 
     # Return results
     designs_df, values_df, rewards_df = env.env.export_pareto_dataframes()
