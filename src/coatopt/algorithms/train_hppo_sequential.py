@@ -111,10 +111,11 @@ class CoatOptHybridEnv(gym.Env):
             }
         )
 
-        # Observation space (includes constraint thresholds)
+        # Observation space (includes objective weights and constraint thresholds)
         n_features = 1 + self.env.n_materials + 2
+        n_objectives = len(self.env.optimise_parameters)
         n_constraints = len(self.env.optimise_parameters)
-        obs_size = self.env.max_layers * n_features + 1 + n_constraints
+        obs_size = self.env.max_layers * n_features + 1 + n_objectives + n_constraints
         self.observation_space = gym.spaces.Box(
             low=-np.inf, high=np.inf, shape=(obs_size,), dtype=np.float32
         )
@@ -134,9 +135,13 @@ class CoatOptHybridEnv(gym.Env):
         return mask
 
     def _get_obs(self, state) -> np.ndarray:
-        """Convert state to observation with constraint thresholds."""
+        """Convert state to observation with objective weights and constraint thresholds."""
         tensor = state.get_observation_tensor(pre_type="lstm")
         obs = tensor.numpy().flatten().astype(np.float32)
+        # Append objective weights (1.0 for target, 0.0 for others)
+        for obj in self.objectives:
+            weight = 1.0 if obj == self.env.target_objective else 0.0
+            obs = np.append(obs, weight)
         # Append constraint thresholds
         for obj in self.env.optimise_parameters:
             obs = np.append(obs, self.env.constraints.get(obj, 0.0))
@@ -329,8 +334,10 @@ class HybridActorCritic(nn.Module):
                 batch_first=True,
             )
 
-            # After LSTM: concat [lstm_output, constraints]
-            combined_dim = lstm_hidden + n_constraints
+            # After LSTM: concat [lstm_output, objective_weights, constraints]
+            combined_dim = (
+                lstm_hidden + n_constraints + n_constraints
+            )  # n_objectives = n_constraints
 
             # Trunk MLP
             layers = []
@@ -380,11 +387,14 @@ class HybridActorCritic(nn.Module):
         """
         if self.use_lstm:
             # Extract components from observation
-            # obs = [layer_sequence (flattened), constraints]
+            # obs = [layer_sequence (flattened), objective_weights, constraints]
             batch_size = obs.shape[0]
 
-            # Extract constraints from the end
-            layer_seq_flat = obs[:, : -self.n_constraints]
+            # Extract objective weights and constraints from the end
+            layer_seq_flat = obs[:, : -(self.n_objectives + self.n_constraints)]
+            objective_weights = obs[
+                :, -(self.n_objectives + self.n_constraints) : -self.n_constraints
+            ]
             constraints = obs[:, -self.n_constraints :]
 
             # Reshape layer sequence for LSTM: (batch, max_layers, features)
@@ -396,8 +406,8 @@ class HybridActorCritic(nn.Module):
             lstm_out, (h_n, c_n) = self.lstm(layer_seq)
             lstm_features = h_n[-1]  # Take last layer: (batch, lstm_hidden)
 
-            # Concatenate LSTM features with constraints (no current_layer)
-            combined = torch.cat([lstm_features, constraints], dim=1)
+            # Concatenate LSTM features with objective weights and constraints
+            combined = torch.cat([lstm_features, objective_weights, constraints], dim=1)
             features = self.trunk(combined)
         else:
             features = self.trunk(obs)
@@ -462,8 +472,11 @@ class HybridActorCritic(nn.Module):
             # Extract components from observation (same as forward)
             batch_size = obs.shape[0]
 
-            # Extract constraints from the end
-            layer_seq_flat = obs[:, : -self.n_constraints]
+            # Extract objective weights and constraints from the end
+            layer_seq_flat = obs[:, : -(self.n_objectives + self.n_constraints)]
+            objective_weights = obs[
+                :, -(self.n_objectives + self.n_constraints) : -self.n_constraints
+            ]
             constraints = obs[:, -self.n_constraints :]
 
             # Reshape and process with LSTM
@@ -473,8 +486,8 @@ class HybridActorCritic(nn.Module):
             lstm_out, (h_n, c_n) = self.lstm(layer_seq)
             lstm_features = h_n[-1]  # Take last layer: (batch, lstm_hidden)
 
-            # Concatenate and process (no current_layer)
-            combined = torch.cat([lstm_features, constraints], dim=1)
+            # Concatenate and process with objective weights and constraints
+            combined = torch.cat([lstm_features, objective_weights, constraints], dim=1)
             features = self.trunk(combined)
         else:
             features = self.trunk(obs)
@@ -920,6 +933,18 @@ def train(config_path: str, save_dir: str):
         n_constraints=n_constraints if use_lstm else None,
     )
 
+    # Initialize air material (index 0) with strong negative bias
+    # This prevents "masked action explosion" where air probability shoots up
+    # when it's masked, then gets selected immediately when unmasked
+    with torch.no_grad():
+        initial_air_bias = -3.0
+        policy.material_head.bias[0] = initial_air_bias
+
+    if verbose:
+        print(
+            f"Initialized air material bias: {initial_air_bias:.2f} (low probability)"
+        )
+
     if verbose:
         if use_lstm:
             print(f"Using LSTM: {lstm_layers} layer(s), hidden_size={lstm_hidden}")
@@ -946,6 +971,8 @@ def train(config_path: str, save_dir: str):
     # Tracking
     ep_rewards = []
     ep_vals = []
+    ep_lengths = []  # Track episode lengths
+    sample_designs = []  # Track sample designs during warmup for debugging
     objectives = list(config.data.optimise_parameters)
 
     # Create objective name -> index mapping for value head selection
@@ -1019,6 +1046,25 @@ def train(config_path: str, save_dir: str):
                     if "vals" in info:
                         ep_rewards.append(reward)
                         ep_vals.append(info["vals"])
+                        ep_lengths.append(env.current_layer)  # Track episode length
+
+                        # Sample designs during warmup for debugging (keep last 100)
+                        if env.is_warmup:
+                            # Get state array directly from environment
+                            state_array = env.env.current_state.get_array()
+                            design_info = {
+                                "episode": env.episode_count,
+                                "target_obj": env.env.target_objective,
+                                "state_array": state_array,
+                                "vals": info["vals"].copy(),
+                                "reward": reward,
+                                "length": env.current_layer,
+                            }
+                            sample_designs.append(design_info)
+                            # Keep only last 100
+                            if len(sample_designs) > 100:
+                                sample_designs.pop(0)
+
                     episodes_collected += 1
 
                     obs, info = env.reset()
@@ -1097,15 +1143,39 @@ def train(config_path: str, save_dir: str):
             env_wrapper=env,
         )
 
+        # Print sample designs after every update during warmup
+        if verbose and env.is_warmup and len(sample_designs) > 0:
+            print(f"  Samples (last 3):", end=" ")
+            for s in sample_designs[-3:]:
+                state = s["state_array"]
+                mats = [
+                    np.argmax(state[j][1:])
+                    for j in range(len(state))
+                    if state[j][0] > 0
+                ]
+                mat_seq = "".join(map(str, mats))
+                print(f"{mat_seq} ", end="")
+            print()
+
         # Logging
         if env.episode_count % mlflow_log_freq == 0:
             if verbose:
                 n_pareto = len(env.env.pareto_front_rewards)
                 phase = "warmup" if env.is_warmup else "constrained"
                 current_lr_display = agent.optimizer.param_groups[0]["lr"]
+                air_bias = float(policy.material_head.bias[0].item())
+
+                # Episode length stats
+                ep_len_str = ""
+                if ep_lengths:
+                    recent_lengths = ep_lengths[-20:]
+                    mean_len = np.mean(recent_lengths)
+                    ep_len_str = f" | ep_len {mean_len:.1f}"
+
                 print(
                     f"  [{phase}] episode {env.episode_count}/{total_episodes} | step {step_count} | "
-                    f"pareto {n_pareto} | ent {current_ent_coef:.4f} | lr {current_lr_display:.2e}"
+                    f"pareto {n_pareto} | ent {current_ent_coef:.4f} | lr {current_lr_display:.2e} | "
+                    f"air_bias {air_bias:.2f}{ep_len_str}"
                 )
 
             if mlflow.active_run():
@@ -1127,6 +1197,14 @@ def train(config_path: str, save_dir: str):
                     window = ep_rewards[-100:]
                     metrics["episode.reward_mean"] = float(np.mean(window))
                     metrics["episode.reward_std"] = float(np.std(window))
+
+                # Episode lengths
+                if ep_lengths:
+                    length_window = ep_lengths[-100:]
+                    metrics["episode.length_mean"] = float(np.mean(length_window))
+                    metrics["episode.length_std"] = float(np.std(length_window))
+                    metrics["episode.length_min"] = float(np.min(length_window))
+                    metrics["episode.length_max"] = float(np.max(length_window))
 
                 # Objective values
                 if ep_vals:
@@ -1153,7 +1231,93 @@ def train(config_path: str, save_dir: str):
                 for obj, best in env.env.warmup_best_rewards.items():
                     metrics[f"warmup_best.{obj}"] = best
 
+                # Monitor air material bias (check if it's shooting up)
+                air_bias = float(policy.material_head.bias[0].item())
+                metrics["policy.air_bias"] = air_bias
+
+                # Also get air logit/probability from a sample observation
+                with torch.no_grad():
+                    sample_logits = (
+                        policy.material_head.weight
+                        @ policy.material_head.weight.new_zeros(
+                            policy.material_head.weight.shape[1]
+                        )
+                        + policy.material_head.bias
+                    )
+                    air_logit = float(sample_logits[0].item())
+                    metrics["policy.air_logit_init"] = air_logit
+
                 mlflow.log_metrics(metrics, step=env.episode_count)
+
+        # Save sample designs from warmup for debugging
+        if (
+            env.is_warmup
+            and env.episode_count % 1000 == 0
+            and env.episode_count > 0
+            and sample_designs
+        ):
+            try:
+                import pandas as pd
+
+                save_path = Path(save_dir)
+                save_path.mkdir(parents=True, exist_ok=True)
+
+                # Create dataframe with sample designs
+                design_data = []
+                for sample in sample_designs:
+                    state = sample["state_array"]
+                    materials = []
+                    thicknesses = []
+                    for i in range(len(state)):
+                        if state[i][0] > 0:
+                            thickness = state[i][0]
+                            mat_idx = np.argmax(state[i][1:])
+                            materials.append(mat_idx)
+                            thicknesses.append(thickness)
+
+                    mat_seq = "".join(map(str, materials))
+                    design_data.append(
+                        {
+                            "episode": sample["episode"],
+                            "target_obj": sample["target_obj"],
+                            "material_sequence": mat_seq,
+                            "length": sample["length"],
+                            "thickness_mean": (
+                                np.mean(thicknesses) if thicknesses else 0
+                            ),
+                            "thickness_std": (
+                                np.std(thicknesses) if len(thicknesses) > 1 else 0
+                            ),
+                            "reflectivity": sample["vals"].get("reflectivity", 0.0),
+                            "absorption": sample["vals"].get("absorption", 0.0),
+                            "reward": sample["reward"],
+                        }
+                    )
+
+                df = pd.DataFrame(design_data)
+                csv_path = save_path / f"warmup_samples_ep{env.episode_count}.csv"
+                df.to_csv(csv_path, index=False)
+
+                if verbose:
+                    print(
+                        f"  Saved {len(design_data)} warmup sample designs to {csv_path}"
+                    )
+
+                    # Print pattern analysis
+                    print("\n  === Material Pattern Analysis ===")
+                    pattern_counts = df["material_sequence"].value_counts().head(5)
+                    for pattern, count in pattern_counts.items():
+                        avg_reward = df[df["material_sequence"] == pattern][
+                            "reward"
+                        ].mean()
+                        print(
+                            f"    Pattern '{pattern}': {count} times, avg_reward={avg_reward:.3f}"
+                        )
+                    print("  " + "=" * 70 + "\n")
+
+            except Exception as e:
+                if verbose:
+                    print(f"  [warmup samples] skipped: {e}")
 
         # Periodic checkpointing
         if env.episode_count % plot_freq == 0 and env.episode_count > 0:

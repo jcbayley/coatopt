@@ -120,8 +120,9 @@ class CoatOptHybridEnv(gym.Env):
         )
 
         n_features = 1 + self.n_materials + 2
-        # Observation: [layer_seq, constraints] (no current_layer for LSTM)
-        obs_size = self.base_env.max_layers * n_features + len(self.objectives)
+        # Observation: [layer_seq, objective_weights, constraints] (no current_layer for LSTM)
+        n_objectives = len(self.objectives)
+        obs_size = self.base_env.max_layers * n_features + n_objectives + n_objectives
         self.observation_space = gym.spaces.Box(
             low=-np.inf, high=np.inf, shape=(obs_size,), dtype=np.float32
         )
@@ -147,6 +148,11 @@ class CoatOptHybridEnv(gym.Env):
             .flatten()
             .astype(np.float32)
         )
+        # Append objective weights (1.0 for target, 0.0 for others)
+        for obj in self.objectives:
+            weight = 1.0 if obj == self.target_objective else 0.0
+            obs = np.append(obs, weight)
+        # Append constraint thresholds
         for obj in self.objectives:
             obs = np.append(obs, self.constraints.get(obj, 0.0))
         # Note: NOT including current_layer - LSTM can track position from sequence
@@ -332,15 +338,15 @@ class HybridActorCritic(nn.Module):
 
         if self.use_lstm:
             assert max_layers is not None and n_constraints is not None
-            # Observation structure: [layer_sequence (flattened), constraints]
+            # Observation structure: [layer_sequence (flattened), objective_weights, constraints]
             n_features_per_layer = 1 + n_materials + 2
             self.max_layers = max_layers
             self.n_features_per_layer = n_features_per_layer
             self.n_constraints = n_constraints
 
-            # LSTM output is shared, so input to features is lstm_hidden + constraints
+            # LSTM output is shared, so input to features is lstm_hidden + objective_weights + constraints
             lstm_hidden = shared_lstm.hidden_size
-            input_dim = lstm_hidden + n_constraints
+            input_dim = lstm_hidden + self.n_objectives + n_constraints
             self.features = _mlp(input_dim, hidden[-1], hidden[:-1])
         else:
             # Shared feature extractor (standard MLP)
@@ -379,11 +385,14 @@ class HybridActorCritic(nn.Module):
         """
         if self.use_lstm:
             # Extract components from observation (SAME AS SEQUENTIAL)
-            # obs = [layer_sequence (flattened), constraints]
+            # obs = [layer_sequence (flattened), objective_weights, constraints]
             batch_size = obs.shape[0]
 
-            # Extract constraints from the end
-            layer_seq_flat = obs[:, : -self.n_constraints]
+            # Extract objective weights and constraints from the end
+            layer_seq_flat = obs[:, : -(self.n_objectives + self.n_constraints)]
+            objective_weights = obs[
+                :, -(self.n_objectives + self.n_constraints) : -self.n_constraints
+            ]
             constraints = obs[:, -self.n_constraints :]
 
             # Reshape layer sequence for LSTM: (batch, max_layers, features)
@@ -395,8 +404,8 @@ class HybridActorCritic(nn.Module):
             lstm_out, (h_n, c_n) = self.shared_lstm(layer_seq)
             lstm_features = h_n[-1]  # Take last layer: (batch, lstm_hidden)
 
-            # Concatenate LSTM features with constraints (no current_layer)
-            combined = torch.cat([lstm_features, constraints], dim=1)
+            # Concatenate LSTM features with objective weights and constraints
+            combined = torch.cat([lstm_features, objective_weights, constraints], dim=1)
             feat = self.features(combined)
         else:
             feat = self.features(obs)
@@ -468,11 +477,14 @@ class HybridActorCritic(nn.Module):
         """
         if self.use_lstm:
             # Extract components from observation (SAME AS SEQUENTIAL)
-            # obs = [layer_sequence (flattened), constraints]
+            # obs = [layer_sequence (flattened), objective_weights, constraints]
             batch_size = obs.shape[0]
 
-            # Extract constraints from the end
-            layer_seq_flat = obs[:, : -self.n_constraints]
+            # Extract objective weights and constraints from the end
+            layer_seq_flat = obs[:, : -(self.n_objectives + self.n_constraints)]
+            objective_weights = obs[
+                :, -(self.n_objectives + self.n_constraints) : -self.n_constraints
+            ]
             constraints = obs[:, -self.n_constraints :]
 
             # Reshape layer sequence for LSTM: (batch, max_layers, features)
@@ -484,8 +496,8 @@ class HybridActorCritic(nn.Module):
             lstm_out, (h_n, c_n) = self.shared_lstm(layer_seq)
             lstm_features = h_n[-1]  # Take last layer: (batch, lstm_hidden)
 
-            # Concatenate LSTM features with constraints (no current_layer)
-            combined = torch.cat([lstm_features, constraints], dim=1)
+            # Concatenate LSTM features with objective weights and constraints
+            combined = torch.cat([lstm_features, objective_weights, constraints], dim=1)
             feat = self.features(combined)
         else:
             feat = self.features(obs)
