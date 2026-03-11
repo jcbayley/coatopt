@@ -246,14 +246,15 @@ def run_experiment(
 
     # Run comparison across all runs in this experiment if requested
     if generate_comparison:
-        import subprocess
+        from coatopt.compare_outputs import main as compare_main
 
         print("\nRunning comparison across all runs in experiment...")
         alldirs = Path(base_save_dir) / experiment_name
-        compare_cmd = [
-            "python",
-            "-m",
-            "coatopt.compare_outputs",
+
+        # Save original sys.argv and set new args for compare_outputs
+        original_argv = sys.argv
+        sys.argv = [
+            "compare_outputs",
             "--alldirs",
             str(alldirs),
             "--add-reference",
@@ -264,8 +265,13 @@ def run_experiment(
             "--reference-layers",
             str(n_layers),
         ]
-        subprocess.run(compare_cmd, check=True)
-        print("Comparison complete.")
+
+        try:
+            compare_main()
+            print("Comparison complete.")
+        finally:
+            # Restore original sys.argv
+            sys.argv = original_argv
 
     mlflow.end_run()
 
