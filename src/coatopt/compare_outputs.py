@@ -468,7 +468,7 @@ def plot_both_spaces_comparison_interactive(
         rows=1,
         cols=2,
         subplot_titles=("VALUE Space", "REWARD Space"),
-        horizontal_spacing=0.12,
+        horizontal_spacing=0.10,
     )
 
     # VALUE SPACE (left plot)
@@ -550,6 +550,7 @@ def plot_both_spaces_comparison_interactive(
         if group_runs:
             base_name, run_num = parse_run_name(label)
             legend_group = base_name
+
             # Create a shortened label for the legend (just show run number if part of group)
             if run_num is not None:
                 legend_label = (
@@ -558,10 +559,16 @@ def plot_both_spaces_comparison_interactive(
                     else f"run{run_num:03d}"
                 )
             else:
-                legend_label = label_with_hv
+                # Truncate long labels
+                legend_label = (
+                    label_with_hv[-40:] if len(label_with_hv) > 40 else label_with_hv
+                )
         else:
             legend_group = label
-            legend_label = label_with_hv
+            # Truncate long labels
+            legend_label = (
+                label_with_hv[-40:] if len(label_with_hv) > 40 else label_with_hv
+            )
 
         # Add line trace
         fig.add_trace(
@@ -767,18 +774,20 @@ def plot_both_spaces_comparison_interactive(
     fig.update_layout(
         title=dict(text=title, x=0.5, xanchor="center", font=dict(size=16)),
         height=600,
-        width=1400,
+        width=1800,  # Increased width to accommodate legend
         showlegend=True,
         legend=dict(
             yanchor="top",
             y=0.99,
             xanchor="left",
-            x=1.02,
+            x=1.01,
             font=dict(size=9),
             bgcolor="rgba(255, 255, 255, 0.9)",
             bordercolor="black",
             borderwidth=1,
             tracegroupgap=5,  # Add space between groups
+            itemwidth=30,  # Limit legend item width
+            itemsizing="constant",
         ),
         hovermode="closest",
         template="plotly_white",
