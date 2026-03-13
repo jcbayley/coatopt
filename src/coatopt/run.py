@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import argparse
+import ast
 import configparser
 import shutil
 import sys
@@ -88,7 +89,13 @@ def run_experiment(
     max_thickness = parser.getfloat("data", "max_thickness", fallback=0.5)
 
     if not experiment_name:
-        experiment_name = f"{n_layers}layer-{min_thickness:.2f}-{max_thickness:.2f}"
+        optimise_parameters = ast.literal_eval(
+            parser.get("data", "optimise_parameters", fallback="[]")
+        )
+        n_objectives = len(optimise_parameters)
+        experiment_name = (
+            f"{n_objectives}obj_{n_layers}layer-{min_thickness:.2f}-{max_thickness:.2f}"
+        )
 
     # create run dir
     date_str = datetime.now().strftime("%Y%m%d")

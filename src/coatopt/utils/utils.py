@@ -198,6 +198,19 @@ def save_training_results(
     pareto_size = len(results["pareto_rewards"])
     print(f"Saved {pareto_size} Pareto solutions to {pareto_path}")
 
+    # Compute and print hypervolume summary
+    try:
+        from coatopt.compare_outputs import compute_hypervolume_from_df
+
+        hv_reward = compute_hypervolume_from_df(
+            results["pareto_rewards"], space="reward"
+        )
+        hv_value = compute_hypervolume_from_df(results["pareto_values"], space="value")
+        print(f"Hypervolume (reward space): {hv_reward:.6f}")
+        print(f"Hypervolume (value space):  {hv_value:.6f}")
+    except Exception:
+        pass
+
     # Save model if available
     if results["model"] is not None:
         model_path = save_dir / f"{algorithm_name}_model"
