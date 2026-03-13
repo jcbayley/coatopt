@@ -90,6 +90,10 @@ class CoatingEnvironment:
         self.objective_bounds = getattr(data, "objective_bounds", {}) or {}
         self.reward_bounds = {}  # {objective: [min_reward, max_reward]}
         self._initialize_reward_bounds()
+        self.use_reward_normalisation = getattr(data, "use_reward_normalisation", True)
+        self.reward_normalisation_apply_clipping = getattr(
+            data, "reward_normalisation_apply_clipping", True
+        )
 
         # Warmup tracking (for constrained training)
         self.warmup_best_rewards = {obj: 0.0 for obj in self.optimise_parameters}
@@ -497,9 +501,10 @@ class CoatingEnvironment:
                 if max_reward <= min_reward:
                     rewards[objective] = 0.5
                 else:
-                    rewards[objective] = (raw_reward - min_reward) / (
-                        max_reward - min_reward
-                    )
+                    r = (raw_reward - min_reward) / (max_reward - min_reward)
+                    if self.reward_normalisation_apply_clipping:
+                        r = float(np.clip(r, 0.0, 1.0))
+                    rewards[objective] = r
             else:
                 rewards[objective] = raw_reward
 
@@ -522,8 +527,8 @@ class CoatingEnvironment:
         Returns:
             Tuple of (total_reward, vals, individual_rewards)
         """
-        # Get base rewards (normalised for constrained training, raw otherwise)
-        normalised = self.use_constrained_training
+        # Get base rewards (normalised if constrained training AND normalisation enabled)
+        normalised = self.use_constrained_training and self.use_reward_normalisation
         individual_rewards, vals = self.compute_reward(state, normalised=normalised)
 
         # Update observed bounds (for constrained training)
