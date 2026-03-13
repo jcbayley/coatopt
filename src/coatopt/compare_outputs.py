@@ -167,6 +167,10 @@ def plot_both_spaces_comparison(
             | np.isinf(y_ref_loss)
             | (y_ref_loss <= 0)
         )
+        hv_ref_value = compute_hypervolume_from_df(reference_values, space="value")
+        ref_label_value = (
+            f"Reference (HV: {hv_ref_value:.4f})" if hv_ref_value > 0 else "Reference"
+        )
         ax_values.scatter(
             x_ref[valid_ref],
             y_ref_loss[valid_ref],
@@ -175,7 +179,7 @@ def plot_both_spaces_comparison(
             color="black",
             edgecolor="black",
             linewidth=3.0,
-            label="Reference",
+            label=ref_label_value,
             zorder=100,
             alpha=0.7,
         )
@@ -258,6 +262,10 @@ def plot_both_spaces_comparison(
         valid_ref = ~(
             np.isnan(x_ref) | np.isnan(y_ref) | np.isinf(x_ref) | np.isinf(y_ref)
         )
+        hv_ref_reward = compute_hypervolume_from_df(reference_rewards, space="reward")
+        ref_label_reward = (
+            f"Reference (HV: {hv_ref_reward:.4f})" if hv_ref_reward > 0 else "Reference"
+        )
         ax_rewards.scatter(
             x_ref[valid_ref],
             y_ref[valid_ref],
@@ -266,7 +274,7 @@ def plot_both_spaces_comparison(
             color="black",
             edgecolor="black",
             linewidth=3.0,
-            label="Reference",
+            label=ref_label_reward,
             zorder=100,
             alpha=0.7,
         )
@@ -489,6 +497,10 @@ def plot_both_spaces_comparison_interactive(
             | (y_ref_loss <= 0)
         )
 
+        hv_ref_value = compute_hypervolume_from_df(reference_values, space="value")
+        ref_label = (
+            f"Reference (HV: {hv_ref_value:.4f})" if hv_ref_value > 0 else "Reference"
+        )
         fig.add_trace(
             go.Scatter(
                 x=x_ref[valid_ref],
@@ -500,7 +512,7 @@ def plot_both_spaces_comparison_interactive(
                     color="black",
                     line=dict(width=2, color="black"),
                 ),
-                name="Reference",
+                name=ref_label,
                 legendgroup="reference",
                 showlegend=True,
             ),
@@ -636,7 +648,7 @@ def plot_both_spaces_comparison_interactive(
                     color="black",
                     line=dict(width=2, color="black"),
                 ),
-                name="Reference",
+                name=ref_label,
                 legendgroup="reference",
                 showlegend=False,  # Already shown in value space
             ),
@@ -1066,18 +1078,26 @@ def print_statistics(pareto_fronts: List[Tuple[pd.DataFrame, str]]):
 def create_hypervolume_ranking_table(
     pareto_fronts: List[Tuple[Optional[pd.DataFrame], Optional[pd.DataFrame], str]],
     save_path: Optional[Path] = None,
+    reference_values: Optional[pd.DataFrame] = None,
+    reference_rewards: Optional[pd.DataFrame] = None,
 ) -> pd.DataFrame:
     """Create a ranking table of runs ordered by hypervolume.
 
     Args:
         pareto_fronts: List of (values_df, rewards_df, label) tuples
         save_path: Path to save the ranking table (txt and csv)
+        reference_values: Optional reference Pareto front in value space
+        reference_rewards: Optional reference Pareto front in reward space
 
     Returns:
         DataFrame with rankings
     """
+    all_fronts = list(pareto_fronts)
+    if reference_values is not None or reference_rewards is not None:
+        all_fronts = [(reference_values, reference_rewards, "Reference")] + all_fronts
+
     rankings = []
-    for values_df, rewards_df, label in pareto_fronts:
+    for values_df, rewards_df, label in all_fronts:
         hv_value = 0.0
         hv_reward = 0.0
         n_points_value = 0
@@ -1577,7 +1597,12 @@ Examples:
 
     # Generate hypervolume ranking table
     print("\nGenerating hypervolume rankings...")
-    create_hypervolume_ranking_table(pareto_fronts, save_path=output_path)
+    create_hypervolume_ranking_table(
+        pareto_fronts,
+        save_path=output_path,
+        reference_values=reference_values,
+        reference_rewards=reference_rewards,
+    )
 
     # Plot BOTH VALUE and REWARD space comparison
     if args.interactive:
