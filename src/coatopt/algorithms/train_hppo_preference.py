@@ -15,6 +15,7 @@ Config section: [hppo_preference]
   n_epochs                 = 10             # SGD epochs per update
   batch_size               = 256
   constraint_penalty       = 3.0
+  bc_weight                = 0.0            # Behaviour cloning weight from Pareto episodes (0.0 = disabled)
   resample_prefs_freq      = 1              # Resample preferences every N episodes per agent
   resample_constraints_freq = 1             # Resample constraints every N episodes per agent
   lr                       = 3e-4
@@ -170,7 +171,7 @@ class CoatOptPreferenceEnv(gym.Env):
         self.base_env.constraints = self.constraints
         return self._obs(state), {"mask": self.get_action_mask()}
 
-    def step(self, action: Dict):
+    def step(self, action: Dict, episode_data: Dict = None):
         mat_idx = int(action["material"])
         thickness = float(action["thickness"][0])
         self.prev_material = mat_idx
@@ -180,8 +181,12 @@ class CoatOptPreferenceEnv(gym.Env):
         coatopt_action[0] = thickness
         coatopt_action[1 + mat_idx] = 1.0
 
+        step_kwargs = {}
+        if episode_data is not None:
+            step_kwargs["episode_data"] = episode_data
+
         state, rewards, _, finished, env_reward, _, vals = self.base_env.step(
-            coatopt_action
+            coatopt_action, **step_kwargs
         )
         obs = self._obs(state)
 
@@ -370,8 +375,9 @@ class HybridActorCritic(nn.Module):
 
         # Policy heads
         self.material_head = nn.Linear(feat_dim, n_materials)
-        self.thickness_mean = nn.Linear(feat_dim, 1)
-        self.thickness_logstd = nn.Linear(feat_dim, 1)
+        # Thickness conditioned on sampled material (hierarchical policy)
+        self.thickness_mean = nn.Linear(feat_dim + n_materials, 1)
+        self.thickness_logstd = nn.Linear(feat_dim + n_materials, 1)
 
         # Value heads - one per objective for stable learning
         # Each head learns value function for when that objective is the target
@@ -433,11 +439,14 @@ class HybridActorCritic(nn.Module):
             material = torch.distributions.Categorical(probs).sample()
         log_prob_d = torch.log(probs + 1e-8).gather(1, material.unsqueeze(1)).squeeze(1)
 
-        # Continuous: thickness using TruncatedNormal
-        mean_raw = self.thickness_mean(feat).squeeze(-1)
+        # Continuous: thickness conditioned on sampled material
+        material_onehot = F.one_hot(material, num_classes=self.n_materials).float()
+        thickness_input = torch.cat([feat, material_onehot], dim=-1)
+
+        mean_raw = self.thickness_mean(thickness_input).squeeze(-1)
         mean = self.min_t + (self.max_t - self.min_t) * torch.sigmoid(mean_raw)
 
-        log_std = self.thickness_logstd(feat).squeeze(-1).clamp(-4, 0)
+        log_std = self.thickness_logstd(thickness_input).squeeze(-1).clamp(-4, 0)
         std = torch.exp(log_std)
 
         dist = TruncatedNormalDist(
@@ -508,11 +517,14 @@ class HybridActorCritic(nn.Module):
         log_prob_d = log_probs_d.gather(1, materials.unsqueeze(1)).squeeze(1)
         entropy_d = -(probs * log_probs_d).sum(-1)
 
-        # Continuous
-        mean_raw = self.thickness_mean(feat).squeeze(-1)
+        # Continuous - conditioned on material choice
+        material_onehot = F.one_hot(materials, num_classes=self.n_materials).float()
+        thickness_input = torch.cat([feat, material_onehot], dim=-1)
+
+        mean_raw = self.thickness_mean(thickness_input).squeeze(-1)
         mean = self.min_t + (self.max_t - self.min_t) * torch.sigmoid(mean_raw)
 
-        log_std = self.thickness_logstd(feat).squeeze(-1).clamp(-4, 0)
+        log_std = self.thickness_logstd(thickness_input).squeeze(-1).clamp(-4, 0)
         std = torch.exp(log_std)
 
         dist = TruncatedNormalDist(
@@ -533,6 +545,73 @@ class HybridActorCritic(nn.Module):
         value = self.value_heads[target_obj_idx](feat).squeeze(-1)
 
         return log_prob, value, entropy
+
+
+def compute_bc_loss_from_pareto(
+    policy, pareto_episodes, env_wrapper, target_obj_idx, bc_weight=0.1, batch_size=32
+):
+    """Compute behaviour cloning loss from Pareto front episodes.
+
+    Loss is normalized by sqrt(n_episodes / 10) to prevent unbounded growth
+    as the Pareto front size increases.
+    """
+    if not pareto_episodes or len(pareto_episodes) == 0:
+        return 0.0
+
+    valid_episodes = [ep for ep in pareto_episodes if ep is not None]
+    if not valid_episodes:
+        return 0.0
+
+    n_episodes = len(valid_episodes)
+    size_normalization = (n_episodes / 10.0) ** 0.5
+
+    transitions = []
+    for episode in valid_episodes:
+        if (
+            episode.get("states")
+            and episode.get("discrete_actions")
+            and episode.get("continuous_actions")
+        ):
+            for i in range(len(episode["states"])):
+                transitions.append(
+                    {
+                        "state": episode["states"][i],
+                        "material": episode["discrete_actions"][i],
+                        "thickness": episode["continuous_actions"][i],
+                    }
+                )
+
+    if not transitions:
+        return 0.0
+
+    n_samples = min(batch_size, len(transitions))
+    sampled = random.sample(transitions, n_samples)
+
+    obs_list, mat_list, thick_list, mask_list = [], [], [], []
+    for trans in sampled:
+        state = trans["state"]
+        if hasattr(env_wrapper, "_obs"):
+            obs = env_wrapper._obs(state)
+        elif hasattr(state, "get_observation_tensor"):
+            obs = state.get_observation_tensor(pre_type="lstm").numpy().flatten()
+        else:
+            obs = state
+        obs_list.append(obs)
+        mat = trans["material"]
+        thick = trans["thickness"]
+        mat_list.append(mat.item() if torch.is_tensor(mat) else mat)
+        thick_list.append(thick.item() if torch.is_tensor(thick) else thick)
+        mask_list.append(np.ones(policy.n_materials, dtype=bool))
+
+    obs_t = torch.FloatTensor(np.array(obs_list))
+    mat_t = torch.LongTensor(mat_list)
+    thick_t = torch.FloatTensor(thick_list)
+    mask_t = torch.BoolTensor(np.array(mask_list))
+
+    log_probs, _, _ = policy.evaluate(obs_t, mat_t, thick_t, mask_t, target_obj_idx)
+    bc_loss = -log_probs.mean()
+
+    return bc_weight * bc_loss / size_normalization
 
 
 class PPOAgent:
@@ -625,6 +704,9 @@ class PPOAgent:
         batch_size: int,
         target_obj_idx: int,
         update_value: bool = True,
+        pareto_episodes=None,
+        bc_weight: float = 0.0,
+        env_wrapper=None,
     ) -> Dict[str, float]:
         """PPO update using collected rollout.
 
@@ -634,6 +716,9 @@ class PPOAgent:
             batch_size: minibatch size
             target_obj_idx: index of target objective (for value head selection)
             update_value: whether to update value network
+            pareto_episodes: optional Pareto front episodes for BC loss
+            bc_weight: weight for behaviour cloning loss (0 = disabled)
+            env_wrapper: environment wrapper needed for BC obs construction
         """
         for k in rollout_data:
             rollout_data[k] = rollout_data[k].to(self.device)
@@ -649,7 +734,13 @@ class PPOAgent:
         advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
 
         n_samples = obs.shape[0]
-        logs = {"policy_loss": 0, "value_loss": 0, "entropy": 0, "clip_frac": 0}
+        logs = {
+            "policy_loss": 0,
+            "value_loss": 0,
+            "entropy": 0,
+            "clip_frac": 0,
+            "bc_loss": 0,
+        }
         n_updates = 0
 
         for epoch in range(n_epochs):
@@ -685,8 +776,11 @@ class PPOAgent:
                         feat = self.policy.features(obs[batch_idx])
                     values = self.shared_value_net(feat).squeeze(-1)
 
-                # Policy loss
-                ratio = torch.exp(log_probs - old_log_probs[batch_idx])
+                # Policy loss (clamp log_prob_diff to prevent overflow)
+                log_prob_diff = torch.clamp(
+                    log_probs - old_log_probs[batch_idx], -10, 10
+                )
+                ratio = torch.exp(log_prob_diff)
                 adv = advantages[batch_idx]
                 surr1 = ratio * adv
                 surr2 = (
@@ -700,21 +794,52 @@ class PPOAgent:
                 # Entropy bonus
                 entropy_loss = -entropy.mean()
 
+                # BC loss from Pareto episodes (if enabled)
+                bc_loss = 0.0
+                if (
+                    pareto_episodes is not None
+                    and bc_weight > 0
+                    and env_wrapper is not None
+                ):
+                    bc_loss = compute_bc_loss_from_pareto(
+                        self.policy,
+                        pareto_episodes,
+                        env_wrapper,
+                        target_obj_idx,
+                        bc_weight,
+                        batch_size=32,
+                    )
+                    if torch.is_tensor(bc_loss):
+                        logs["bc_loss"] += bc_loss.item()
+
                 # Total loss
                 if self.shared_value_net is None or update_value:
                     loss = (
                         policy_loss
                         + self.vf_coef * value_loss
                         + self.ent_coef * entropy_loss
+                        + (bc_loss if torch.is_tensor(bc_loss) else 0.0)
                     )
                 else:
-                    loss = policy_loss + self.ent_coef * entropy_loss
+                    loss = (
+                        policy_loss
+                        + self.ent_coef * entropy_loss
+                        + (bc_loss if torch.is_tensor(bc_loss) else 0.0)
+                    )
 
                 # Optimize
                 self.optimizer.zero_grad()
                 loss.backward()
                 nn.utils.clip_grad_norm_(self.policy.parameters(), self.max_grad_norm)
                 self.optimizer.step()
+
+                # NaN detection
+                for name, param in self.policy.named_parameters():
+                    if torch.isnan(param).any():
+                        raise ValueError(
+                            f"NaN in parameters: {name} — "
+                            f"loss={loss.item():.4f}, policy={policy_loss.item():.4f}, value={value_loss.item():.4f}"
+                        )
 
                 # Logging
                 logs["policy_loss"] += policy_loss.item()
@@ -753,6 +878,7 @@ class PreferenceMultiAgentPPO:
         epochs_per_step: int = 200,
         steps_per_objective: int = 10,
         constraint_penalty: float = 3.0,
+        bc_weight: float = 0.0,
         resample_prefs_freq: int = 1,
         resample_constraints_freq: int = 1,
         hidden: List[int] = None,
@@ -799,6 +925,7 @@ class PreferenceMultiAgentPPO:
         )
         self.epochs_per_step = epochs_per_step
         self.steps_per_objective = steps_per_objective
+        self.bc_weight = bc_weight
         self.resample_prefs_freq = resample_prefs_freq
         self.resample_constraints_freq = resample_constraints_freq
 
@@ -1098,6 +1225,10 @@ class PreferenceMultiAgentPPO:
             print(f"Warmup for {self.total_warmup_episodes} episodes...")
             print(f"Training with {self.n_agents} agents, shared critic")
             print("Post-warmup: random preferences + random constraints")
+            if self.bc_weight > 0:
+                print(
+                    f"Behaviour cloning from Pareto episodes enabled: weight={self.bc_weight}"
+                )
             print("\nInitial agent objectives:")
             for i in range(self.n_agents):
                 obj = self._agent_prev_objective[i]
@@ -1141,8 +1272,29 @@ class PreferenceMultiAgentPPO:
                         "thickness": np.array([thickness], dtype=np.float32),
                     }
 
-                    # Step environment
-                    next_obs, reward, done, _, info = self.envs[agent_idx].step(action)
+                    # Track episode trajectory for BC loss (only when enabled)
+                    if self.bc_weight > 0:
+                        if not hasattr(self, "_ep_states"):
+                            self._ep_states = [[] for _ in range(self.n_agents)]
+                            self._ep_materials = [[] for _ in range(self.n_agents)]
+                            self._ep_thicknesses = [[] for _ in range(self.n_agents)]
+                        self._ep_states[agent_idx].append(
+                            self.envs[agent_idx].base_env.current_state.copy()
+                        )
+                        self._ep_materials[agent_idx].append(torch.tensor(material))
+                        self._ep_thicknesses[agent_idx].append(torch.tensor(thickness))
+
+                    # Step environment — pass episode data on final step for BC loss
+                    episode_data = None
+                    if self.bc_weight > 0 and hasattr(self, "_ep_states"):
+                        episode_data = {
+                            "states": self._ep_states[agent_idx],
+                            "discrete_actions": self._ep_materials[agent_idx],
+                            "continuous_actions": self._ep_thicknesses[agent_idx],
+                        }
+                    next_obs, reward, done, _, info = self.envs[agent_idx].step(
+                        action, episode_data=episode_data
+                    )
                     next_mask = info["mask"]
 
                     # Store transition
@@ -1187,6 +1339,12 @@ class PreferenceMultiAgentPPO:
                         )
                         if resample_prefs or resample_constraints:
                             self._update_agent_preferences_and_constraints(agent_idx)
+
+                        # Clear episode tracking lists for next episode
+                        if self.bc_weight > 0 and hasattr(self, "_ep_states"):
+                            self._ep_states[agent_idx] = []
+                            self._ep_materials[agent_idx] = []
+                            self._ep_thicknesses[agent_idx] = []
 
                         self._reset(agent_idx)
                         obs = self._obs[agent_idx]
@@ -1249,12 +1407,20 @@ class PreferenceMultiAgentPPO:
                     self._agent_preferences[agent_idx].items(), key=lambda x: x[1]
                 )[0]
                 target_obj_idx = self.objective_to_idx[target_obj]
+                pareto_episodes = (
+                    self.envs[agent_idx].base_env.pareto_front_episodes
+                    if (self.bc_weight > 0 and self.warmup_done)
+                    else None
+                )
                 self._ppo_logs = self.agents[agent_idx].update(
                     rollout_data,
                     self.n_epochs,
                     self.batch_size,
                     target_obj_idx,
                     update_value=False,
+                    pareto_episodes=pareto_episodes,
+                    bc_weight=self.bc_weight,
+                    env_wrapper=self.envs[agent_idx],
                 )
 
             # Update shared critic with all agents' data
@@ -1365,6 +1531,7 @@ def train(config_path: str, save_dir: str = None) -> dict:
     n_epochs = _get("n_epochs", 10, int)
     batch_size = _get("batch_size", 256, int)
     constraint_penalty = _get("constraint_penalty", 3.0, float)
+    bc_weight = _get("bc_weight", 0.0, float)
     resample_prefs_freq = _get("resample_prefs_freq", 1, int)
     resample_constraints_freq = _get("resample_constraints_freq", 1, int)
     lr = _get("lr", 3e-4, float)
@@ -1426,6 +1593,7 @@ def train(config_path: str, save_dir: str = None) -> dict:
                 "n_epochs": n_epochs,
                 "batch_size": batch_size,
                 "constraint_penalty": constraint_penalty,
+                "bc_weight": bc_weight,
                 "resample_prefs_freq": resample_prefs_freq,
                 "resample_constraints_freq": resample_constraints_freq,
                 "lr": lr,
@@ -1446,6 +1614,7 @@ def train(config_path: str, save_dir: str = None) -> dict:
         epochs_per_step=epochs_per_step,
         steps_per_objective=steps_per_objective,
         constraint_penalty=constraint_penalty,
+        bc_weight=bc_weight,
         resample_prefs_freq=resample_prefs_freq,
         resample_constraints_freq=resample_constraints_freq,
         hidden=hidden,
