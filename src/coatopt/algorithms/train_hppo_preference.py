@@ -16,6 +16,7 @@ Config section: [hppo_preference]
   batch_size               = 256
   constraint_penalty       = 3.0
   bc_weight                = 0.0            # Behaviour cloning weight from Pareto episodes (0.0 = disabled)
+  preference_mode          = dirichlet      # "dirichlet" = continuous weights, "onehot" = single-objective per episode
   resample_prefs_freq      = 1              # Resample preferences every N episodes per agent
   resample_constraints_freq = 1             # Resample constraints every N episodes per agent
   lr                       = 3e-4
@@ -879,6 +880,7 @@ class PreferenceMultiAgentPPO:
         steps_per_objective: int = 10,
         constraint_penalty: float = 3.0,
         bc_weight: float = 0.0,
+        preference_mode: str = "dirichlet",
         resample_prefs_freq: int = 1,
         resample_constraints_freq: int = 1,
         hidden: List[int] = None,
@@ -926,6 +928,7 @@ class PreferenceMultiAgentPPO:
         self.epochs_per_step = epochs_per_step
         self.steps_per_objective = steps_per_objective
         self.bc_weight = bc_weight
+        self.preference_mode = preference_mode
         self.resample_prefs_freq = resample_prefs_freq
         self.resample_constraints_freq = resample_constraints_freq
 
@@ -1051,8 +1054,18 @@ class PreferenceMultiAgentPPO:
         self._ppo_logs = {}
 
     def _sample_random_preferences(self) -> Dict[str, float]:
-        """Sample random preference weights that sum to 1."""
-        weights = np.random.dirichlet(np.ones(self.n_objectives))
+        """Sample random preference weights that sum to 1.
+
+        Modes:
+          "dirichlet" — continuous weights sampled from Dirichlet(1,...,1)
+          "onehot"    — one objective gets weight 1, all others 0
+        """
+        if self.preference_mode == "onehot":
+            idx = np.random.randint(self.n_objectives)
+            weights = np.zeros(self.n_objectives)
+            weights[idx] = 1.0
+        else:  # dirichlet
+            weights = np.random.dirichlet(np.ones(self.n_objectives))
         return {obj: float(w) for obj, w in zip(self.objectives, weights)}
 
     def _reset(self, i: int):
@@ -1532,6 +1545,7 @@ def train(config_path: str, save_dir: str = None) -> dict:
     batch_size = _get("batch_size", 256, int)
     constraint_penalty = _get("constraint_penalty", 3.0, float)
     bc_weight = _get("bc_weight", 0.0, float)
+    preference_mode = _get("preference_mode", "dirichlet", str)
     resample_prefs_freq = _get("resample_prefs_freq", 1, int)
     resample_constraints_freq = _get("resample_constraints_freq", 1, int)
     lr = _get("lr", 3e-4, float)
@@ -1594,6 +1608,7 @@ def train(config_path: str, save_dir: str = None) -> dict:
                 "batch_size": batch_size,
                 "constraint_penalty": constraint_penalty,
                 "bc_weight": bc_weight,
+                "preference_mode": preference_mode,
                 "resample_prefs_freq": resample_prefs_freq,
                 "resample_constraints_freq": resample_constraints_freq,
                 "lr": lr,
@@ -1615,6 +1630,7 @@ def train(config_path: str, save_dir: str = None) -> dict:
         steps_per_objective=steps_per_objective,
         constraint_penalty=constraint_penalty,
         bc_weight=bc_weight,
+        preference_mode=preference_mode,
         resample_prefs_freq=resample_prefs_freq,
         resample_constraints_freq=resample_constraints_freq,
         hidden=hidden,
