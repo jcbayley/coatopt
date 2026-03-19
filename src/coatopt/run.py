@@ -19,6 +19,7 @@ def run_experiment(
     run_name_override: str = None,
     generate_comparison: bool = False,
     seed_override: int = None,
+    continue_run: bool = False,
 ):
     """Run experiment based on config file.
 
@@ -107,14 +108,20 @@ def run_experiment(
     # Directory structure mirrors MLflow: runs/experiment/run
     save_dir = Path(base_save_dir) / experiment_name / run_dir_name
 
-    # Check if directory exists and warn
+    # Check if directory exists
     if save_dir.exists():
-        warnings.warn(
-            f"\nWARNING: Run directory already exists: {save_dir}\n"
-            f"    This will overwrite existing results!\n",
-            UserWarning,
-        )
-        sys.exit()
+        if not continue_run:
+            warnings.warn(
+                f"\nWARNING: Run directory already exists: {save_dir}\n"
+                f"    Use --continue to resume training from a checkpoint.\n",
+                UserWarning,
+            )
+            sys.exit()
+        checkpoint_path = save_dir / "checkpoint_latest.pt"
+        if checkpoint_path.exists():
+            print(f"Continuing training from checkpoint: {checkpoint_path}")
+        else:
+            print(f"No checkpoint found in {save_dir}, starting from scratch.")
 
     save_dir.mkdir(parents=True, exist_ok=True)
 
@@ -311,6 +318,12 @@ if __name__ == "__main__":
         default=None,
         help="Override random seed from config file (useful for parallel runs)",
     )
+    parser.add_argument(
+        "--continue",
+        action="store_true",
+        dest="continue_run",
+        help="Continue training from an existing checkpoint in the run directory",
+    )
 
     args = parser.parse_args()
     run_experiment(
@@ -318,4 +331,5 @@ if __name__ == "__main__":
         run_name_override=args.run_name,
         generate_comparison=args.generate_comparison,
         seed_override=args.seed,
+        continue_run=args.continue_run,
     )
