@@ -1191,6 +1191,13 @@ class PreferenceMultiAgentPPO:
         for obj, best in self.warmup_best.items():
             metrics[f"warmup_best.{obj}"] = best
 
+        # Current constraint thresholds (mean across agents; 0.0 during warmup)
+        for obj in self.objectives:
+            agent_vals = [
+                self._agent_constraints[i].get(obj, 0.0) for i in range(self.n_agents)
+            ]
+            metrics[f"constraint.{obj}"] = float(np.mean(agent_vals))
+
         mlflow.log_metrics(metrics, step=step)
 
         # Periodic checkpointing
