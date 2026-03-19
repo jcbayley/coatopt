@@ -1246,6 +1246,12 @@ def train(config_path: str, save_dir: str):
                 for obj, best in env.env.warmup_best_rewards.items():
                     metrics[f"warmup_best.{obj}"] = best
 
+                # Current constraint thresholds (0.0 during warmup)
+                for obj in objectives:
+                    metrics[f"constraint.{obj}"] = float(
+                        env.env.constraints.get(obj, 0.0)
+                    )
+
                 # Monitor air material bias (check if it's shooting up)
                 air_bias = float(policy.material_head.bias[0].item())
                 metrics["policy.air_bias"] = air_bias
