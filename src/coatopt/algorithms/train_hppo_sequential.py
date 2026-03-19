@@ -50,6 +50,7 @@ import torch
 import torch.nn as nn
 
 from coatopt.environments.environment import CoatingEnvironment
+from coatopt.utils.checkpoint import load_checkpoint, save_checkpoint
 from coatopt.utils.configs import Config, load_config
 from coatopt.utils.math_utils import TruncatedNormalDist
 from coatopt.utils.utils import load_materials
@@ -72,6 +73,7 @@ class CoatOptHybridEnv(gym.Env):
         constraint_penalty: float = 3.0,
         mask_consecutive_materials: bool = True,
         min_layers_before_air: int = 4,
+        randomise_constraints: bool = False,
     ):
         super().__init__()
         self.env = CoatingEnvironment(config, materials)
@@ -88,6 +90,7 @@ class CoatOptHybridEnv(gym.Env):
         )  # Total warmup
         self.epochs_per_step = epochs_per_step
         self.steps_per_objective = steps_per_objective
+        self.randomise_constraints = randomise_constraints
         self.episode_count = 0
         self.is_warmup = True
 
@@ -184,10 +187,15 @@ class CoatOptHybridEnv(gym.Env):
             level = (phase // len(self.objectives)) % self.steps_per_objective
 
             # Set constraints on other objectives
+            max_frac = (level + 1) / self.steps_per_objective
             constraints = {}
             for i, obj in enumerate(self.objectives):
                 if i != obj_idx:
-                    frac = (level + 1) / self.steps_per_objective
+                    frac = (
+                        np.random.uniform(0, max_frac)
+                        if self.randomise_constraints
+                        else max_frac
+                    )
                     best = self.env.warmup_best_rewards.get(obj, 0.0)
                     constraints[obj] = frac * best
 
@@ -856,6 +864,9 @@ def train(config_path: str, save_dir: str):
     # Read logging frequencies
     mlflow_log_freq = parser.getint("general", "mlflow_log_freq", fallback=50)
     plot_freq = _get("plot_freq", 500, int)
+    randomise_constraints = _get(
+        "randomise_constraints", False, lambda x: x.lower() == "true"
+    )
 
     # Parse hidden layers
     hidden_str = _get("hidden", "[256, 256]")
@@ -902,6 +913,7 @@ def train(config_path: str, save_dir: str):
         constraint_penalty=constraint_penalty,
         mask_consecutive_materials=mask_consecutive,
         min_layers_before_air=min_layers_before_air,
+        randomise_constraints=randomise_constraints,
     )
 
     # Enable Pareto bonus (hypervolume improvement reward)
@@ -985,6 +997,23 @@ def train(config_path: str, save_dir: str):
     total_warmup_episodes = warmup_episodes * len(objectives)
     warmup_end_episode = 0  # Track when warmup ended for phase-based annealing reset
     was_warmup = True  # Track warmup state to detect transition
+
+    # Resume from checkpoint if one exists
+    ckpt = load_checkpoint(save_dir)
+    if ckpt:
+        policy.load_state_dict(ckpt["networks"]["policy"])
+        agent.optimizer.load_state_dict(ckpt["optimizers"]["agent"])
+        env.env.pareto_front_rewards = ckpt["pareto"]["rewards"]
+        env.env.pareto_front_values = ckpt["pareto"]["values"]
+        env.env.pareto_front_episodes = ckpt["pareto"]["episodes"]
+        env.env.warmup_best_rewards = ckpt["pareto"]["warmup_best"]
+        env.episode_count = ckpt["episode"]
+        env.is_warmup = ckpt["meta"]["is_warmup"]
+        env.env.is_warmup = ckpt["meta"]["is_warmup"]
+        warmup_end_episode = ckpt["meta"]["warmup_end_episode"]
+        was_warmup = ckpt["meta"]["is_warmup"]
+        if verbose:
+            print(f"Resumed from checkpoint at episode {ckpt['episode']}")
 
     # Training loop
     obs, info = env.reset()
@@ -1143,20 +1172,6 @@ def train(config_path: str, save_dir: str):
             env_wrapper=env,
         )
 
-        # Print sample designs after every update during warmup
-        if verbose and env.is_warmup and len(sample_designs) > 0:
-            print(f"  Samples (last 3):", end=" ")
-            for s in sample_designs[-3:]:
-                state = s["state_array"]
-                mats = [
-                    np.argmax(state[j][1:])
-                    for j in range(len(state))
-                    if state[j][0] > 0
-                ]
-                mat_seq = "".join(map(str, mats))
-                print(f"{mat_seq} ", end="")
-            print()
-
         # Logging
         if env.episode_count % mlflow_log_freq == 0:
             if verbose:
@@ -1249,76 +1264,6 @@ def train(config_path: str, save_dir: str):
 
                 mlflow.log_metrics(metrics, step=env.episode_count)
 
-        # Save sample designs from warmup for debugging
-        if (
-            env.is_warmup
-            and env.episode_count % 1000 == 0
-            and env.episode_count > 0
-            and sample_designs
-        ):
-            try:
-                import pandas as pd
-
-                save_path = Path(save_dir)
-                save_path.mkdir(parents=True, exist_ok=True)
-
-                # Create dataframe with sample designs
-                design_data = []
-                for sample in sample_designs:
-                    state = sample["state_array"]
-                    materials = []
-                    thicknesses = []
-                    for i in range(len(state)):
-                        if state[i][0] > 0:
-                            thickness = state[i][0]
-                            mat_idx = np.argmax(state[i][1:])
-                            materials.append(mat_idx)
-                            thicknesses.append(thickness)
-
-                    mat_seq = "".join(map(str, materials))
-                    design_data.append(
-                        {
-                            "episode": sample["episode"],
-                            "target_obj": sample["target_obj"],
-                            "material_sequence": mat_seq,
-                            "length": sample["length"],
-                            "thickness_mean": (
-                                np.mean(thicknesses) if thicknesses else 0
-                            ),
-                            "thickness_std": (
-                                np.std(thicknesses) if len(thicknesses) > 1 else 0
-                            ),
-                            "reflectivity": sample["vals"].get("reflectivity", 0.0),
-                            "absorption": sample["vals"].get("absorption", 0.0),
-                            "reward": sample["reward"],
-                        }
-                    )
-
-                df = pd.DataFrame(design_data)
-                csv_path = save_path / f"warmup_samples_ep{env.episode_count}.csv"
-                df.to_csv(csv_path, index=False)
-
-                if verbose:
-                    print(
-                        f"  Saved {len(design_data)} warmup sample designs to {csv_path}"
-                    )
-
-                    # Print pattern analysis
-                    print("\n  === Material Pattern Analysis ===")
-                    pattern_counts = df["material_sequence"].value_counts().head(5)
-                    for pattern, count in pattern_counts.items():
-                        avg_reward = df[df["material_sequence"] == pattern][
-                            "reward"
-                        ].mean()
-                        print(
-                            f"    Pattern '{pattern}': {count} times, avg_reward={avg_reward:.3f}"
-                        )
-                    print("  " + "=" * 70 + "\n")
-
-            except Exception as e:
-                if verbose:
-                    print(f"  [warmup samples] skipped: {e}")
-
         # Periodic checkpointing
         if env.episode_count % plot_freq == 0 and env.episode_count > 0:
             try:
@@ -1328,16 +1273,36 @@ def train(config_path: str, save_dir: str):
                     save_path = Path(save_dir)
                     save_path.mkdir(parents=True, exist_ok=True)
                     designs_df.to_csv(
-                        save_path / f"pareto_designs_ep{env.episode_count}.csv",
+                        save_path / "pareto_designs.csv",
                         index=False,
                     )
                     values_df.to_csv(
-                        save_path / f"pareto_values_ep{env.episode_count}.csv",
+                        save_path / "pareto_values.csv",
                         index=False,
                     )
                     rewards_df.to_csv(
-                        save_path / f"pareto_rewards_ep{env.episode_count}.csv",
+                        save_path / "pareto_rewards.csv",
                         index=False,
+                    )
+
+                    # Save model weights + training state
+                    save_checkpoint(
+                        save_dir,
+                        env.episode_count,
+                        {
+                            "networks": {"policy": policy.state_dict()},
+                            "optimizers": {"agent": agent.optimizer.state_dict()},
+                            "pareto": {
+                                "rewards": env.env.pareto_front_rewards,
+                                "values": env.env.pareto_front_values,
+                                "episodes": env.env.pareto_front_episodes,
+                                "warmup_best": env.env.warmup_best_rewards,
+                            },
+                            "meta": {
+                                "is_warmup": env.is_warmup,
+                                "warmup_end_episode": warmup_end_episode,
+                            },
+                        },
                     )
 
                     if verbose:

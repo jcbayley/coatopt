@@ -58,6 +58,7 @@ import torch.nn.functional as F
 from torch.optim import Adam
 
 from coatopt.environments.environment import CoatingEnvironment
+from coatopt.utils.checkpoint import load_checkpoint, save_checkpoint
 from coatopt.utils.configs import Config, load_config
 from coatopt.utils.math_utils import TruncatedNormalDist
 from coatopt.utils.plotting import plot_pareto_front
@@ -1202,15 +1203,9 @@ class PreferenceMultiAgentPPO:
                     # Save CSVs
                     save_path = Path(self.save_dir)
                     save_path.mkdir(parents=True, exist_ok=True)
-                    designs_df.to_csv(
-                        save_path / f"pareto_designs_ep{episode}.csv", index=False
-                    )
-                    values_df.to_csv(
-                        save_path / f"pareto_values_ep{episode}.csv", index=False
-                    )
-                    rewards_df.to_csv(
-                        save_path / f"pareto_rewards_ep{episode}.csv", index=False
-                    )
+                    designs_df.to_csv(save_path / "pareto_designs.csv", index=False)
+                    values_df.to_csv(save_path / "pareto_values.csv", index=False)
+                    rewards_df.to_csv(save_path / "pareto_rewards.csv", index=False)
 
                     # Plot
                     plot_pareto_front(
@@ -1219,6 +1214,45 @@ class PreferenceMultiAgentPPO:
                         self.save_dir,
                         "vals",
                         f"ppo_preference_ep{episode}",
+                    )
+
+                    # Save model weights + training state
+                    save_checkpoint(
+                        self.save_dir,
+                        episode,
+                        {
+                            "networks": {
+                                "agents": [a.policy.state_dict() for a in self.agents],
+                                "shared_critic": self.shared_value_net.state_dict(),
+                                **(
+                                    {"shared_lstm": self.shared_lstm.state_dict()}
+                                    if self.use_lstm
+                                    else {}
+                                ),
+                            },
+                            "optimizers": {
+                                "agents": [
+                                    a.optimizer.state_dict() for a in self.agents
+                                ],
+                                "value": self.value_optimizer.state_dict(),
+                                **(
+                                    {"lstm": self.lstm_optimizer.state_dict()}
+                                    if self.use_lstm
+                                    else {}
+                                ),
+                            },
+                            "pareto": {
+                                "rewards": self.envs[0].base_env.pareto_front_rewards,
+                                "values": self.envs[0].base_env.pareto_front_values,
+                                "episodes": self.envs[0].base_env.pareto_front_episodes,
+                                "warmup_best": self.warmup_best,
+                            },
+                            "meta": {
+                                "warmup_done": self.warmup_done,
+                                "warmup_end_episode": self._warmup_end_episode,
+                                "agent_episode_counts": list(self._agent_episode_count),
+                            },
+                        },
                     )
 
                     if self.verbose:
@@ -1233,6 +1267,33 @@ class PreferenceMultiAgentPPO:
         for i in range(self.n_agents):
             self._update_agent_preferences_and_constraints(i)
             self._reset(i)
+
+        # Resume from checkpoint if one exists
+        if self.save_dir:
+            ckpt = load_checkpoint(self.save_dir)
+            if ckpt:
+                for i, agent in enumerate(self.agents):
+                    agent.policy.load_state_dict(ckpt["networks"]["agents"][i])
+                    agent.optimizer.load_state_dict(ckpt["optimizers"]["agents"][i])
+                self.shared_value_net.load_state_dict(ckpt["networks"]["shared_critic"])
+                self.value_optimizer.load_state_dict(ckpt["optimizers"]["value"])
+                if self.use_lstm and "shared_lstm" in ckpt["networks"]:
+                    self.shared_lstm.load_state_dict(ckpt["networks"]["shared_lstm"])
+                    self.lstm_optimizer.load_state_dict(ckpt["optimizers"]["lstm"])
+                primary = self.envs[0].base_env
+                primary.pareto_front_rewards = ckpt["pareto"]["rewards"]
+                primary.pareto_front_values = ckpt["pareto"]["values"]
+                primary.pareto_front_episodes = ckpt["pareto"]["episodes"]
+                for env in self.envs[1:]:
+                    env.base_env.pareto_front_rewards = primary.pareto_front_rewards
+                    env.base_env.pareto_front_values = primary.pareto_front_values
+                self.warmup_best = ckpt["pareto"]["warmup_best"]
+                self.episode_count = ckpt["episode"]
+                self.warmup_done = ckpt["meta"]["warmup_done"]
+                self._warmup_end_episode = ckpt["meta"]["warmup_end_episode"]
+                self._agent_episode_count = ckpt["meta"]["agent_episode_counts"]
+                if self.verbose:
+                    print(f"Resumed from checkpoint at episode {ckpt['episode']}")
 
         if self.verbose:
             print(f"Warmup for {self.total_warmup_episodes} episodes...")
