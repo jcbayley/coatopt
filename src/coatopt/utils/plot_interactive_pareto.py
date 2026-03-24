@@ -1,21 +1,32 @@
 #!/usr/bin/env python3
 """
 Interactive Pareto front and coating design visualization using Plotly.
-Creates a single HTML file with two plots side by side.
+
+For 2 objectives: single scatter panel + coating design side by side.
+For N > 2 objectives: lower-triangle pairwise grid (matching plot_pareto_projections.py)
+with points coloured by a third objective, plus coating design in the top-right cell.
 """
 
 import argparse
 import configparser
+import itertools
 import json
 import os
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
+from coatopt.utils.interactive_plots import (
+    _OBJ_CONFIG,
+    _detect_objectives,
+    _obj_label,
+    _obj_scale,
+    _obj_transform,
+)
 from coatopt.utils.utils import load_pareto_front
 
 
@@ -113,139 +124,321 @@ def create_interactive_plot(
     values_df: pd.DataFrame,
     materials: Dict,
     max_designs: int = None,
-) -> go.Figure:
-    """Create interactive Plotly figure with Pareto front and coating designs.
+) -> Tuple[go.Figure, int]:
+    """Create interactive Plotly figure with pairwise Pareto projections and coating designs.
+
+    For 2 objectives: single Pareto scatter + coating design (1×2 grid).
+    For N > 2 objectives: lower-triangle pairwise grid + coating design in top-right.
+    Points are coloured by a third objective (viridis) when available.
 
     Args:
-        designs_df: DataFrame with design variables (thickness_0, material_0, thickness_1, material_1, ...)
-        values_df: DataFrame with objective values (reflectivity, absorption, etc.)
+        designs_df: DataFrame with design variables
+        values_df: DataFrame with objective values
         materials: Material properties dictionary
-        max_designs: Maximum number of designs to include (None = all designs)
+        max_designs: Maximum number of designs to include (None = all)
 
     Returns:
-        Plotly Figure object
+        (figure, n_pairs) – the Plotly figure and the number of Pareto scatter panels,
+        needed to correctly route click events in the HTML post_script.
     """
-    # Combine for easier handling
+    # ── sort & limit ──────────────────────────────────────────────────────────
     combined_df = pd.concat([designs_df, values_df], axis=1)
-
-    # Sort by reflectivity (best first)
-    combined_df = combined_df.sort_values("reflectivity", ascending=False).reset_index(
+    sort_col = (
+        "reflectivity"
+        if "reflectivity" in combined_df.columns
+        else combined_df.columns[0]
+    )
+    combined_df = combined_df.sort_values(sort_col, ascending=False).reset_index(
         drop=True
     )
-
-    # Limit to max_designs if specified
     if max_designs is not None:
         combined_df = combined_df.head(max_designs)
-
-    # Create subplots: Pareto front (left) and coating design (right)
-    fig = make_subplots(
-        rows=1,
-        cols=2,
-        column_widths=[0.5, 0.5],
-        subplot_titles=("Pareto Front", "Coating Design"),
-        specs=[[{"type": "scatter"}, {"type": "bar"}]],
-    )
-
-    # Add Pareto front scatter plot (all points) - ALWAYS VISIBLE
-    # Add customdata to track design index for click events
-    fig.add_trace(
-        go.Scatter(
-            x=combined_df["absorption"],
-            y=1 - combined_df["reflectivity"],  # Loss = 1 - reflectivity
-            mode="markers+lines",
-            marker=dict(size=10, color="lightblue", line=dict(width=1, color="black")),
-            line=dict(color="lightblue", width=2, dash="dash"),
-            name="Pareto Front",
-            customdata=list(range(len(combined_df))),  # Store design index
-            hovertemplate=(
-                "Design %{customdata}<br>"
-                "Absorption: %{x:.2e} ppm<br>"
-                "Loss (1-R): %{y:.2e}<br>"
-                "<i>Click to view design</i><extra></extra>"
-            ),
-        ),
-        row=1,
-        col=1,
-    )
-
-    # Add highlighted points for each design (one per design, toggle visibility)
-    for idx in range(len(combined_df)):
-        fig.add_trace(
-            go.Scatter(
-                x=[combined_df.iloc[idx]["absorption"]],
-                y=[1 - combined_df.iloc[idx]["reflectivity"]],
-                mode="markers",
-                marker=dict(size=15, color="red", line=dict(width=2, color="darkred")),
-                name="Selected",
-                showlegend=False,
-                visible=(idx == 0),  # Only first one visible initially
-            ),
-            row=1,
-            col=1,
-        )
-
-    # Create coating design traces for each Pareto point
-    # We'll create all traces but only show the first one initially
-    all_coating_traces = []
-    for idx in range(len(combined_df)):
-        row = combined_df.iloc[idx]
-        thicknesses, material_indices = parse_design(row)
-
-        visible = idx == 0  # Only first design visible initially
-        traces = create_coating_trace(
-            thicknesses, material_indices, materials, f"Design {idx}", visible=visible
-        )
-        all_coating_traces.extend(traces)
-
-        # Add to figure
-        for trace in traces:
-            fig.add_trace(trace, row=1, col=2)
-
-    # Create buttons to select which design to show
-    buttons = []
     n_designs = len(combined_df)
 
-    for idx in range(n_designs):
-        row = combined_df.iloc[idx]
-        refl = row["reflectivity"]
-        loss = 1 - refl
-        absorp = row["absorption"]
+    # ── objectives ────────────────────────────────────────────────────────────
+    objectives = _detect_objectives(values_df)
+    n_obj = len(objectives)
+    pairs = list(itertools.combinations(range(n_obj), 2))
+    n_pairs = len(pairs)
 
-        # Build visibility array
-        # Trace 0: Pareto front (always visible)
-        # Traces 1 to n_designs: Highlighted points (only one visible)
-        # Traces n_designs+1 onwards: Coating designs (1 trace per design)
-        visible_array = [True]  # Pareto front always visible
+    # ── layout ────────────────────────────────────────────────────────────────
+    # Grid: n_rows = n_obj-1, n_cols = n_obj
+    # Lower triangle (col <= row): pairwise Pareto panels
+    # Top-right corner (row=0, col=n_obj-1): coating design
+    n_rows = max(1, n_obj - 1)
+    n_cols = n_obj  # last col reserved for coating
 
-        # Highlighted points - only show the one for this design
-        for highlight_idx in range(n_designs):
-            visible_array.append(highlight_idx == idx)
+    # Build specs (None = hidden/empty cell)
+    specs = []
+    for r in range(n_rows):
+        row_specs = []
+        for c in range(n_cols):
+            if r == 0 and c == n_cols - 1:
+                row_specs.append({"type": "bar"})
+            elif c < n_cols - 1 and c <= r:
+                row_specs.append({"type": "scatter"})
+            else:
+                row_specs.append(None)
+        specs.append(row_specs)
 
-        # Coating design traces - one per design, show only the selected one
-        for design_idx in range(n_designs):
-            visible_array.append(design_idx == idx)
+    # Equal column widths
+    col_widths = [1.0 / n_cols] * n_cols
 
-        button = dict(
-            label=f"Design {idx+1}",
-            method="update",
-            args=[
-                {"visible": visible_array},
-                {
-                    "title": f"Coating Design {idx+1}<br>R={refl:.9f}, L={loss:.2e}, A={absorp:.2e} ppm"
-                },
-            ],
+    fig = make_subplots(
+        rows=n_rows,
+        cols=n_cols,
+        specs=specs,
+        column_widths=col_widths,
+        horizontal_spacing=0.08,
+        vertical_spacing=0.14,
+    )
+
+    # Map pair index → (plotly_row, plotly_col) – both 1-indexed
+    # Pair (ci, cj) with ci < cj maps to grid cell (row=cj-1, col=ci) 0-indexed
+    # → Plotly (row=cj, col=ci+1)
+    panel_pos = [(cj, ci + 1) for (ci, cj) in pairs]
+
+    # ── colour range for third-objective coloring ─────────────────────────────
+    color_ranges: Dict[int, Tuple[float, float]] = {}
+    for ci, cj in pairs:
+        ck_list = [k for k in range(n_obj) if k not in (ci, cj)]
+        if ck_list:
+            ck = ck_list[0]
+            if ck not in color_ranges:
+                vals = _obj_transform(
+                    objectives[ck], combined_df[objectives[ck]].values
+                )
+                fin = vals[np.isfinite(vals)]
+                if len(fin):
+                    color_ranges[ck] = (float(fin.min()), float(fin.max()))
+
+    # ── Trace layout ──────────────────────────────────────────────────────────
+    # Indices 0 … n_pairs-1                : main Pareto scatter (always visible)
+    # Indices n_pairs … n_pairs*(1+n_designs)-1: highlighted points (pair-major order)
+    # Indices n_pairs*(1+n_designs) … +n_designs-1: coating bars
+
+    # Add main Pareto scatter traces (one per pair panel)
+    for pair_idx, (ci, cj) in enumerate(pairs):
+        r1, c1 = panel_pos[pair_idx]
+        obj_x, obj_y = objectives[ci], objectives[cj]
+        x_vals = _obj_transform(obj_x, combined_df[obj_x].values)
+        y_vals = _obj_transform(obj_y, combined_df[obj_y].values)
+
+        ck_list = [k for k in range(n_obj) if k not in (ci, cj)]
+        ck = ck_list[0] if ck_list else None
+
+        if ck is not None and ck in color_ranges:
+            color_vals = _obj_transform(
+                objectives[ck], combined_df[objectives[ck]].values
+            )
+            vmin, vmax = color_ranges[ck]
+            # Only show colorbar on the first panel to avoid duplicates
+            show_cbar = pair_idx == 0
+            marker = dict(
+                size=10,
+                color=color_vals,
+                colorscale="Viridis",
+                cmin=vmin,
+                cmax=vmax,
+                line=dict(width=0.8, color="black"),
+                colorbar=(
+                    dict(
+                        title=dict(text=_obj_label(objectives[ck]), side="right"),
+                        len=0.5,
+                        x=1.02,
+                    )
+                    if show_cbar
+                    else None
+                ),
+                showscale=show_cbar,
+            )
+        else:
+            marker = dict(
+                size=10, color="steelblue", line=dict(width=0.8, color="black")
+            )
+
+        fig.add_trace(
+            go.Scatter(
+                x=x_vals,
+                y=y_vals,
+                mode="markers",
+                marker=marker,
+                name=f"{_obj_label(obj_x)} vs {_obj_label(obj_y)}",
+                customdata=list(range(n_designs)),
+                showlegend=False,
+                hovertemplate=(
+                    "Design %{customdata}<br>"
+                    + f"{_obj_label(obj_x)}: %{{x:.3e}}<br>"
+                    + f"{_obj_label(obj_y)}: %{{y:.3e}}<br>"
+                    + "<i>Click to view design</i><extra></extra>"
+                ),
+            ),
+            row=r1,
+            col=c1,
         )
-        buttons.append(button)
 
-    # Update layout
+    # Add highlighted point traces (n_pairs × n_designs, pair-major order)
+    for pair_idx, (ci, cj) in enumerate(pairs):
+        r1, c1 = panel_pos[pair_idx]
+        obj_x, obj_y = objectives[ci], objectives[cj]
+
+        for idx in range(n_designs):
+            x_val = float(
+                _obj_transform(obj_x, np.array([combined_df.iloc[idx][obj_x]]))[0]
+            )
+            y_val = float(
+                _obj_transform(obj_y, np.array([combined_df.iloc[idx][obj_y]]))[0]
+            )
+            fig.add_trace(
+                go.Scatter(
+                    x=[x_val],
+                    y=[y_val],
+                    mode="markers",
+                    marker=dict(
+                        size=15, color="red", line=dict(width=2, color="darkred")
+                    ),
+                    name="Selected",
+                    showlegend=False,
+                    visible=(idx == 0),
+                ),
+                row=r1,
+                col=c1,
+            )
+
+    # Add coating design traces (top-right corner, row=1, col=n_cols)
+    coating_row, coating_col = 1, n_cols
+    for idx in range(n_designs):
+        row_data = combined_df.iloc[idx]
+        thicknesses, material_indices = parse_design(row_data)
+        traces = create_coating_trace(
+            thicknesses,
+            material_indices,
+            materials,
+            f"Design {idx}",
+            visible=(idx == 0),
+        )
+        for trace in traces:
+            fig.add_trace(trace, row=coating_row, col=coating_col)
+
+    # ── Dropdown buttons ──────────────────────────────────────────────────────
+    # Visibility layout:
+    #   [0 .. n_pairs-1]                        always True
+    #   [n_pairs + pair*n_designs + d]           True only when d == idx
+    #   [n_pairs*(1+n_designs) + d]              True only when d == idx
+    buttons = []
+    for idx in range(n_designs):
+        row_data = combined_df.iloc[idx]
+        title_parts = [
+            f"{_obj_label(obj)}={row_data[obj]:.4e}"
+            for obj in objectives
+            if obj in row_data
+        ]
+        title_str = f"Design {idx + 1}<br>" + " | ".join(title_parts)
+
+        vis: List[bool] = []
+        for _ in range(n_pairs):  # main pareto panels: always on
+            vis.append(True)
+        for _ in range(n_pairs):  # highlighted points per panel
+            for d in range(n_designs):
+                vis.append(d == idx)
+        for d in range(n_designs):  # coating traces
+            vis.append(d == idx)
+
+        buttons.append(
+            dict(
+                label=f"Design {idx + 1}",
+                method="update",
+                args=[{"visible": vis}, {"title": title_str}],
+            )
+        )
+
+    # ── Axis configuration ────────────────────────────────────────────────────
+    for pair_idx, (ci, cj) in enumerate(pairs):
+        r1, c1 = panel_pos[pair_idx]
+        obj_x, obj_y = objectives[ci], objectives[cj]
+        fig.update_xaxes(
+            title_text=_obj_label(obj_x),
+            type=_obj_scale(obj_x),
+            showgrid=True,
+            gridwidth=1,
+            gridcolor="lightgray",
+            row=r1,
+            col=c1,
+        )
+        fig.update_yaxes(
+            title_text=_obj_label(obj_y),
+            type=_obj_scale(obj_y),
+            showgrid=True,
+            gridwidth=1,
+            gridcolor="lightgray",
+            row=r1,
+            col=c1,
+        )
+
+    fig.update_xaxes(showticklabels=False, row=coating_row, col=coating_col)
+    fig.update_yaxes(
+        title_text="Thickness (nm)",
+        showgrid=True,
+        gridwidth=1,
+        gridcolor="lightgray",
+        row=coating_row,
+        col=coating_col,
+    )
+
+    # Add panel title annotations manually (subplot_titles not used to avoid
+    # ambiguity with None specs)
+    annotations = list(fig.layout.annotations)
+    for pair_idx, (ci, cj) in enumerate(pairs):
+        r1, c1 = panel_pos[pair_idx]
+        obj_x, obj_y = objectives[ci], objectives[cj]
+        # Get the subplot domain to position the title
+        xref = f"x{'' if c1 == 1 else c1} domain"
+        yref = f"y{'' if r1 == 1 else r1} domain"
+        annotations.append(
+            dict(
+                text=f"<b>{_obj_label(obj_x)} vs {_obj_label(obj_y)}</b>",
+                xref=xref,
+                yref=yref,
+                x=0.5,
+                y=1.05,
+                xanchor="center",
+                yanchor="bottom",
+                showarrow=False,
+                font=dict(size=11),
+            )
+        )
+    annotations.append(
+        dict(
+            text="<b>Coating Design</b>",
+            xref=f"x{n_cols} domain",
+            yref="y domain",
+            x=0.5,
+            y=1.05,
+            xanchor="center",
+            yanchor="bottom",
+            showarrow=False,
+            font=dict(size=11),
+        )
+    )
+    fig.update_layout(annotations=annotations)
+
+    # ── Overall layout ────────────────────────────────────────────────────────
+    height = max(600, 320 * n_rows)
+    width = max(1200, 340 * n_cols)
+
     fig.update_layout(
-        title_text=f"Interactive Pareto Front and Coating Design Viewer<br><sub>Showing all {n_designs} designs - Click any point on the Pareto front to view its design</sub>",
+        title_text=(
+            f"Interactive Pareto Front — {n_designs} designs, {n_obj} objectives<br>"
+            f"<sub>Click any point to view its coating design</sub>"
+        ),
         title_x=0.5,
-        title_font_size=18,
-        showlegend=True,
-        height=600,
-        width=1400,
+        title_font_size=16,
+        showlegend=False,
+        height=height,
+        width=width,
         hovermode="closest",
+        template="plotly_white",
+        barmode="stack",
         updatemenus=[
             dict(
                 type="dropdown",
@@ -253,7 +446,7 @@ def create_interactive_plot(
                 buttons=buttons,
                 pad={"r": 10, "t": 10},
                 showactive=True,
-                x=1.15,
+                x=1.02,
                 xanchor="left",
                 y=1.0,
                 yanchor="top",
@@ -261,47 +454,7 @@ def create_interactive_plot(
         ],
     )
 
-    # Update axes
-    fig.update_xaxes(
-        title_text="Absorption (ppm)",
-        type="log",
-        row=1,
-        col=1,
-        showgrid=True,
-        gridwidth=1,
-        gridcolor="lightgray",
-    )
-    fig.update_yaxes(
-        title_text="Loss (1 - Reflectivity)",
-        type="log",
-        row=1,
-        col=1,
-        showgrid=True,
-        gridwidth=1,
-        gridcolor="lightgray",
-        exponentformat="power",
-    )
-
-    # Coating design axes
-    fig.update_xaxes(
-        showticklabels=False,
-        row=1,
-        col=2,
-    )
-    fig.update_yaxes(
-        title_text="Thickness (nm)",
-        row=1,
-        col=2,
-        showgrid=True,
-        gridwidth=1,
-        gridcolor="lightgray",
-        exponentformat="power",
-    )
-
-    # Set barmode to stack
-    fig.update_layout(barmode="stack")
-
-    return fig
+    return fig, n_pairs
 
 
 def main():
@@ -396,38 +549,37 @@ Example:
     print(f"  Found {len(materials)} materials")
 
     print(f"Creating interactive visualization...")
-    fig = create_interactive_plot(
+    fig, n_pairs = create_interactive_plot(
         designs_df, values_df, materials, max_designs=args.max_designs
     )
 
     print(f"Saving to {output_path}...")
-    # Add click event handler via config
-    config = {
+    plotly_config = {
         "displayModeBar": True,
         "displaylogo": False,
         "modeBarButtonsToRemove": ["lasso2d", "select2d"],
     }
+    # Click on any main Pareto scatter panel (curveNumber 0 .. n_pairs-1)
+    # triggers the dropdown to show that design's coating
+    post_script = f"""
+        var N_PAIRS = {n_pairs};
+        var plotDiv = document.getElementsByClassName('plotly-graph-div')[0];
+        if (plotDiv) {{
+            plotDiv.on('plotly_click', function(data) {{
+                var pt = data.points[0];
+                if (pt.curveNumber < N_PAIRS) {{
+                    var designIdx = pt.customdata;
+                    var buttons = document.querySelectorAll('[data-title^="Design"]');
+                    if (buttons[designIdx]) {{ buttons[designIdx].click(); }}
+                }}
+            }});
+        }}
+    """
     fig.write_html(
         str(output_path),
-        config=config,
+        config=plotly_config,
         include_plotlyjs="cdn",
-        post_script="""
-        var plotDiv = document.getElementById('plotly-div');
-        if (!plotDiv) {
-            plotDiv = document.getElementsByClassName('plotly-graph-div')[0];
-        }
-        if (plotDiv) {
-            plotDiv.on('plotly_click', function(data) {
-                if (data.points[0].curveNumber === 0) {
-                    var designIdx = data.points[0].customdata;
-                    var buttons = document.querySelectorAll('button[data-title^="Design"]');
-                    if (buttons[designIdx]) {
-                        buttons[designIdx].click();
-                    }
-                }
-            });
-        }
-        """,
+        post_script=post_script,
     )
 
     print(f"\nDone! Open {output_path} in your browser to view the interactive plot.")

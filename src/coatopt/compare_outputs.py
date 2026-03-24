@@ -6,10 +6,17 @@ from typing import List, Optional, Tuple
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-import plotly.graph_objects as go
-from plotly.subplots import make_subplots
 
 from coatopt.environments.state import CoatingState
+from coatopt.utils.interactive_plots import (
+    _detect_objectives,
+    _obj_label,
+    _obj_scale,
+    _obj_transform,
+    plot_pairwise_comparison_interactive,
+    plot_pareto_3d_interactive,
+    plot_pareto_parallel_coords_interactive,
+)
 from coatopt.utils.metrics import compute_hypervolume
 from coatopt.utils.utils import load_pareto_front
 
@@ -343,475 +350,6 @@ def plot_both_spaces_comparison(
         plt.show()
 
     plt.close(fig)
-
-
-def plot_both_spaces_comparison_interactive(
-    pareto_fronts: List[Tuple[Optional[pd.DataFrame], Optional[pd.DataFrame], str]],
-    save_path: Optional[Path] = None,
-    title: str = "Pareto Front Comparison",
-    reference_values: Optional[pd.DataFrame] = None,
-    reference_rewards: Optional[pd.DataFrame] = None,
-    group_runs: bool = True,
-):
-    """Plot both VALUE and REWARD space Pareto fronts side by side using Plotly (interactive).
-
-    Args:
-        pareto_fronts: List of (values_df, rewards_df, label) tuples
-        save_path: Path to save plot (will save as .html)
-        title: Overall plot title
-        reference_values: Reference designs in value space
-        reference_rewards: Reference designs in reward space
-        group_runs: If True, group runs with similar names (e.g., run001, run002) with color gradients
-    """
-    import re
-
-    # Helper function to extract base name and run number
-    def parse_run_name(label: str) -> Tuple[str, Optional[int]]:
-        """Extract base name and run number from a label.
-
-        Examples:
-            'experiment_run001' -> ('experiment', 1)
-            'experiment_run1' -> ('experiment', 1)
-            'experiment' -> ('experiment', None)
-        """
-        # Try to match patterns like _run001, _run1, -run001, -run1
-        match = re.search(r"[_-]run(\d+)$", label, re.IGNORECASE)
-        if match:
-            base_name = label[: match.start()]
-            run_num = int(match.group(1))
-            return base_name, run_num
-        return label, None
-
-    # Helper function to generate color gradient
-    def hex_to_rgb(hex_color: str) -> Tuple[int, int, int]:
-        """Convert hex color to RGB tuple."""
-        hex_color = hex_color.lstrip("#")
-        return tuple(int(hex_color[i : i + 2], 16) for i in (0, 2, 4))
-
-    def rgb_to_hex(rgb: Tuple[int, int, int]) -> str:
-        """Convert RGB tuple to hex color."""
-        return "#{:02x}{:02x}{:02x}".format(int(rgb[0]), int(rgb[1]), int(rgb[2]))
-
-    def create_color_gradient(base_color: str, n_colors: int) -> List[str]:
-        """Create a gradient of colors from base color to a lighter/darker version."""
-        if n_colors == 1:
-            return [base_color]
-
-        base_rgb = hex_to_rgb(base_color)
-        colors = []
-
-        for i in range(n_colors):
-            # Create gradient from darker to lighter
-            # Factor ranges from 0.6 (darker) to 1.0 (base) to 1.3 (lighter)
-            if n_colors > 1:
-                factor = 0.6 + (0.7 * i / (n_colors - 1))
-            else:
-                factor = 1.0
-
-            # Adjust brightness
-            new_rgb = tuple(min(255, max(0, int(c * factor))) for c in base_rgb)
-            colors.append(rgb_to_hex(new_rgb))
-
-        return colors
-
-    # Group runs if requested
-    if group_runs:
-        # Parse all labels and group by base name
-        run_groups = {}
-        for values_df, rewards_df, label in pareto_fronts:
-            base_name, run_num = parse_run_name(label)
-            if base_name not in run_groups:
-                run_groups[base_name] = []
-            run_groups[base_name].append((values_df, rewards_df, label, run_num))
-
-        # Sort runs within each group by run number
-        for base_name in run_groups:
-            run_groups[base_name].sort(key=lambda x: x[3] if x[3] is not None else -1)
-
-        # Assign colors to groups
-        base_colors = [
-            "#1f77b4",
-            "#ff7f0e",
-            "#2ca02c",
-            "#d62728",
-            "#9467bd",
-            "#8c564b",
-            "#e377c2",
-            "#7f7f7f",
-            "#bcbd22",
-            "#17becf",
-        ]
-
-        # Create color mapping for all runs
-        color_map = {}
-        group_idx = 0
-        for base_name, runs in run_groups.items():
-            base_color = base_colors[group_idx % len(base_colors)]
-            gradient_colors = create_color_gradient(base_color, len(runs))
-
-            for i, (values_df, rewards_df, label, run_num) in enumerate(runs):
-                color_map[label] = gradient_colors[i]
-
-            group_idx += 1
-    else:
-        # Use original color assignment
-        base_colors = [
-            "#1f77b4",
-            "#ff7f0e",
-            "#2ca02c",
-            "#d62728",
-            "#9467bd",
-            "#8c564b",
-            "#e377c2",
-            "#7f7f7f",
-            "#bcbd22",
-            "#17becf",
-        ]
-        color_map = {}
-        for i, (values_df, rewards_df, label) in enumerate(pareto_fronts):
-            color_map[label] = base_colors[i % len(base_colors)]
-
-    # Create subplots with plotly
-    fig = make_subplots(
-        rows=1,
-        cols=2,
-        subplot_titles=("VALUE Space", "REWARD Space"),
-        horizontal_spacing=0.10,
-    )
-
-    # VALUE SPACE (left plot)
-    # Add reference points to VALUE space if provided
-    if (
-        reference_values is not None
-        and "reflectivity" in reference_values.columns
-        and "absorption" in reference_values.columns
-    ):
-        x_ref = reference_values["absorption"].values
-        y_ref = reference_values["reflectivity"].values
-        y_ref_loss = 1 - y_ref
-        valid_ref = ~(
-            np.isnan(x_ref)
-            | np.isnan(y_ref_loss)
-            | np.isinf(x_ref)
-            | np.isinf(y_ref_loss)
-            | (y_ref_loss <= 0)
-        )
-
-        hv_ref_value = compute_hypervolume_from_df(reference_values, space="value")
-        ref_label = (
-            f"Reference (HV: {hv_ref_value:.4f})" if hv_ref_value > 0 else "Reference"
-        )
-        fig.add_trace(
-            go.Scatter(
-                x=x_ref[valid_ref],
-                y=y_ref_loss[valid_ref],
-                mode="markers",
-                marker=dict(
-                    symbol="x",
-                    size=12,
-                    color="black",
-                    line=dict(width=2, color="black"),
-                ),
-                name=ref_label,
-                legendgroup="reference",
-                showlegend=True,
-            ),
-            row=1,
-            col=1,
-        )
-
-    for i, (values_df, rewards_df, label) in enumerate(pareto_fronts):
-        if (
-            values_df is None
-            or "reflectivity" not in values_df.columns
-            or "absorption" not in values_df.columns
-        ):
-            print(f"Warning: {label} missing value space data, skipping value plot")
-            continue
-
-        # Compute hypervolume for value space
-        hv_value = compute_hypervolume_from_df(values_df, space="value")
-        label_with_hv = f"{label} (HV: {hv_value:.4f})" if hv_value > 0 else label
-
-        x = values_df["absorption"].values
-        y = values_df["reflectivity"].values
-
-        # Convert to 1-reflectivity (loss)
-        y_loss = 1 - y
-
-        # Remove invalid values
-        valid = ~(
-            np.isnan(x)
-            | np.isnan(y_loss)
-            | np.isinf(x)
-            | np.isinf(y_loss)
-            | (y_loss <= 0)
-        )
-        x, y_loss = x[valid], y_loss[valid]
-
-        if len(x) == 0:
-            continue
-
-        # Sort by x
-        sorted_idx = np.argsort(x)
-        x_sorted, y_loss_sorted = x[sorted_idx], y_loss[sorted_idx]
-
-        color = color_map.get(label, "#808080")
-
-        # Determine legend group (base name for grouped runs)
-        if group_runs:
-            base_name, run_num = parse_run_name(label)
-            legend_group = base_name
-
-            # Create a shortened label for the legend (just show run number if part of group)
-            if run_num is not None:
-                legend_label = (
-                    f"run{run_num:03d} (HV: {hv_value:.4f})"
-                    if hv_value > 0
-                    else f"run{run_num:03d}"
-                )
-            else:
-                # Truncate long labels
-                legend_label = (
-                    label_with_hv[-40:] if len(label_with_hv) > 40 else label_with_hv
-                )
-        else:
-            legend_group = label
-            # Truncate long labels
-            legend_label = (
-                label_with_hv[-40:] if len(label_with_hv) > 40 else label_with_hv
-            )
-
-        # Add line trace
-        fig.add_trace(
-            go.Scatter(
-                x=x_sorted,
-                y=y_loss_sorted,
-                mode="lines",
-                line=dict(color=color, width=2, dash="dash"),
-                opacity=0.4,
-                name=legend_label,
-                legendgroup=legend_group,
-                legendgrouptitle_text=legend_group if group_runs else None,
-                showlegend=False,
-                hoverinfo="skip",
-            ),
-            row=1,
-            col=1,
-        )
-
-        # Add scatter trace
-        fig.add_trace(
-            go.Scatter(
-                x=x,
-                y=y_loss,
-                mode="markers",
-                marker=dict(
-                    color=color,
-                    size=8,
-                    line=dict(width=1, color="black"),
-                ),
-                name=legend_label,
-                legendgroup=legend_group,
-                legendgrouptitle_text=legend_group if group_runs else None,
-                showlegend=True,
-                hovertemplate="<b>%{fullData.name}</b><br>"
-                + "Absorption: %{x:.2e} ppm<br>"
-                + "1 - Reflectivity: %{y:.2e}<br>"
-                + "<extra></extra>",
-            ),
-            row=1,
-            col=1,
-        )
-
-    # REWARD SPACE (right plot)
-    # Add reference points to REWARD space if provided
-    if (
-        reference_rewards is not None
-        and "reflectivity" in reference_rewards.columns
-        and "absorption" in reference_rewards.columns
-    ):
-        x_ref = reference_rewards["absorption"].values
-        y_ref = reference_rewards["reflectivity"].values
-        valid_ref = ~(
-            np.isnan(x_ref) | np.isnan(y_ref) | np.isinf(x_ref) | np.isinf(y_ref)
-        )
-
-        fig.add_trace(
-            go.Scatter(
-                x=x_ref[valid_ref],
-                y=y_ref[valid_ref],
-                mode="markers",
-                marker=dict(
-                    symbol="x",
-                    size=12,
-                    color="black",
-                    line=dict(width=2, color="black"),
-                ),
-                name=ref_label,
-                legendgroup="reference",
-                showlegend=False,  # Already shown in value space
-            ),
-            row=1,
-            col=2,
-        )
-
-    for i, (values_df, rewards_df, label) in enumerate(pareto_fronts):
-        if (
-            rewards_df is None
-            or "reflectivity" not in rewards_df.columns
-            or "absorption" not in rewards_df.columns
-        ):
-            print(f"Warning: {label} missing reward space data, skipping reward plot")
-            continue
-
-        # Compute hypervolume for reward space
-        hv_reward = compute_hypervolume_from_df(rewards_df, space="reward")
-        label_with_hv = f"{label} (HV: {hv_reward:.4f})" if hv_reward > 0 else label
-
-        x = rewards_df["absorption"].values
-        y = rewards_df["reflectivity"].values
-
-        # Remove invalid values
-        valid = ~(np.isnan(x) | np.isnan(y) | np.isinf(x) | np.isinf(y))
-        x, y = x[valid], y[valid]
-
-        if len(x) == 0:
-            continue
-
-        # Sort by x
-        sorted_idx = np.argsort(x)
-        x_sorted, y_sorted = x[sorted_idx], y[sorted_idx]
-
-        color = color_map.get(label, "#808080")
-
-        # Determine legend group (base name for grouped runs)
-        if group_runs:
-            base_name, run_num = parse_run_name(label)
-            legend_group = base_name
-            # Create a shortened label for the legend (just show run number if part of group)
-            if run_num is not None:
-                legend_label = (
-                    f"run{run_num:03d} (HV: {hv_reward:.4f})"
-                    if hv_reward > 0
-                    else f"run{run_num:03d}"
-                )
-            else:
-                legend_label = label_with_hv
-        else:
-            legend_group = label
-            legend_label = label_with_hv
-
-        # Add line trace
-        fig.add_trace(
-            go.Scatter(
-                x=x_sorted,
-                y=y_sorted,
-                mode="lines",
-                line=dict(color=color, width=2, dash="dash"),
-                opacity=0.4,
-                name=legend_label,
-                legendgroup=legend_group,
-                legendgrouptitle_text=legend_group if group_runs else None,
-                showlegend=False,
-                hoverinfo="skip",
-            ),
-            row=1,
-            col=2,
-        )
-
-        # Add scatter trace
-        fig.add_trace(
-            go.Scatter(
-                x=x,
-                y=y,
-                mode="markers",
-                marker=dict(
-                    color=color,
-                    size=8,
-                    line=dict(width=1, color="black"),
-                ),
-                name=legend_label,
-                legendgroup=legend_group,
-                legendgrouptitle_text=legend_group if group_runs else None,
-                showlegend=False,  # Already shown in value space
-                hovertemplate="<b>%{fullData.name}</b><br>"
-                + "Absorption Reward: %{x:.4f}<br>"
-                + "Reflectivity Reward: %{y:.4f}<br>"
-                + "<extra></extra>",
-            ),
-            row=1,
-            col=2,
-        )
-
-    # Update axes for VALUE space (left plot)
-    fig.update_xaxes(
-        title_text="Absorption (ppm)",
-        type="log",
-        gridcolor="lightgray",
-        gridwidth=0.5,
-        griddash="dash",
-        row=1,
-        col=1,
-    )
-    fig.update_yaxes(
-        title_text="1 - Reflectivity",
-        type="log",
-        gridcolor="lightgray",
-        gridwidth=0.5,
-        griddash="dash",
-        row=1,
-        col=1,
-    )
-
-    # Update axes for REWARD space (right plot)
-    fig.update_xaxes(
-        title_text="Absorption Reward (normalized)",
-        gridcolor="lightgray",
-        gridwidth=0.5,
-        griddash="dash",
-        row=1,
-        col=2,
-    )
-    fig.update_yaxes(
-        title_text="Reflectivity Reward (normalized)",
-        gridcolor="lightgray",
-        gridwidth=0.5,
-        griddash="dash",
-        row=1,
-        col=2,
-    )
-
-    # Update layout
-    fig.update_layout(
-        title=dict(text=title, x=0.5, xanchor="center", font=dict(size=16)),
-        height=600,
-        width=1800,  # Increased width to accommodate legend
-        showlegend=True,
-        legend=dict(
-            yanchor="top",
-            y=0.99,
-            xanchor="left",
-            x=1.01,
-            font=dict(size=9),
-            bgcolor="rgba(255, 255, 255, 0.9)",
-            bordercolor="black",
-            borderwidth=1,
-            tracegroupgap=5,  # Add space between groups
-            itemwidth=30,  # Limit legend item width
-            itemsizing="constant",
-        ),
-        hovermode="closest",
-        template="plotly_white",
-    )
-
-    if save_path:
-        # Save as interactive HTML
-        html_path = save_path.parent / (save_path.stem + "_interactive.html")
-        fig.write_html(str(html_path))
-        print(f"Saved interactive comparison plot to {html_path}")
-    else:
-        fig.show()
 
 
 def plot_pareto_comparison(
@@ -1607,12 +1145,27 @@ Examples:
     # Plot BOTH VALUE and REWARD space comparison
     if args.interactive:
         print("\nGenerating interactive VALUE + REWARD space comparison plot...")
-        plot_both_spaces_comparison_interactive(
+        plot_pairwise_comparison_interactive(
             pareto_fronts,
             save_path=output_path,
             title=args.title,
             reference_values=reference_values,
             reference_rewards=reference_rewards,
+            group_runs=args.group_runs,
+            compute_hv_fn=compute_hypervolume_from_df,
+        )
+        print("\nGenerating 3D Pareto front plot...")
+        plot_pareto_3d_interactive(
+            pareto_fronts,
+            save_path=output_path,
+            title=args.title + " — 3D",
+            group_runs=args.group_runs,
+        )
+        print("\nGenerating parallel-coordinates plot...")
+        plot_pareto_parallel_coords_interactive(
+            pareto_fronts,
+            save_path=output_path,
+            title=args.title + " — Parallel Coordinates",
             group_runs=args.group_runs,
         )
     else:
@@ -1644,19 +1197,18 @@ Examples:
         ]
 
         if len(top_n_fronts) > 0:
-            # Create output path for top-N plot
             top_n_path = output_path.parent / (
                 output_path.stem + f"_top{args.top_n}" + output_path.suffix
             )
-
             if args.interactive:
-                plot_both_spaces_comparison_interactive(
+                plot_pairwise_comparison_interactive(
                     top_n_fronts,
                     save_path=top_n_path,
                     title=f"{args.title} (Top {args.top_n} by Reward Hypervolume)",
                     reference_values=reference_values,
                     reference_rewards=reference_rewards,
                     group_runs=args.group_runs,
+                    compute_hv_fn=compute_hypervolume_from_df,
                 )
             else:
                 plot_both_spaces_comparison(
