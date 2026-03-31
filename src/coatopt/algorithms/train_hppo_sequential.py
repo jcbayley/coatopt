@@ -142,14 +142,14 @@ class CoatOptHybridEnv(gym.Env):
     def _get_obs(self, state) -> np.ndarray:
         """Convert state to observation with objective weights and constraint thresholds."""
         tensor = state.get_observation_tensor(pre_type="lstm")
-        obs = tensor.numpy().flatten().astype(np.float32)
-        # Append objective weights (1.0 for target, 0.0 for others)
-        for obj in self.objectives:
-            weight = 1.0 if obj == self.env.target_objective else 0.0
-            obs = np.append(obs, weight)
-        # Append constraint thresholds
-        for obj in self.env.optimise_parameters:
-            obs = np.append(obs, self.env.constraints.get(obj, 0.0))
+        base = tensor.numpy().flatten().astype(np.float32)
+        n_obj = len(self.objectives)
+        obs = np.empty(len(base) + 2 * n_obj, dtype=np.float32)
+        obs[: len(base)] = base
+        for i, obj in enumerate(self.objectives):
+            obs[len(base) + i] = 1.0 if obj == self.env.target_objective else 0.0
+        for i, obj in enumerate(self.env.optimise_parameters):
+            obs[len(base) + n_obj + i] = self.env.constraints.get(obj, 0.0)
         return obs
 
     def reset(self, seed=None, options=None):
