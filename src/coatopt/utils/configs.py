@@ -30,6 +30,9 @@ class DataConfig:
     # Reward normalization settings
     use_reward_normalisation: bool = True
     reward_normalisation_apply_clipping: bool = True
+    # Hard objective bounds penalty
+    enforce_objective_bounds: bool = False
+    objective_bounds_penalty_weight: float = 1.0
     # Objective bounds for normalization: [worst_case, best_case]
     objective_bounds: dict = field(
         default_factory=lambda: {
@@ -57,7 +60,7 @@ class TrainingConfig:
 
     # Constraint scheduling parameters (for preference-constrained training)
     warmup_episodes_per_objective: int = 2000  # Phase 1: warmup per objective
-    epochs_per_step: int = 2000  # Episodes per constraint step in Phase 2
+    episodes_per_step: int = 2000  # Episodes per constraint step in Phase 2
     steps_per_objective: int = 10  # Number of constraint levels per objective
     constraint_penalty: float = 10.0  # Penalty weight for constraint violations
 
@@ -139,7 +142,12 @@ def load_config(config_path: str) -> Config:
             elif key in ("n_layers",):
                 data_kwargs[key] = int(value)
             # Parse float values
-            elif key in ("min_thickness", "max_thickness", "air_penalty_weight"):
+            elif key in (
+                "min_thickness",
+                "max_thickness",
+                "air_penalty_weight",
+                "objective_bounds_penalty_weight",
+            ):
                 data_kwargs[key] = float(value)
             # Parse lists and dicts using ast.literal_eval
             elif key in (
@@ -163,7 +171,7 @@ def load_config(config_path: str) -> Config:
             # Parse int values
             if key in (
                 "warmup_episodes_per_objective",
-                "epochs_per_step",
+                "episodes_per_step",
                 "steps_per_objective",
             ):
                 training_kwargs[key] = int(value)

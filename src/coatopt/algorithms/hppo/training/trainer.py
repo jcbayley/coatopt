@@ -229,8 +229,8 @@ class HPPOTrainer:
                 phase1_epochs_per_objective=getattr(
                     self.env, "pc_phase1_epochs_per_objective", 1000
                 ),
-                phase2_epochs_per_step=getattr(
-                    self.env, "pc_phase2_epochs_per_step", 300
+                phase2_episodes_per_step=getattr(
+                    self.env, "pc_phase2_episodes_per_step", 300
                 ),
                 constraint_steps=getattr(self.env, "pc_constraint_steps", 8),
                 constraint_penalty_weight=getattr(

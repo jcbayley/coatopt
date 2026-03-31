@@ -9,7 +9,7 @@ warmup, then applies gradually tightening constraints.
 Config section: [hppo_sequential]
   total_episodes           = 10000
   warmup_episodes          = 500            # Per objective
-  epochs_per_step          = 200            # Episodes per phase
+  episodes_per_step          = 200            # Episodes per phase
   steps_per_objective      = 10             # Constraint levels per objective
   episodes_per_update      = 10             # Episodes before PPO update
   n_epochs                 = 5              # SGD epochs per update
@@ -40,6 +40,8 @@ Config section: [hppo_sequential]
   plot_freq                = 500
 """
 import configparser
+import math
+import random
 from pathlib import Path
 from typing import Dict, List
 
@@ -68,7 +70,7 @@ class CoatOptHybridEnv(gym.Env):
         config: Config,
         materials: dict,
         warmup_episodes: int = 500,
-        epochs_per_step: int = 200,
+        episodes_per_step: int = 200,
         steps_per_objective: int = 10,
         constraint_penalty: float = 3.0,
         mask_consecutive_materials: bool = True,
@@ -88,7 +90,7 @@ class CoatOptHybridEnv(gym.Env):
         self.total_warmup_episodes = warmup_episodes * len(
             self.objectives
         )  # Total warmup
-        self.epochs_per_step = epochs_per_step
+        self.episodes_per_step = episodes_per_step
         self.steps_per_objective = steps_per_objective
         self.randomise_constraints = randomise_constraints
         self.episode_count = 0
@@ -98,7 +100,7 @@ class CoatOptHybridEnv(gym.Env):
         self.env.enable_constrained_training(
             warmup_episodes_per_objective=warmup_episodes,
             steps_per_objective=steps_per_objective,
-            epochs_per_step=epochs_per_step,
+            episodes_per_step=episodes_per_step,
             constraint_penalty=constraint_penalty,
         )
 
@@ -177,7 +179,7 @@ class CoatOptHybridEnv(gym.Env):
                 print(f"Best warmup rewards: {self.env.warmup_best_rewards}")
 
             constrained_episode = self.episode_count - self.total_warmup_episodes
-            phase = (constrained_episode - 1) // self.epochs_per_step
+            phase = (constrained_episode - 1) // self.episodes_per_step
 
             # Alternate objectives
             obj_idx = phase % len(self.objectives)
@@ -595,7 +597,6 @@ def compute_bc_loss_from_pareto(
 
     # Sample batch
     n_samples = min(batch_size, len(transitions))
-    import random
 
     sampled = random.sample(transitions, n_samples)
 
@@ -829,7 +830,7 @@ def train(config_path: str, save_dir: str):
     # Read hyperparameters
     total_episodes = _get("total_episodes", 10000, int)
     warmup_episodes = _get("warmup_episodes", 500, int)
-    epochs_per_step = _get("epochs_per_step", 200, int)
+    episodes_per_step = _get("episodes_per_step", 200, int)
     steps_per_objective = _get("steps_per_objective", 10, int)
     episodes_per_update = _get("episodes_per_update", 10, int)
     n_epochs = _get("n_epochs", 5, int)
@@ -884,7 +885,7 @@ def train(config_path: str, save_dir: str):
         {
             "total_episodes": total_episodes,
             "warmup_episodes": warmup_episodes,
-            "epochs_per_step": epochs_per_step,
+            "episodes_per_step": episodes_per_step,
             "steps_per_objective": steps_per_objective,
             "episodes_per_update": episodes_per_update,
             "n_epochs": n_epochs,
@@ -908,7 +909,7 @@ def train(config_path: str, save_dir: str):
         config=config,
         materials=materials,
         warmup_episodes=warmup_episodes,
-        epochs_per_step=epochs_per_step,
+        episodes_per_step=episodes_per_step,
         steps_per_objective=steps_per_objective,
         constraint_penalty=constraint_penalty,
         mask_consecutive_materials=mask_consecutive,
@@ -1140,7 +1141,6 @@ def train(config_path: str, save_dir: str):
                 progress = min(1.0, constrained_episodes / lr_decay_episodes)
 
         # Cosine annealing: smooth decay with slower finish
-        import math
 
         decay_mult = 0.5 * (1 + math.cos(math.pi * progress))
         current_lr = lr_final + (lr_init - lr_final) * decay_mult

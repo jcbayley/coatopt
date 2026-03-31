@@ -112,6 +112,12 @@ class CoatingEnvironment:
         # Pareto dominance reward bonus (based on hypervolume improvement)
         self.pareto_dominance_bonus = 0.0  # Bonus weight for hypervolume improvement
         self.use_pareto_bonus = False  # Enable pareto dominance bonus
+
+        # Hard objective bounds penalty (user-defined, applied every step)
+        self.enforce_objective_bounds = getattr(data, "enforce_objective_bounds", False)
+        self.objective_bounds_penalty_weight = getattr(
+            data, "objective_bounds_penalty_weight", 1.0
+        )
         self.max_hypervolume = 0.0  # Track maximum hypervolume achieved
 
         # Environment state
@@ -276,7 +282,7 @@ class CoatingEnvironment:
         self,
         warmup_episodes_per_objective: int = 200,
         steps_per_objective: int = 10,
-        epochs_per_step: int = 200,
+        episodes_per_step: int = 200,
         constraint_penalty: float = 10.0,
     ):
         """Enable two-phase constrained training.
@@ -290,7 +296,7 @@ class CoatingEnvironment:
             self.optimise_parameters
         )
         self.steps_per_objective = steps_per_objective
-        self.epochs_per_step = epochs_per_step
+        self.episodes_per_step = episodes_per_step
         self.constraint_penalty = constraint_penalty
         self.total_levels = steps_per_objective
         self.total_phases = self.total_levels * len(self.optimise_parameters)
@@ -566,6 +572,12 @@ class CoatingEnvironment:
             total_reward += pareto_bonus
             individual_rewards["pareto_bonus"] = pareto_bonus
 
+        # Apply hard objective bounds penalty (all modes, all phases)
+        if self.enforce_objective_bounds:
+            bounds_penalty = self._compute_bounds_penalty(vals)
+            total_reward -= bounds_penalty
+            individual_rewards["bounds_penalty"] = -bounds_penalty
+
         return total_reward, vals, individual_rewards
 
     # Reward Addons
@@ -587,6 +599,38 @@ class CoatingEnvironment:
                 violation = threshold - norm_reward
                 penalty += violation * self.constraint_penalty
 
+        return penalty
+
+    def _compute_bounds_penalty(self, vals: dict) -> float:
+        """Compute penalty for objective values outside user-defined objective_bounds.
+
+        Violation is expressed as a fraction of the bound range, so the penalty
+        is scale-independent across objectives.
+
+        Args:
+            vals: Dictionary of raw objective values
+
+        Returns:
+            Penalty value (positive number to subtract from reward)
+        """
+        penalty = 0.0
+        for obj, bounds in self.objective_bounds.items():
+            if not (isinstance(bounds, (list, tuple)) and len(bounds) >= 2):
+                continue
+            val = vals.get(obj)
+            if val is None:
+                continue
+            min_val, max_val = float(bounds[0]), float(bounds[1])
+            bound_range = max_val - min_val
+            if bound_range <= 0:
+                continue
+            if val < min_val:
+                violation = (min_val - val) / bound_range
+            elif val > max_val:
+                violation = (val - max_val) / bound_range
+            else:
+                continue
+            penalty += violation * self.objective_bounds_penalty_weight
         return penalty
 
     def _compute_pareto_dominance_bonus(self, vals: dict) -> float:
