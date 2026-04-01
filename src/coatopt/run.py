@@ -253,6 +253,12 @@ def run_experiment(
             html_path = save_dir / "pareto_interactive.html"
             fig.write_html(str(html_path))
             print(f"Saved interactive visualization to {html_path}")
+
+            if not designs_df.empty:
+                from coatopt.utils.plot_design_diversity import plot_design_diversity
+
+                print("\nGenerating design diversity plot...")
+                plot_design_diversity(designs_df, values_df, save_dir)
         else:
             print("\nSkipping interactive visualization (empty Pareto front).")
     except Exception as e:

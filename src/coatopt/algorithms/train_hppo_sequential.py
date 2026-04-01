@@ -556,10 +556,6 @@ def compute_bc_loss_from_pareto(
         target_obj_idx: index of target objective (for value head selection)
         bc_weight: weight for BC loss
         batch_size: batch size for sampling
-
-    Loss is normalized by sqrt(n_episodes / 10) to prevent the loss from growing
-    unboundedly as the Pareto front size increases. This encourages quality over
-    just adding more episodes.
     """
     if not pareto_episodes or len(pareto_episodes) == 0:
         return 0.0
@@ -568,12 +564,6 @@ def compute_bc_loss_from_pareto(
     valid_episodes = [ep for ep in pareto_episodes if ep is not None]
     if not valid_episodes:
         return 0.0
-
-    # Normalize by Pareto front size to prevent encouraging just adding episodes
-    # Use sqrt to still give some weight to larger fronts, but sublinearly
-    # Reference size of 10 episodes
-    n_episodes = len(valid_episodes)
-    size_normalization = (n_episodes / 10.0) ** 0.5
 
     # Sample transitions from Pareto episodes
     transitions = []
@@ -636,8 +626,7 @@ def compute_bc_loss_from_pareto(
     )
     bc_loss = -log_probs.mean()  # Negative log likelihood
 
-    # Apply size normalization and weight
-    return bc_weight * bc_loss / size_normalization
+    return bc_weight * bc_loss
 
 
 class PPOAgent:
@@ -726,6 +715,29 @@ class PPOAgent:
         n_updates = 0
 
         for epoch in range(n_epochs):
+            # BC loss: one dedicated gradient step per epoch
+            if (
+                pareto_episodes is not None
+                and bc_weight > 0
+                and env_wrapper is not None
+            ):
+                bc_loss_epoch = compute_bc_loss_from_pareto(
+                    self.policy,
+                    pareto_episodes,
+                    env_wrapper,
+                    target_obj_idx,
+                    bc_weight,
+                    batch_size=32,
+                )
+                if torch.is_tensor(bc_loss_epoch):
+                    logs["bc_loss"] += bc_loss_epoch.item()
+                    self.optimizer.zero_grad()
+                    bc_loss_epoch.backward()
+                    torch.nn.utils.clip_grad_norm_(
+                        self.policy.parameters(), self.max_grad_norm
+                    )
+                    self.optimizer.step()
+
             indices = torch.randperm(n_samples)
             for start in range(0, n_samples, batch_size):
                 end = start + batch_size
@@ -755,30 +767,11 @@ class PPOAgent:
                 # Value loss
                 value_loss = ((values - returns[batch_idx]) ** 2).mean()
 
-                # BC loss from Pareto episodes (if available)
-                bc_loss = 0.0
-                if (
-                    pareto_episodes is not None
-                    and bc_weight > 0
-                    and env_wrapper is not None
-                ):
-                    bc_loss = compute_bc_loss_from_pareto(
-                        self.policy,
-                        pareto_episodes,
-                        env_wrapper,
-                        target_obj_idx,
-                        bc_weight,
-                        batch_size=32,
-                    )
-                    if torch.is_tensor(bc_loss):
-                        logs["bc_loss"] += bc_loss.item()
-
                 # Total loss
                 loss = (
                     policy_loss
                     + self.vf_coef * value_loss
                     - self.ent_coef * entropy.mean()
-                    + (bc_loss if torch.is_tensor(bc_loss) else 0.0)
                 )
 
                 self.optimizer.zero_grad()
@@ -787,15 +780,6 @@ class PPOAgent:
                     self.policy.parameters(), self.max_grad_norm
                 )
                 self.optimizer.step()
-
-                # Check for NaN parameters
-                for name, param in self.policy.named_parameters():
-                    if torch.isnan(param).any():
-                        print(f"ERROR: NaN detected in {name} after optimizer step!")
-                        print(
-                            f"Loss: {loss.item()}, Policy loss: {policy_loss.item()}, Value loss: {value_loss.item()}"
-                        )
-                        raise ValueError(f"NaN in parameters: {name}")
 
                 # Logging
                 logs["policy_loss"] += policy_loss.item()
@@ -1319,8 +1303,23 @@ def train(config_path: str, save_dir: str):
                 if verbose:
                     print(f"  [checkpoint] skipped: {e}")
 
-    # Return results
+    # Final Pareto export and plots
     designs_df, values_df, rewards_df = env.env.export_pareto_dataframes()
+    if not designs_df.empty:
+        try:
+            from coatopt.utils.plot_design_diversity import (
+                plot_cluster_designs,
+                plot_design_diversity,
+            )
+
+            save_path = Path(save_dir)
+            plot_design_diversity(designs_df, values_df, save_path)
+            plot_cluster_designs(designs_df, values_df, save_path, materials=materials)
+        except Exception as e:
+            if verbose:
+                print(f"  [diversity plot] skipped: {e}")
+
+    # Return results
     return {
         "pareto_designs": designs_df,
         "pareto_values": values_df,

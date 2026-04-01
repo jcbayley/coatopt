@@ -16,6 +16,7 @@ from ..environments.utils import coating_utils, state_utils
 from ..utils.metrics import (
     compute_hypervolume,
     compute_hypervolume_mixed,
+    dominates,
     update_pareto_front,
     update_pareto_front_mixed,
 )
@@ -341,58 +342,29 @@ class CoatingEnvironment:
             [reward_dict.get(param, 0.0) for param in self.optimise_parameters]
         )
 
-        # Check for duplicates FIRST (before dominance check)
-        # This prevents the same solution from being added multiple times
-        for existing_reward_vec, _ in self.pareto_front_rewards:
-            if np.allclose(reward_vector, existing_reward_vec, rtol=1e-6, atol=1e-9):
+        # Single O(N) pass: check for duplicates, check if new point is dominated,
+        # and collect indices of points dominated by the new point.
+        dominated_indices = []
+        for i, (existing_reward_vec, _) in enumerate(self.pareto_front_rewards):
+            existing = np.array(existing_reward_vec)
+            if np.allclose(reward_vector, existing, rtol=1e-6, atol=1e-9):
                 return  # Duplicate found, don't add it
+            if dominates(existing, reward_vector, maximize=True):
+                return  # New point is dominated, don't add it
+            if dominates(reward_vector, existing, maximize=True):
+                dominated_indices.append(i)
 
-        # Extract existing reward vectors for dominance check
-        existing_reward_vectors = [np.array(r) for r, _ in self.pareto_front_rewards]
+        # Remove dominated points in reverse index order to preserve correctness
+        for i in sorted(dominated_indices, reverse=True):
+            self.pareto_front_rewards.pop(i)
+            self.pareto_front_values.pop(i)
+            if i < len(self.pareto_front_episodes):
+                self.pareto_front_episodes.pop(i)
 
-        # Update reward front using utility function (all objectives maximized in reward space)
-        updated_reward_vectors = update_pareto_front(
-            existing_reward_vectors, reward_vector, maximize=True
-        )
-
-        # If the front size didn't change and new point wasn't added, it was dominated
-        if len(updated_reward_vectors) == len(existing_reward_vectors):
-            # Check if new point is in updated front
-            new_point_added = any(
-                np.allclose(v, reward_vector) for v in updated_reward_vectors
-            )
-            if not new_point_added:
-                return  # New point was dominated, don't add it
-
-        # Rebuild fronts with states, keeping only non-dominated points
-        new_reward_front = []
-        new_value_front = []
-        new_episode_front = []
-
-        for updated_vec in updated_reward_vectors:
-            # Find which original point this corresponds to (if any)
-            found = False
-            for i, (orig_vec, orig_state) in enumerate(self.pareto_front_rewards):
-                if np.allclose(updated_vec, orig_vec):
-                    new_reward_front.append((orig_vec, orig_state))
-                    new_value_front.append(self.pareto_front_values[i])
-                    # Keep existing episode data if available
-                    if i < len(self.pareto_front_episodes):
-                        new_episode_front.append(self.pareto_front_episodes[i])
-                    else:
-                        new_episode_front.append(None)
-                    found = True
-                    break
-
-            # If not found, it's the new point
-            if not found and np.allclose(updated_vec, reward_vector):
-                new_reward_front.append((list(reward_vector), state.copy()))
-                new_value_front.append((list(val_vector), state.copy()))
-                new_episode_front.append(episode_data)  # Add new episode data
-
-        self.pareto_front_rewards = new_reward_front
-        self.pareto_front_values = new_value_front
-        self.pareto_front_episodes = new_episode_front
+        # Append the new non-dominated point
+        self.pareto_front_rewards.append((list(reward_vector), state.copy()))
+        self.pareto_front_values.append((list(val_vector), state.copy()))
+        self.pareto_front_episodes.append(episode_data)
 
     # Reward computation
     def compute_state_value(
