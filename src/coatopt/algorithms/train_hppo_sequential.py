@@ -565,9 +565,13 @@ def compute_bc_loss_from_pareto(
     if not valid_episodes:
         return 0.0
 
-    # Sample transitions from Pareto episodes
+    # Sample a subset of Pareto episodes first — iterating all N episodes to collect
+    # transitions is O(N * ep_len) every update, which is expensive for large fronts.
+    max_episodes = min(batch_size, len(valid_episodes))
+    sampled_episodes = random.sample(valid_episodes, max_episodes)
+
     transitions = []
-    for episode in valid_episodes:
+    for episode in sampled_episodes:
         if (
             episode.get("states")
             and episode.get("discrete_actions")

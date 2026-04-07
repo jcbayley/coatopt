@@ -336,30 +336,32 @@ class CoatingEnvironment:
             [objectives.get(param, 0.0) for param in self.optimise_parameters]
         )
 
-        # Get reward vector (normalised rewards)
-        reward_dict = self.compute_objective_rewards(objectives, normalised=True)
+        # Get reward vector using same normalisation as training rewards for consistency
+        normalised = self.use_constrained_training and self.use_reward_normalisation
+        reward_dict = self.compute_objective_rewards(objectives, normalised=normalised)
         reward_vector = np.array(
             [reward_dict.get(param, 0.0) for param in self.optimise_parameters]
         )
 
-        # Single O(N) pass: check for duplicates, check if new point is dominated,
-        # and collect indices of points dominated by the new point.
-        dominated_indices = []
-        for i, (existing_reward_vec, _) in enumerate(self.pareto_front_rewards):
+        # Pass 1: check if new point is a duplicate or is dominated - bail out if so.
+        for existing_reward_vec, _ in self.pareto_front_rewards:
             existing = np.array(existing_reward_vec)
-            if np.allclose(reward_vector, existing, rtol=1e-6, atol=1e-9):
+            if np.allclose(reward_vector, existing, rtol=1e-6):
                 return  # Duplicate found, don't add it
             if dominates(existing, reward_vector, maximize=True):
                 return  # New point is dominated, don't add it
-            if dominates(reward_vector, existing, maximize=True):
+
+        # Pass 2: collect indices of existing points that the new point dominates.
+        dominated_indices = []
+        for i, (existing_reward_vec, _) in enumerate(self.pareto_front_rewards):
+            if dominates(reward_vector, np.array(existing_reward_vec), maximize=True):
                 dominated_indices.append(i)
 
         # Remove dominated points in reverse index order to preserve correctness
         for i in sorted(dominated_indices, reverse=True):
             self.pareto_front_rewards.pop(i)
             self.pareto_front_values.pop(i)
-            if i < len(self.pareto_front_episodes):
-                self.pareto_front_episodes.pop(i)
+            self.pareto_front_episodes.pop(i)
 
         # Append the new non-dominated point
         self.pareto_front_rewards.append((list(reward_vector), state.copy()))
