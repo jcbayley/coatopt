@@ -1141,6 +1141,9 @@ def train(config_path: str, save_dir: str):
             param_group["lr"] = current_lr
         agent.ent_coef = current_ent_coef
 
+        # Flush staged Pareto candidates (batched NDS) before policy update
+        env.env.flush_pareto_candidates()
+
         # Update policy with BC loss from Pareto episodes (disabled during warmup)
         rollout_data = buffer.get()
         # Only use BC loss during constrained phase when exploring tradeoff region
@@ -1159,7 +1162,6 @@ def train(config_path: str, save_dir: str):
             bc_weight=bc_weight,
             env_wrapper=env,
         )
-
         # Logging
         if env.episode_count % mlflow_log_freq == 0:
             if verbose:

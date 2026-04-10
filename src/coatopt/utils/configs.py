@@ -25,6 +25,9 @@ class DataConfig:
     ignore_air_option: bool = False
     ignore_substrate_option: bool = False
     use_intermediate_reward: bool = False
+    compute_efi: bool = (
+        True  # If False, skip EFI loop and use analytic absorption (much faster)
+    )
     combine: str = "sum"
 
     # Reward normalization settings

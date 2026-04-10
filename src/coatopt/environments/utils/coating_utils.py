@@ -370,6 +370,7 @@ def merit_function(
     optimise_on=["R", "T", "E", "D"],
     use_optical_thickness=True,
     return_field_data=False,
+    compute_efi=True,  # If False, skip the 500-point EFI loop and use analytic absorption
 ):
     # set up with default inputs to match aLIGO for testing = this should be
     # modified to allow for varying inputs.
@@ -438,22 +439,6 @@ def merit_function(
     # print(new_all_materials.keys())
     num_points = 2000
 
-    # logging.info(f"Calculating EFI .......")
-    E_total, layer_idx, ds, E, poyn, total_absorption, reflectivity = CalculateEFI_tmm(
-        dOpt=layer_optical_thicknesses,
-        materialLayer=layer_material_inds,
-        materialParams=new_all_materials,
-        lambda_=light_wavelength,
-        t_air=500,
-        polarisation="p",
-        plots=False,
-        air_index=air_index,
-        substrate_index=substrate_index,
-    )
-    # num_points=num_points,
-    # air_index = air_index,
-    # substrate_index=substrate_index)
-
     # logging.info(f"Calculating Coating Thermal Noise .......")
     noise_summary, rCoat, dcdp, rbar, r, _ = getCoatingThermalNoise(
         dOpt=layer_optical_thicknesses,
@@ -468,15 +453,37 @@ def merit_function(
     )
 
     if isinstance(noise_summary["Frequency"], (float, np.floating)):
-        # Frequency is a scalar, so BrownianNoise is also a scalar
         ThermalNoise_Total = noise_summary["BrownianNoise"]
     else:
-        # Frequency is an array, find the index closest to 100 Hz
         difference_array = np.absolute(noise_summary["Frequency"] - 100)
         index = difference_array.argmin()
         ThermalNoise_Total = noise_summary["BrownianNoise"][index]
 
-    D = ds[-1]  # Total physical thickness of the coating in nm
+    if compute_efi:
+        # Full EFI calculation via 500-point TMM loop (slow but accurate)
+        # logging.info(f"Calculating EFI .......")
+        E_total, layer_idx, ds, E, poyn, total_absorption, reflectivity = (
+            CalculateEFI_tmm(
+                dOpt=layer_optical_thicknesses,
+                materialLayer=layer_material_inds,
+                materialParams=new_all_materials,
+                lambda_=light_wavelength,
+                t_air=500,
+                polarisation="p",
+                plots=False,
+                air_index=air_index,
+                substrate_index=substrate_index,
+            )
+        )
+        D = ds[-1]  # Total physical thickness from EFI position array
+    else:
+        # Fast analytic absorption using rbar/r already computed by getCoatingThermalNoise
+        aLayer = np.array([new_all_materials[m]["a"] for m in layer_material_inds])
+        nLayer = np.array([new_all_materials[m]["n"] for m in layer_material_inds])
+        total_absorption, _, _, _ = getCoatAbsorption(
+            light_wavelength, layer_optical_thicknesses, aLayer, nLayer, rbar, r
+        )
+        D = float(np.sum(layer_thicknesses))  # Total physical thickness in m
 
     # logging.info(f"Integrating over the Electric Field Intensity .......")
     # normallised_EFI = integrand(E_total,light_wavelength,layer_material_inds,all_materials,num_points=len(E_total))
@@ -499,11 +506,12 @@ def merit_function(
     nAir = all_materials[0]["n"]
 
     if return_field_data:
-        # Return field data along with standard metrics
+        if not compute_efi:
+            raise ValueError("return_field_data=True requires compute_efi=True")
         field_data = {
             "E_total": E_total,
             "layer_idx": layer_idx,
-            "ds": ds,  # Position array
+            "ds": ds,
             "E": E,
             "poyn": poyn,
             "total_thickness": D,

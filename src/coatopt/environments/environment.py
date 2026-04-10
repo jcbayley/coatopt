@@ -57,6 +57,8 @@ class CoatingEnvironment:
         self.wBeam = 0.062
         self.Temp = 293.0
         self.use_optical_thickness = getattr(data, "use_optical_thickness", False)
+        self.compute_efi = getattr(data, "compute_efi", True)
+        print(f"[CoatingEnvironment] compute_efi = {self.compute_efi}")
 
         # Optimization parameters - strip direction suffixes
         raw_params = data.optimise_parameters or ["reflectivity"]
@@ -137,6 +139,7 @@ class CoatingEnvironment:
         )  # List of (value_vector, state) - used for plotting
         self.pareto_front_episodes = []  # List of episode data dicts (for BC loss)
         self.all_points = []
+        self.pending_pareto_candidates = []  # Staged per-episode, flushed per-rollout
 
         # Observation space shape
         features_per_layer = 1 + self.n_materials + 2
@@ -216,12 +219,10 @@ class CoatingEnvironment:
                 objective_weights=objective_weights,
             )
 
-            # Always update pareto front when episode finishes (for tracking and optional bonus)
+            # Stage pareto candidate; front is flushed once per rollout via flush_pareto_candidates()
             if finished and self.multi_objective:
                 episode_data = kwargs.get("episode_data", None)
-                self.update_pareto_front(
-                    vals, self.current_state, episode_data=episode_data
-                )
+                self._stage_pareto_candidate(vals, self.current_state, episode_data)
         else:
             total_reward = 0.0
             vals = {}
@@ -314,58 +315,96 @@ class CoatingEnvironment:
         self.use_pareto_bonus = True
         self.pareto_dominance_bonus = bonus
 
-    def update_pareto_front(
+    def _stage_pareto_candidate(
         self,
         objectives: Dict[str, float],
         state: CoatingState,
         episode_data: Dict = None,
     ):
-        """Update both reward and value space Pareto fronts, and optionally episode data.
-
-        Args:
-            objectives: Dictionary of objective values (reflectivity, absorption, etc.)
-            state: Current coating state
-            episode_data: Optional dict containing episode trajectory for BC loss
-                         {'states': [...], 'discrete_actions': [...], 'continuous_actions': [...]}
-        """
+        """Stage a candidate for the Pareto front. Call flush_pareto_candidates() to commit."""
         if not self.multi_objective:
             return
 
-        # Get value vector
         val_vector = np.array(
             [objectives.get(param, 0.0) for param in self.optimise_parameters]
         )
-
-        # Get reward vector using same normalisation as training rewards for consistency
         normalised = self.use_constrained_training and self.use_reward_normalisation
         reward_dict = self.compute_objective_rewards(objectives, normalised=normalised)
         reward_vector = np.array(
             [reward_dict.get(param, 0.0) for param in self.optimise_parameters]
         )
+        self.pending_pareto_candidates.append(
+            (reward_vector, val_vector, state.copy(), episode_data)
+        )
 
-        # Pass 1: check if new point is a duplicate or is dominated - bail out if so.
+    def flush_pareto_candidates(self):
+        """Merge all staged candidates into the Pareto front using pymoo NDS.
+
+        Call once per rollout, before the policy update.
+        """
+        if not self.pending_pareto_candidates:
+            return
+
+        try:
+            from pymoo.util.nds.non_dominated_sorting import NonDominatedSorting
+        except ImportError:
+            # Fallback: insert candidates one-by-one with the two-pass method
+            for reward_vec, val_vec, state, ep_data in self.pending_pareto_candidates:
+                self._insert_pareto_point(reward_vec, val_vec, state, ep_data)
+            self.pending_pareto_candidates.clear()
+            return
+
+        # Pool: existing front + new candidates
+        all_rewards = [r for r, _ in self.pareto_front_rewards] + [
+            c[0] for c in self.pending_pareto_candidates
+        ]
+        all_vals = [v for v, _ in self.pareto_front_values] + [
+            c[1] for c in self.pending_pareto_candidates
+        ]
+        all_states = [s for _, s in self.pareto_front_rewards] + [
+            c[2] for c in self.pending_pareto_candidates
+        ]
+        all_episodes = list(self.pareto_front_episodes) + [
+            c[3] for c in self.pending_pareto_candidates
+        ]
+
+        F = np.array(all_rewards)  # shape (N, n_objectives)
+
+        # Deduplicate by rounding to 6 decimal places before NDS
+        F_rounded = np.round(F, decimals=6)
+        _, unique_idx = np.unique(F_rounded, axis=0, return_index=True)
+
+        # NDS — pymoo minimises, so negate for maximisation
+        nds = NonDominatedSorting()
+        front_idx_in_unique = nds.do(-F[unique_idx], only_non_dominated_front=True)
+        keep = unique_idx[front_idx_in_unique]
+
+        self.pareto_front_rewards = [
+            (list(all_rewards[i]), all_states[i]) for i in keep
+        ]
+        self.pareto_front_values = [(list(all_vals[i]), all_states[i]) for i in keep]
+        self.pareto_front_episodes = [all_episodes[i] for i in keep]
+        self.pending_pareto_candidates.clear()
+
+    def _insert_pareto_point(self, reward_vector, val_vector, state, episode_data):
+        """Two-pass insertion fallback (used when pymoo is unavailable)."""
         for existing_reward_vec, _ in self.pareto_front_rewards:
             existing = np.array(existing_reward_vec)
             if np.allclose(reward_vector, existing, rtol=1e-6):
-                return  # Duplicate found, don't add it
+                return
             if dominates(existing, reward_vector, maximize=True):
-                return  # New point is dominated, don't add it
-
-        # Pass 2: collect indices of existing points that the new point dominates.
-        dominated_indices = []
-        for i, (existing_reward_vec, _) in enumerate(self.pareto_front_rewards):
-            if dominates(reward_vector, np.array(existing_reward_vec), maximize=True):
-                dominated_indices.append(i)
-
-        # Remove dominated points in reverse index order to preserve correctness
+                return
+        dominated_indices = [
+            i
+            for i, (r, _) in enumerate(self.pareto_front_rewards)
+            if dominates(reward_vector, np.array(r), maximize=True)
+        ]
         for i in sorted(dominated_indices, reverse=True):
             self.pareto_front_rewards.pop(i)
             self.pareto_front_values.pop(i)
             self.pareto_front_episodes.pop(i)
-
-        # Append the new non-dominated point
-        self.pareto_front_rewards.append((list(reward_vector), state.copy()))
-        self.pareto_front_values.append((list(val_vector), state.copy()))
+        self.pareto_front_rewards.append((list(reward_vector), state))
+        self.pareto_front_values.append((list(val_vector), state))
         self.pareto_front_episodes.append(episode_data)
 
     # Reward computation
@@ -402,6 +441,7 @@ class CoatingEnvironment:
             air_index=self.air_material_index,
             use_optical_thickness=self.use_optical_thickness,
             return_field_data=return_field_data,
+            compute_efi=self.compute_efi,
         )
 
         if return_field_data:
