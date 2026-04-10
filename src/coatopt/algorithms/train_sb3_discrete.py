@@ -14,7 +14,7 @@ Config section: [sb3_discrete]
   mask_consecutive_materials = true
   mask_air_until_min_layers = true
   min_layers_before_air    = 4
-  epochs_per_step          = 200            # Episodes per phase
+  episodes_per_step          = 200            # Episodes per phase
   steps_per_objective      = 10             # Constraint levels
   constraint_penalty       = 10.0
   max_entropy              = 0.2            # Initial entropy coefficient
@@ -84,7 +84,7 @@ class CoatOptDiscreteGymWrapper(gym.Env):
         air_material_idx: int = 0,
         substrate_material_idx: int = 1,
         # Schedule settings
-        epochs_per_step: int = 200,
+        episodes_per_step: int = 200,
         steps_per_objective: int = 10,
         constraint_schedule: str = "interleaved",  # "interleaved" or "sequential"
         # Pareto bonus settings
@@ -119,8 +119,8 @@ class CoatOptDiscreteGymWrapper(gym.Env):
         # Track current layer for min_layers_before_air masking
         self.current_layer = 0
 
-        self.epochs_per_step = epochs_per_step
-        self.warmup_episodes_per_objective = epochs_per_step  # Warmup per objective
+        self.episodes_per_step = episodes_per_step
+        self.warmup_episodes_per_objective = episodes_per_step  # Warmup per objective
         self.total_warmup_episodes = self.warmup_episodes_per_objective * len(
             self.objectives
         )
@@ -129,7 +129,7 @@ class CoatOptDiscreteGymWrapper(gym.Env):
         self.n_objectives = len(self.objectives)
         self.total_levels = self.steps_per_objective
         self.total_phases = self.total_levels * self.n_objectives
-        self.n_anneal_episodes = self.total_phases * self.epochs_per_step
+        self.n_anneal_episodes = self.total_phases * self.episodes_per_step
 
         # Episode counter for scheduling
         self.episode_count = 0
@@ -140,9 +140,9 @@ class CoatOptDiscreteGymWrapper(gym.Env):
 
         # Enable constrained training in environment
         self.env.enable_constrained_training(
-            warmup_episodes_per_objective=epochs_per_step,
+            warmup_episodes_per_objective=episodes_per_step,
             steps_per_objective=steps_per_objective,
-            epochs_per_step=epochs_per_step,
+            episodes_per_step=episodes_per_step,
             constraint_penalty=constraint_penalty,
         )
 
@@ -290,11 +290,11 @@ class CoatOptDiscreteGymWrapper(gym.Env):
 
         # Episode count relative to end of warmup
         constrained_episode = self.episode_count - self.total_warmup_episodes
-        new_phase = (constrained_episode - 1) // self.epochs_per_step
+        new_phase = (constrained_episode - 1) // self.episodes_per_step
 
         # Calculate objective indices and constraint level
         if self.constraint_schedule == "interleaved":
-            # cycle between objectives every epochs_per_step
+            # cycle between objectives every episodes_per_step
             target_idx = new_phase % self.n_objectives
             level_cycle = (new_phase // self.n_objectives) % self.total_levels
             current_level = (
@@ -353,7 +353,7 @@ class CoatOptDiscreteGymWrapper(gym.Env):
             self.env.constraints = self.constraints
 
         progress = min(
-            1.0, constrained_episode / (self.total_phases * self.epochs_per_step)
+            1.0, constrained_episode / (self.total_phases * self.episodes_per_step)
         )
         return self._get_obs(state), {
             "target": self.target_objective,
@@ -569,7 +569,7 @@ def train(config_path: str, save_dir: str = None):
     )
     mask_air_until_min_layers = parser.getboolean(section, "mask_air_until_min_layers")
     min_layers_before_air = parser.getint(section, "min_layers_before_air")
-    epochs_per_step = parser.getint(section, "epochs_per_step")
+    episodes_per_step = parser.getint(section, "episodes_per_step")
     steps_per_objective = parser.getint(section, "steps_per_objective")
 
     # Constraint and entropy settings (with fallbacks)
@@ -628,7 +628,7 @@ def train(config_path: str, save_dir: str = None):
         mask_air_until_min_layers=mask_air_until_min_layers,
         min_layers_before_air=min_layers_before_air,
         # Schedule
-        epochs_per_step=epochs_per_step,
+        episodes_per_step=episodes_per_step,
         steps_per_objective=steps_per_objective,
         constraint_schedule=constraint_schedule,
         # Pareto bonus
@@ -692,7 +692,7 @@ def train(config_path: str, save_dir: str = None):
     entropy_callback = EntropyAnnealingCallback(
         max_ent=max_entropy,  # High exploration at start of each cycle
         min_ent=min_entropy,  # Low exploration at end of each cycle
-        epochs_per_step=epochs_per_step,  # Reset annealing every N episodes
+        episodes_per_step=episodes_per_step,  # Reset annealing every N episodes
         verbose=0,
         adaptive_to_constraints=adaptive_entropy_to_constraints,
         constraint_window=50,  # Track last 50 episodes
@@ -843,7 +843,7 @@ if __name__ == "__main__":
         mask_air_until_min_layers=not args.no_mask_air,
         min_layers_before_air=args.min_layers_before_air,
         # Schedule
-        epochs_per_step=args.epochs_per_step,
+        episodes_per_step=args.episodes_per_step,
         steps_per_objective=args.steps_per_objective,
         # Config
         config_path=args.config,

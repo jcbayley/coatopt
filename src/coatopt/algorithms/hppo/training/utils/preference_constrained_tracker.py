@@ -22,7 +22,7 @@ class PreferenceConstrainedTracker:
         self,
         optimise_parameters: List[str],
         phase1_epochs_per_objective: int = 1000,
-        phase2_epochs_per_step: int = 300,
+        phase2_episodes_per_step: int = 300,
         constraint_steps: int = 8,
         constraint_penalty_weight: float = 50.0,
         constraint_margin: float = 0.05,
@@ -34,7 +34,7 @@ class PreferenceConstrainedTracker:
         Args:
             optimise_parameters: List of objective parameters to optimize
             phase1_epochs_per_objective: Epochs to spend on each objective in Phase 1
-            phase2_epochs_per_step: Epochs per constraint step in Phase 2
+            phase2_episodes_per_step: Epochs per constraint step in Phase 2
             constraint_steps: Number of progressive constraint levels
             constraint_penalty_weight: Weight for constraint violation penalties
             constraint_margin: Safety margin above minimum values (fraction of range)
@@ -45,7 +45,7 @@ class PreferenceConstrainedTracker:
 
         # Phase configuration
         self.phase1_epochs_per_objective = phase1_epochs_per_objective
-        self.phase2_epochs_per_step = phase2_epochs_per_step
+        self.phase2_episodes_per_step = phase2_episodes_per_step
         self.constraint_steps = constraint_steps
         self.constraint_penalty_weight = constraint_penalty_weight
         self.constraint_margin = constraint_margin
@@ -55,7 +55,7 @@ class PreferenceConstrainedTracker:
         self.phase1_total_epochs = self.n_objectives * phase1_epochs_per_objective
 
         # Phase 2 duration per objective cycle
-        self.phase2_cycle_epochs = self.n_objectives * phase2_epochs_per_step
+        self.phase2_cycle_epochs = self.n_objectives * phase2_episodes_per_step
 
         # Reward bounds tracking
         self.reward_bounds: Dict[str, Dict[str, float]] = {
@@ -121,7 +121,7 @@ class PreferenceConstrainedTracker:
         if self.cycle_objective_per_constraint_steps:
             # Each objective gets all constraint steps before switching
             total_epochs_per_objective = (
-                self.constraint_steps * self.phase2_epochs_per_step
+                self.constraint_steps * self.phase2_episodes_per_step
             )
             objective_index = (
                 phase2_epoch // total_epochs_per_objective
@@ -129,7 +129,7 @@ class PreferenceConstrainedTracker:
             target_objective = self.optimise_parameters[objective_index]
             epoch_in_objective = phase2_epoch % total_epochs_per_objective
             constraint_step = min(
-                (epoch_in_objective // self.phase2_epochs_per_step),
+                (epoch_in_objective // self.phase2_episodes_per_step),
                 self.constraint_steps - 1,
             )
         else:
@@ -140,7 +140,7 @@ class PreferenceConstrainedTracker:
             )
             epoch_in_step = phase2_epoch % self.phase2_cycle_epochs
             objective_index = (
-                epoch_in_step // self.phase2_epochs_per_step
+                epoch_in_step // self.phase2_episodes_per_step
             ) % self.n_objectives
             target_objective = self.optimise_parameters[objective_index]
 
@@ -231,7 +231,7 @@ class PreferenceConstrainedTracker:
         return {
             "optimise_parameters": self.optimise_parameters,
             "phase1_epochs_per_objective": self.phase1_epochs_per_objective,
-            "phase2_epochs_per_step": self.phase2_epochs_per_step,
+            "phase2_episodes_per_step": self.phase2_episodes_per_step,
             "constraint_steps": self.constraint_steps,
             "constraint_penalty_weight": self.constraint_penalty_weight,
             "constraint_margin": self.constraint_margin,
@@ -247,7 +247,7 @@ class PreferenceConstrainedTracker:
         try:
             self.optimise_parameters = data["optimise_parameters"]
             self.phase1_epochs_per_objective = data["phase1_epochs_per_objective"]
-            self.phase2_epochs_per_step = data["phase2_epochs_per_step"]
+            self.phase2_episodes_per_step = data["phase2_episodes_per_step"]
             self.constraint_steps = data["constraint_steps"]
             self.constraint_penalty_weight = data["constraint_penalty_weight"]
             self.constraint_margin = data["constraint_margin"]
@@ -264,7 +264,7 @@ class PreferenceConstrainedTracker:
             self.phase1_total_epochs = (
                 self.n_objectives * self.phase1_epochs_per_objective
             )
-            self.phase2_cycle_epochs = self.n_objectives * self.phase2_epochs_per_step
+            self.phase2_cycle_epochs = self.n_objectives * self.phase2_episodes_per_step
 
             return True
 

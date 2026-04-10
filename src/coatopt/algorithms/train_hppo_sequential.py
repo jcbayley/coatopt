@@ -9,7 +9,7 @@ warmup, then applies gradually tightening constraints.
 Config section: [hppo_sequential]
   total_episodes           = 10000
   warmup_episodes          = 500            # Per objective
-  epochs_per_step          = 200            # Episodes per phase
+  episodes_per_step          = 200            # Episodes per phase
   steps_per_objective      = 10             # Constraint levels per objective
   episodes_per_update      = 10             # Episodes before PPO update
   n_epochs                 = 5              # SGD epochs per update
@@ -40,6 +40,8 @@ Config section: [hppo_sequential]
   plot_freq                = 500
 """
 import configparser
+import math
+import random
 from pathlib import Path
 from typing import Dict, List
 
@@ -68,7 +70,7 @@ class CoatOptHybridEnv(gym.Env):
         config: Config,
         materials: dict,
         warmup_episodes: int = 500,
-        epochs_per_step: int = 200,
+        episodes_per_step: int = 200,
         steps_per_objective: int = 10,
         constraint_penalty: float = 3.0,
         mask_consecutive_materials: bool = True,
@@ -88,7 +90,7 @@ class CoatOptHybridEnv(gym.Env):
         self.total_warmup_episodes = warmup_episodes * len(
             self.objectives
         )  # Total warmup
-        self.epochs_per_step = epochs_per_step
+        self.episodes_per_step = episodes_per_step
         self.steps_per_objective = steps_per_objective
         self.randomise_constraints = randomise_constraints
         self.episode_count = 0
@@ -98,7 +100,7 @@ class CoatOptHybridEnv(gym.Env):
         self.env.enable_constrained_training(
             warmup_episodes_per_objective=warmup_episodes,
             steps_per_objective=steps_per_objective,
-            epochs_per_step=epochs_per_step,
+            episodes_per_step=episodes_per_step,
             constraint_penalty=constraint_penalty,
         )
 
@@ -140,14 +142,14 @@ class CoatOptHybridEnv(gym.Env):
     def _get_obs(self, state) -> np.ndarray:
         """Convert state to observation with objective weights and constraint thresholds."""
         tensor = state.get_observation_tensor(pre_type="lstm")
-        obs = tensor.numpy().flatten().astype(np.float32)
-        # Append objective weights (1.0 for target, 0.0 for others)
-        for obj in self.objectives:
-            weight = 1.0 if obj == self.env.target_objective else 0.0
-            obs = np.append(obs, weight)
-        # Append constraint thresholds
-        for obj in self.env.optimise_parameters:
-            obs = np.append(obs, self.env.constraints.get(obj, 0.0))
+        base = tensor.numpy().flatten().astype(np.float32)
+        n_obj = len(self.objectives)
+        obs = np.empty(len(base) + 2 * n_obj, dtype=np.float32)
+        obs[: len(base)] = base
+        for i, obj in enumerate(self.objectives):
+            obs[len(base) + i] = 1.0 if obj == self.env.target_objective else 0.0
+        for i, obj in enumerate(self.env.optimise_parameters):
+            obs[len(base) + n_obj + i] = self.env.constraints.get(obj, 0.0)
         return obs
 
     def reset(self, seed=None, options=None):
@@ -177,7 +179,7 @@ class CoatOptHybridEnv(gym.Env):
                 print(f"Best warmup rewards: {self.env.warmup_best_rewards}")
 
             constrained_episode = self.episode_count - self.total_warmup_episodes
-            phase = (constrained_episode - 1) // self.epochs_per_step
+            phase = (constrained_episode - 1) // self.episodes_per_step
 
             # Alternate objectives
             obj_idx = phase % len(self.objectives)
@@ -554,10 +556,6 @@ def compute_bc_loss_from_pareto(
         target_obj_idx: index of target objective (for value head selection)
         bc_weight: weight for BC loss
         batch_size: batch size for sampling
-
-    Loss is normalized by sqrt(n_episodes / 10) to prevent the loss from growing
-    unboundedly as the Pareto front size increases. This encourages quality over
-    just adding more episodes.
     """
     if not pareto_episodes or len(pareto_episodes) == 0:
         return 0.0
@@ -567,15 +565,13 @@ def compute_bc_loss_from_pareto(
     if not valid_episodes:
         return 0.0
 
-    # Normalize by Pareto front size to prevent encouraging just adding episodes
-    # Use sqrt to still give some weight to larger fronts, but sublinearly
-    # Reference size of 10 episodes
-    n_episodes = len(valid_episodes)
-    size_normalization = (n_episodes / 10.0) ** 0.5
+    # Sample a subset of Pareto episodes first — iterating all N episodes to collect
+    # transitions is O(N * ep_len) every update, which is expensive for large fronts.
+    max_episodes = min(batch_size, len(valid_episodes))
+    sampled_episodes = random.sample(valid_episodes, max_episodes)
 
-    # Sample transitions from Pareto episodes
     transitions = []
-    for episode in valid_episodes:
+    for episode in sampled_episodes:
         if (
             episode.get("states")
             and episode.get("discrete_actions")
@@ -595,7 +591,6 @@ def compute_bc_loss_from_pareto(
 
     # Sample batch
     n_samples = min(batch_size, len(transitions))
-    import random
 
     sampled = random.sample(transitions, n_samples)
 
@@ -635,8 +630,7 @@ def compute_bc_loss_from_pareto(
     )
     bc_loss = -log_probs.mean()  # Negative log likelihood
 
-    # Apply size normalization and weight
-    return bc_weight * bc_loss / size_normalization
+    return bc_weight * bc_loss
 
 
 class PPOAgent:
@@ -725,6 +719,29 @@ class PPOAgent:
         n_updates = 0
 
         for epoch in range(n_epochs):
+            # BC loss: one dedicated gradient step per epoch
+            if (
+                pareto_episodes is not None
+                and bc_weight > 0
+                and env_wrapper is not None
+            ):
+                bc_loss_epoch = compute_bc_loss_from_pareto(
+                    self.policy,
+                    pareto_episodes,
+                    env_wrapper,
+                    target_obj_idx,
+                    bc_weight,
+                    batch_size=32,
+                )
+                if torch.is_tensor(bc_loss_epoch):
+                    logs["bc_loss"] += bc_loss_epoch.item()
+                    self.optimizer.zero_grad()
+                    bc_loss_epoch.backward()
+                    torch.nn.utils.clip_grad_norm_(
+                        self.policy.parameters(), self.max_grad_norm
+                    )
+                    self.optimizer.step()
+
             indices = torch.randperm(n_samples)
             for start in range(0, n_samples, batch_size):
                 end = start + batch_size
@@ -754,30 +771,11 @@ class PPOAgent:
                 # Value loss
                 value_loss = ((values - returns[batch_idx]) ** 2).mean()
 
-                # BC loss from Pareto episodes (if available)
-                bc_loss = 0.0
-                if (
-                    pareto_episodes is not None
-                    and bc_weight > 0
-                    and env_wrapper is not None
-                ):
-                    bc_loss = compute_bc_loss_from_pareto(
-                        self.policy,
-                        pareto_episodes,
-                        env_wrapper,
-                        target_obj_idx,
-                        bc_weight,
-                        batch_size=32,
-                    )
-                    if torch.is_tensor(bc_loss):
-                        logs["bc_loss"] += bc_loss.item()
-
                 # Total loss
                 loss = (
                     policy_loss
                     + self.vf_coef * value_loss
                     - self.ent_coef * entropy.mean()
-                    + (bc_loss if torch.is_tensor(bc_loss) else 0.0)
                 )
 
                 self.optimizer.zero_grad()
@@ -786,15 +784,6 @@ class PPOAgent:
                     self.policy.parameters(), self.max_grad_norm
                 )
                 self.optimizer.step()
-
-                # Check for NaN parameters
-                for name, param in self.policy.named_parameters():
-                    if torch.isnan(param).any():
-                        print(f"ERROR: NaN detected in {name} after optimizer step!")
-                        print(
-                            f"Loss: {loss.item()}, Policy loss: {policy_loss.item()}, Value loss: {value_loss.item()}"
-                        )
-                        raise ValueError(f"NaN in parameters: {name}")
 
                 # Logging
                 logs["policy_loss"] += policy_loss.item()
@@ -829,7 +818,7 @@ def train(config_path: str, save_dir: str):
     # Read hyperparameters
     total_episodes = _get("total_episodes", 10000, int)
     warmup_episodes = _get("warmup_episodes", 500, int)
-    epochs_per_step = _get("epochs_per_step", 200, int)
+    episodes_per_step = _get("episodes_per_step", 200, int)
     steps_per_objective = _get("steps_per_objective", 10, int)
     episodes_per_update = _get("episodes_per_update", 10, int)
     n_epochs = _get("n_epochs", 5, int)
@@ -884,7 +873,7 @@ def train(config_path: str, save_dir: str):
         {
             "total_episodes": total_episodes,
             "warmup_episodes": warmup_episodes,
-            "epochs_per_step": epochs_per_step,
+            "episodes_per_step": episodes_per_step,
             "steps_per_objective": steps_per_objective,
             "episodes_per_update": episodes_per_update,
             "n_epochs": n_epochs,
@@ -908,7 +897,7 @@ def train(config_path: str, save_dir: str):
         config=config,
         materials=materials,
         warmup_episodes=warmup_episodes,
-        epochs_per_step=epochs_per_step,
+        episodes_per_step=episodes_per_step,
         steps_per_objective=steps_per_objective,
         constraint_penalty=constraint_penalty,
         mask_consecutive_materials=mask_consecutive,
@@ -1140,7 +1129,6 @@ def train(config_path: str, save_dir: str):
                 progress = min(1.0, constrained_episodes / lr_decay_episodes)
 
         # Cosine annealing: smooth decay with slower finish
-        import math
 
         decay_mult = 0.5 * (1 + math.cos(math.pi * progress))
         current_lr = lr_final + (lr_init - lr_final) * decay_mult
@@ -1152,6 +1140,9 @@ def train(config_path: str, save_dir: str):
         for param_group in agent.optimizer.param_groups:
             param_group["lr"] = current_lr
         agent.ent_coef = current_ent_coef
+
+        # Flush staged Pareto candidates (batched NDS) before policy update
+        env.env.flush_pareto_candidates()
 
         # Update policy with BC loss from Pareto episodes (disabled during warmup)
         rollout_data = buffer.get()
@@ -1171,7 +1162,6 @@ def train(config_path: str, save_dir: str):
             bc_weight=bc_weight,
             env_wrapper=env,
         )
-
         # Logging
         if env.episode_count % mlflow_log_freq == 0:
             if verbose:
@@ -1319,8 +1309,23 @@ def train(config_path: str, save_dir: str):
                 if verbose:
                     print(f"  [checkpoint] skipped: {e}")
 
-    # Return results
+    # Final Pareto export and plots
     designs_df, values_df, rewards_df = env.env.export_pareto_dataframes()
+    if not designs_df.empty:
+        try:
+            from coatopt.utils.plot_design_diversity import (
+                plot_cluster_designs,
+                plot_design_diversity,
+            )
+
+            save_path = Path(save_dir)
+            plot_design_diversity(designs_df, values_df, save_path)
+            plot_cluster_designs(designs_df, values_df, save_path, materials=materials)
+        except Exception as e:
+            if verbose:
+                print(f"  [diversity plot] skipped: {e}")
+
+    # Return results
     return {
         "pareto_designs": designs_df,
         "pareto_values": values_df,

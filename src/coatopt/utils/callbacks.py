@@ -22,7 +22,7 @@ class EntropyAnnealingCallback(BaseCallback):
         self,
         max_ent: float = 0.2,
         min_ent: float = 0.01,
-        epochs_per_step: int = None,
+        episodes_per_step: int = None,
         verbose: int = 0,
         adaptive_to_constraints: bool = False,
         constraint_window: int = 50,
@@ -32,7 +32,7 @@ class EntropyAnnealingCallback(BaseCallback):
         Args:
             max_ent: Maximum entropy coefficient (high exploration)
             min_ent: Minimum entropy coefficient (low exploration)
-            epochs_per_step: If provided, reset annealing every N episodes (for cycling).
+            episodes_per_step: If provided, reset annealing every N episodes (for cycling).
                             If None, anneal once over entire training.
             verbose: Verbosity level
             adaptive_to_constraints: If True, increase entropy when constraint violations are high
@@ -41,7 +41,7 @@ class EntropyAnnealingCallback(BaseCallback):
         super().__init__(verbose)
         self.max_ent = max_ent
         self.min_ent = min_ent
-        self.epochs_per_step = epochs_per_step
+        self.episodes_per_step = episodes_per_step
         self.episode_count = 0
         self.adaptive_to_constraints = adaptive_to_constraints
         self.constraint_window = constraint_window
@@ -77,10 +77,10 @@ class EntropyAnnealingCallback(BaseCallback):
                             self.recent_constraint_violations.pop(0)
 
         # Compute current entropy coefficient
-        if self.epochs_per_step is not None:
-            # Cycling mode: reset every epochs_per_step episodes
-            episode_in_cycle = self.episode_count % self.epochs_per_step
-            progress = episode_in_cycle / self.epochs_per_step
+        if self.episodes_per_step is not None:
+            # Cycling mode: reset every episodes_per_step episodes
+            episode_in_cycle = self.episode_count % self.episodes_per_step
+            progress = episode_in_cycle / self.episodes_per_step
         else:
             # Single annealing mode: use training progress
             progress = 1.0 - (self.num_timesteps / self.model._total_timesteps)

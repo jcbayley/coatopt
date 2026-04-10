@@ -62,7 +62,7 @@ class CoatOptGymWrapper(gym.Env):
         self.previous_material_idx = None
 
         # Stepped constraint schedule
-        self.epochs_per_step = 1000
+        self.episodes_per_step = 1000
         self.steps_per_objective = 10
         self.n_objectives = len(self.objectives)
         self.total_levels = self.steps_per_objective
@@ -70,7 +70,7 @@ class CoatOptGymWrapper(gym.Env):
             self.total_levels * self.n_objectives
         )  # 10 steps * 2 objectives = 20 phases
         self.n_anneal_episodes = (
-            self.total_phases * self.epochs_per_step
+            self.total_phases * self.episodes_per_step
         )  # 20 * 100 = 2000 episodes
 
         # Episode counter for scheduling
@@ -146,7 +146,7 @@ class CoatOptGymWrapper(gym.Env):
         self.episode_count += 1
 
         # Determine current phase and level
-        new_phase = (self.episode_count - 1) // self.epochs_per_step
+        new_phase = (self.episode_count - 1) // self.episodes_per_step
 
         # Only recompute constraints when entering a new phase
         if new_phase != self.current_phase:
@@ -171,7 +171,7 @@ class CoatOptGymWrapper(gym.Env):
                     self.constraints[obj] = np.random.uniform(min_r, constraint_max)
 
         progress = min(
-            1.0, self.episode_count / (self.total_phases * self.epochs_per_step)
+            1.0, self.episode_count / (self.total_phases * self.episodes_per_step)
         )
         return self._get_obs(state), {
             "target": self.target_objective,
@@ -387,7 +387,7 @@ def train(config_path: str):
     print(f"  N materials: {env.env.n_materials}")
     print(f"  Objectives: {env.objectives}")
     print(f"\nAnnealing schedule:")
-    print(f"  Epochs per step: {env.epochs_per_step}")
+    print(f"  Epochs per step: {env.episodes_per_step}")
     print(f"  Steps per objective: {steps_per_obj}")
     print(f"  Total levels: {env.total_levels}")
     print(f"  Total phases: {env.total_phases}")
@@ -423,7 +423,7 @@ def train(config_path: str):
     entropy_callback = EntropyAnnealingCallback(
         max_ent=0.1,  # High exploration early
         min_ent=0.001,  # Low exploration late
-        epochs_per_step=None,  # Single annealing (no cycling)
+        episodes_per_step=None,  # Single annealing (no cycling)
         verbose=0,
     )
 

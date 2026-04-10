@@ -10,7 +10,7 @@ Config section: [sb3_dqn]
   total_timesteps          = 100000
   n_thickness_bins         = 20
   verbose                  = 1
-  epochs_per_step          = 200
+  episodes_per_step          = 200
   steps_per_objective      = 10
   mask_consecutive_materials = true
   mask_air_until_min_layers = true
@@ -55,7 +55,7 @@ class CoatOptDQNGymWrapper(gym.Env):
         materials: dict,
         n_thickness_bins: int = 20,
         constraint_penalty: float = 100.0,
-        epochs_per_step: int = 200,
+        episodes_per_step: int = 200,
         steps_per_objective: int = 10,
         constraint_schedule: str = "interleaved",
         mask_consecutive_materials: bool = True,
@@ -84,8 +84,8 @@ class CoatOptDQNGymWrapper(gym.Env):
         self.constraint_penalty = constraint_penalty
 
         # Training schedule
-        self.epochs_per_step = epochs_per_step
-        self.warmup_episodes_per_objective = epochs_per_step
+        self.episodes_per_step = episodes_per_step
+        self.warmup_episodes_per_objective = episodes_per_step
         self.total_warmup_episodes = self.warmup_episodes_per_objective * len(
             self.objectives
         )
@@ -93,7 +93,7 @@ class CoatOptDQNGymWrapper(gym.Env):
         self.n_objectives = len(self.objectives)
         self.total_levels = self.steps_per_objective
         self.total_phases = self.total_levels * self.n_objectives
-        self.n_anneal_episodes = self.total_phases * self.epochs_per_step
+        self.n_anneal_episodes = self.total_phases * self.episodes_per_step
 
         # Episode tracking
         self.episode_count = 0
@@ -109,9 +109,9 @@ class CoatOptDQNGymWrapper(gym.Env):
 
         # Enable constrained training in environment
         self.env.enable_constrained_training(
-            warmup_episodes_per_objective=epochs_per_step,
+            warmup_episodes_per_objective=episodes_per_step,
             steps_per_objective=steps_per_objective,
-            epochs_per_step=epochs_per_step,
+            episodes_per_step=episodes_per_step,
             constraint_penalty=constraint_penalty,
         )
 
@@ -196,7 +196,7 @@ class CoatOptDQNGymWrapper(gym.Env):
             print(f"=== STARTING CONSTRAINED PHASE ===\n")
 
         constrained_episode = self.episode_count - self.total_warmup_episodes
-        new_phase = (constrained_episode - 1) // self.epochs_per_step
+        new_phase = (constrained_episode - 1) // self.episodes_per_step
 
         # Calculate objective indices and constraint level
         if self.constraint_schedule == "interleaved":
@@ -373,7 +373,7 @@ def train(config_path: str, save_dir: str):
     total_timesteps = parser.getint(section, "total_timesteps")
     n_thickness_bins = parser.getint(section, "n_thickness_bins")
     verbose = parser.getint(section, "verbose")
-    epochs_per_step = parser.getint(section, "epochs_per_step")
+    episodes_per_step = parser.getint(section, "episodes_per_step")
     steps_per_objective = parser.getint(section, "steps_per_objective")
 
     # Action masking settings
@@ -443,7 +443,7 @@ def train(config_path: str, save_dir: str):
         materials,
         n_thickness_bins=n_thickness_bins,
         constraint_penalty=constraint_penalty,
-        epochs_per_step=epochs_per_step,
+        episodes_per_step=episodes_per_step,
         steps_per_objective=steps_per_objective,
         constraint_schedule=constraint_schedule,
         mask_consecutive_materials=mask_consecutive_materials,
@@ -460,7 +460,7 @@ def train(config_path: str, save_dir: str):
     print(f"\nConstraint schedule: {constraint_schedule}")
     if constraint_schedule == "interleaved":
         print(
-            f"  Pattern: Alternate objectives every {epochs_per_step} episodes, both constraints tighten together"
+            f"  Pattern: Alternate objectives every {episodes_per_step} episodes, both constraints tighten together"
         )
     elif constraint_schedule == "sequential":
         print(

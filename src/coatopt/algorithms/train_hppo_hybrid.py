@@ -15,7 +15,7 @@ Config section: [hppo_hybrid]
   n_agents                 = 4              # Number of parallel agents
   total_episodes           = 10000
   warmup_episodes          = 500            # Per objective
-  epochs_per_step          = 200            # Episodes per constraint phase
+  episodes_per_step          = 200            # Episodes per constraint phase
   steps_per_objective      = 10             # Constraint tightening steps (annealing schedule)
   episodes_per_update      = 10             # Complete episodes per agent before update
   n_epochs                 = 10             # SGD epochs per update
@@ -765,7 +765,7 @@ class HybridMultiAgentPPO:
         n_epochs: int = 10,
         batch_size: int = 256,
         warmup_episodes_per_obj: int = 500,
-        epochs_per_step: int = 200,
+        episodes_per_step: int = 200,
         steps_per_objective: int = 10,
         constraint_penalty: float = 3.0,
         random_objective_order: bool = False,
@@ -813,7 +813,7 @@ class HybridMultiAgentPPO:
         self.total_warmup_episodes = (
             warmup_episodes_per_obj * self.n_objectives * n_agents
         )
-        self.epochs_per_step = epochs_per_step
+        self.episodes_per_step = episodes_per_step
         self.steps_per_objective = steps_per_objective
         self.random_objective_order = random_objective_order
         self.resample_constraints_freq = resample_constraints_freq
@@ -974,7 +974,7 @@ class HybridMultiAgentPPO:
 
             # Determine current constraint step (global across all agents)
             constrained_episodes = self.episode_count - self.total_warmup_episodes
-            current_phase = constrained_episodes // self.epochs_per_step
+            current_phase = constrained_episodes // self.episodes_per_step
 
             # Which objective to target (cycle or random)
             if self.random_objective_order:
@@ -1021,7 +1021,7 @@ class HybridMultiAgentPPO:
                 )
             else:
                 constrained_episodes = self.episode_count - self.total_warmup_episodes
-                current_phase = constrained_episodes // self.epochs_per_step
+                current_phase = constrained_episodes // self.episodes_per_step
                 step_in_cycle = (
                     current_phase // self.n_objectives
                 ) % self.steps_per_objective
@@ -1366,7 +1366,7 @@ def train(config_path: str, save_dir: str = None) -> dict:
     n_agents = _get("n_agents", 4, int)
     total_episodes = _get("total_episodes", 10000, int)
     warmup_episodes = _get("warmup_episodes", 500, int)
-    epochs_per_step = _get("epochs_per_step", 200, int)
+    episodes_per_step = _get("episodes_per_step", 200, int)
     steps_per_objective = _get("steps_per_objective", 10, int)
     episodes_per_update = _get("episodes_per_update", 2048, int)
     n_epochs = _get("n_epochs", 10, int)
@@ -1431,7 +1431,7 @@ def train(config_path: str, save_dir: str = None) -> dict:
                 "n_agents": n_agents,
                 "total_episodes": total_episodes,
                 "warmup_episodes": warmup_episodes,
-                "epochs_per_step": epochs_per_step,
+                "episodes_per_step": episodes_per_step,
                 "steps_per_objective": steps_per_objective,
                 "episodes_per_update": episodes_per_update,
                 "n_epochs": n_epochs,
@@ -1454,7 +1454,7 @@ def train(config_path: str, save_dir: str = None) -> dict:
         n_epochs=n_epochs,
         batch_size=batch_size,
         warmup_episodes_per_obj=warmup_episodes,
-        epochs_per_step=epochs_per_step,
+        episodes_per_step=episodes_per_step,
         steps_per_objective=steps_per_objective,
         constraint_penalty=constraint_penalty,
         random_objective_order=random_objective_order,
