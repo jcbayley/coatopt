@@ -39,11 +39,12 @@ Config section: [hppo_sequential]
   verbose                  = 1
   plot_freq                = 500
 """
+
 import configparser
 import math
 import random
 from pathlib import Path
-from typing import Dict, List
+from typing import List
 
 import gymnasium as gym
 import mlflow
@@ -837,7 +838,6 @@ def train(config_path: str, save_dir: str):
     clip_range = _get("clip_range", 0.2, float)
     ent_coef = _get("ent_coef", 0.01, float)
     ent_coef_final = _get("ent_coef_final", ent_coef, float)
-    ent_decay_episodes = _get("ent_decay_episodes", total_episodes, int)
     vf_coef = _get("vf_coef", 0.5, float)
     max_grad_norm = _get("max_grad_norm", 0.5, float)
     min_layers_before_air = _get("min_layers_before_air", 4, int)
@@ -983,7 +983,6 @@ def train(config_path: str, save_dir: str):
     lr_init = lr
     ent_coef_init = ent_coef
     current_ent_coef = ent_coef
-    total_warmup_episodes = warmup_episodes * len(objectives)
     warmup_end_episode = 0  # Track when warmup ended for phase-based annealing reset
     was_warmup = True  # Track warmup state to detect transition
 
@@ -1104,7 +1103,7 @@ def train(config_path: str, save_dir: str):
             was_warmup = False
             if verbose:
                 print(f"  Warmup complete at episode {warmup_end_episode}")
-                print(f"  Resetting LR and entropy decay for constrained phase...")
+                print("  Resetting LR and entropy decay for constrained phase...")
 
         # Update LR and entropy with cosine annealing (separate for warmup/constrained phases)
         if env.is_warmup:
@@ -1229,7 +1228,7 @@ def train(config_path: str, save_dir: str):
                     try:
                         hv = env.env.compute_hypervolume(space="reward")
                         metrics["pareto.hypervolume"] = hv
-                    except:
+                    except Exception:
                         pass
 
                 # Warmup best

@@ -3,7 +3,6 @@
 import ast
 import configparser
 from dataclasses import dataclass, field
-from pathlib import Path
 
 
 @dataclass
@@ -162,7 +161,7 @@ def load_config(config_path: str) -> Config:
             ):
                 try:
                     data_kwargs[key] = ast.literal_eval(value)
-                except:
+                except Exception:
                     data_kwargs[key] = value
             else:
                 data_kwargs[key] = value
@@ -206,7 +205,7 @@ def load_config(config_path: str) -> Config:
             elif key in ("net_arch_pi", "net_arch_vf"):
                 try:
                     algorithm_kwargs[key] = ast.literal_eval(value)
-                except:
+                except Exception:
                     algorithm_kwargs[key] = value
             # Parse string values (pre_network)
             elif key in ("pre_network",):

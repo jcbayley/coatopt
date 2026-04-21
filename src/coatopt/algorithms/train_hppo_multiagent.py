@@ -744,7 +744,6 @@ class MultiAgentPPO:
 
         # Print progress
         if self.verbose:
-            ent = self._ppo_logs.get("entropy", 0.0)
             n_pareto = len(self.envs[0].base_env.pareto_front_rewards)
             phase = "warmup" if not self.warmup_done else "constrained"
             lr = self.agents[0].optimizer.param_groups[0]["lr"]
@@ -788,7 +787,7 @@ class MultiAgentPPO:
             try:
                 hv = self.envs[0].base_env.compute_hypervolume(space="reward")
                 metrics["pareto.hypervolume"] = hv
-            except:
+            except Exception:
                 pass
 
         for obj, best in self.warmup_best.items():
@@ -854,7 +853,7 @@ class MultiAgentPPO:
                     f"\nWarmup complete at step {self.step_count}, episode {self.episode_count}"
                 )
                 print(f"Best: {self.warmup_best}")
-                print(f"Resetting LR and entropy decay for constrained phase...")
+                print("Resetting LR and entropy decay for constrained phase...")
                 self._assign_constraints()
 
             # Collect n_steps for each agent
@@ -1092,7 +1091,7 @@ def train(config_path: str, save_dir: str = None) -> dict:
     save_dir.mkdir(parents=True, exist_ok=True)
 
     print(f"\n{'='*60}")
-    print(f"  Multi-agent PPO (hybrid discrete+continuous)")
+    print("  Multi-agent PPO (hybrid discrete+continuous)")
     print(f"  Agents      : {n_agents}")
     print(f"  Episodes    : {total_episodes:,}")
     print(f"  Device      : {device}")

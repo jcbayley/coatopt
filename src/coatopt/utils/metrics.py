@@ -1,6 +1,6 @@
 """Utility functions for multi-objective optimization metrics."""
 
-from typing import Dict, List, Optional, Tuple
+from typing import List
 
 import numpy as np
 

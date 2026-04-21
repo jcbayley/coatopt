@@ -314,7 +314,6 @@ def pack_state_sequence(
     if layer_numbers_validated is False:
         return state_tensor
 
-    batch_size = state_tensor.size(0)
     sequence_lengths = layer_numbers_validated.squeeze().long()
 
     # Handle single batch case

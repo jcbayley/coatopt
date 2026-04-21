@@ -1,4 +1,3 @@
-import copy
 import logging
 
 import numpy as np
@@ -177,8 +176,8 @@ def getCoatNoise2(
             / ((1 + pratN) ** 2 * (1 - 2 * pratN) * ySub)
         )
         / (1 - pratN)
-        * ((1 - pratN - 2 * pratN**2))
-        / ((1 - pratSub - 2 * pratSub**2))
+        * (1 - pratN - 2 * pratN**2)
+        / (1 - pratSub - 2 * pratSub**2)
     )
 
     SbrZ = (4 * kBT / (np.pi * wBeam**2 * w)) * np.sum(
@@ -198,9 +197,9 @@ def getCoatNoise2(
     betaBar = (-dcdp) * dOpt * (betaN / nN + alphaN * (1 + pratN) / (1 - pratN))
 
     # Thermo-elastic
-    SteZ = (
-        4 * kBT * Temp / (np.pi * wBeam**2 * np.sqrt(2 * kappaSub * cSub * w))
-    ) * (np.sum(alphaBar * dCoat) - alphaBarSub * np.sum(dGeo * cN) / cSub) ** 2
+    SteZ = (4 * kBT * Temp / (np.pi * wBeam**2 * np.sqrt(2 * kappaSub * cSub * w))) * (
+        np.sum(alphaBar * dCoat) - alphaBarSub * np.sum(dGeo * cN) / cSub
+    ) ** 2
 
     # Thermo-refractive
     StrZ = (
@@ -437,8 +436,6 @@ def merit_function(
     # new_all_materials = copy.copy(all_materials)
     new_all_materials = all_materials
     # print(new_all_materials.keys())
-    num_points = 2000
-
     # logging.info(f"Calculating Coating Thermal Noise .......")
     noise_summary, rCoat, dcdp, rbar, r, _ = getCoatingThermalNoise(
         dOpt=layer_optical_thicknesses,
@@ -502,9 +499,6 @@ def merit_function(
             2 * np.pi * layer_thicknesses[i] * n_layer[i] / light_wavelength
         )
 
-    nSub = all_materials[1]["n"]
-    nAir = all_materials[0]["n"]
-
     if return_field_data:
         if not compute_efi:
             raise ValueError("return_field_data=True requires compute_efi=True")
@@ -554,11 +548,6 @@ def optical_to_physical(optical_thickness, vacuum_wavelength, refractive_index):
     return physical_thickness
 
 
-def physical_to_optical(physical_thickness, vacuum_wavelength, refractive_index):
-    optical_thickness = physical_thickness * refractive_index / vacuum_wavelength
-    return optical_thickness
-
-
 def merit_function_2(
     state,
     all_materials,
@@ -573,7 +562,6 @@ def merit_function_2(
     substrate_index=1,
     air_index=0,
 ):
-
     layer_thicknesses = state[:, 0]
     layer_material_inds = np.argmax(state[:, 1:], axis=1)
     ns = np.array([all_materials[i]["n"] for i in layer_material_inds])

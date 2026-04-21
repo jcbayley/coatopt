@@ -9,7 +9,6 @@ without modification.
 from typing import Dict, List, Optional, Tuple
 
 import numpy as np
-import torch
 
 from ..environments.state import CoatingState
 from ..environments.utils import coating_utils, state_utils
@@ -18,7 +17,6 @@ from ..utils.metrics import (
     compute_hypervolume_mixed,
     dominates,
     update_pareto_front,
-    update_pareto_front_mixed,
 )
 
 
@@ -131,12 +129,8 @@ class CoatingEnvironment:
         # Multi-objective tracking
         # IMPORTANT: Reward space Pareto front is used for all calculations
         # Value space Pareto front is only for visual diagnostics
-        self.pareto_front_rewards = (
-            []
-        )  # List of (reward_vector, state) - used for calculations
-        self.pareto_front_values = (
-            []
-        )  # List of (value_vector, state) - used for plotting
+        self.pareto_front_rewards = []  # List of (reward_vector, state) - used for calculations
+        self.pareto_front_values = []  # List of (value_vector, state) - used for plotting
         self.pareto_front_episodes = []  # List of episode data dicts (for BC loss)
         self.all_points = []
         self.pending_pareto_candidates = []  # Staged per-episode, flushed per-rollout
@@ -606,7 +600,6 @@ class CoatingEnvironment:
         penalty = 0.0
 
         for obj, threshold in self.constraints.items():
-
             norm_reward = rewards.get(obj, 0.0)
 
             if norm_reward < threshold:

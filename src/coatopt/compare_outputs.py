@@ -9,10 +9,6 @@ import pandas as pd
 
 from coatopt.environments.state import CoatingState
 from coatopt.utils.interactive_plots import (
-    _detect_objectives,
-    _obj_label,
-    _obj_scale,
-    _obj_transform,
     plot_pairwise_comparison_interactive,
     plot_pareto_3d_interactive,
     plot_pareto_parallel_coords_interactive,
@@ -709,7 +705,7 @@ def create_hypervolume_ranking_table(
 
 
 def print_statistics_both_spaces(
-    pareto_fronts: List[Tuple[Optional[pd.DataFrame], Optional[pd.DataFrame], str]]
+    pareto_fronts: List[Tuple[Optional[pd.DataFrame], Optional[pd.DataFrame], str]],
 ):
     """Print statistics for both VALUE and REWARD space Pareto fronts.
 
@@ -726,7 +722,7 @@ def print_statistics_both_spaces(
         # VALUE SPACE statistics
         if values_df is not None:
             hv_value = compute_hypervolume_from_df(values_df, space="value")
-            print(f"  VALUE SPACE:")
+            print("  VALUE SPACE:")
             print(f"    Number of points: {len(values_df)}")
             print(f"    Hypervolume: {hv_value:.6f}")
             for col in ["reflectivity", "absorption", "thermal_noise"]:
@@ -738,12 +734,12 @@ def print_statistics_both_spaces(
                         print(f"      Max:  {values.max():.6e}")
                         print(f"      Mean: {values.mean():.6e}")
         else:
-            print(f"  VALUE SPACE: No data")
+            print("  VALUE SPACE: No data")
 
         # REWARD SPACE statistics
         if rewards_df is not None:
             hv_reward = compute_hypervolume_from_df(rewards_df, space="reward")
-            print(f"  REWARD SPACE:")
+            print("  REWARD SPACE:")
             print(f"    Number of points: {len(rewards_df)}")
             print(f"    Hypervolume: {hv_reward:.6f}")
             for col in ["reflectivity", "absorption"]:
@@ -756,7 +752,7 @@ def print_statistics_both_spaces(
                         print(f"      Max:  {values.max():.6f}")
                         print(f"      Mean: {values.mean():.6f}")
         else:
-            print(f"  REWARD SPACE: No data")
+            print("  REWARD SPACE: No data")
 
 
 def plot_coating_designs(
@@ -1121,7 +1117,7 @@ Examples:
             print(f"Created {len(reference_values)} reference designs")
             print(reference_values)
         else:
-            print(f"Warning: Config file not found. Skipping reference designs.")
+            print("Warning: Config file not found. Skipping reference designs.")
 
     # Determine output path
     if args.output:

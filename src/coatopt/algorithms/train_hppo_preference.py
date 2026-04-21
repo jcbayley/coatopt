@@ -1185,7 +1185,7 @@ class PreferenceMultiAgentPPO:
             try:
                 hv = self.envs[0].base_env.compute_hypervolume(space="reward")
                 metrics["pareto.hypervolume"] = hv
-            except:
+            except Exception:
                 pass
 
         for obj, best in self.warmup_best.items():
@@ -1653,13 +1653,13 @@ def train(config_path: str, save_dir: str = None) -> dict:
     save_dir.mkdir(parents=True, exist_ok=True)
 
     print(f"\n{'='*60}")
-    print(f"  Preference-Weighted Multi-Agent PPO")
+    print("  Preference-Weighted Multi-Agent PPO")
     print(f"  Agents      : {n_agents}")
     print(f"  Episodes    : {total_episodes:,}")
     print(f"  Device      : {device}")
     print(f"  Objectives  : {list(config.data.optimise_parameters)}")
     print(f"  Constraint steps: {steps_per_objective}")
-    print(f"  Preference-weighted reward (linear scalarization)")
+    print("  Preference-weighted reward (linear scalarization)")
     print(f"{'='*60}\n")
 
     if mlflow.active_run():

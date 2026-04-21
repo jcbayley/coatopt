@@ -39,13 +39,13 @@ Config section: [morl_discrete]
   # PCN specific:
   hidden_dim               = 256
 """
+
 import configparser
 import time
 from pathlib import Path
 
 import gymnasium as gym
 import numpy as np
-import pandas as pd
 import torch as th
 
 from coatopt.environments.environment import CoatingEnvironment
@@ -405,9 +405,7 @@ def _make_masked_gpipd_class():
                         ]
                     ),
                     dim=0,
-                )[
-                    0
-                ]  # (1, n_actions, reward_dim)
+                )[0]  # (1, n_actions, reward_dim)
                 q = th.einsum("r,bar->ba", w_t, psi).squeeze(0)  # (n_actions,)
 
                 if mask is not None:
@@ -769,7 +767,7 @@ def train(config_path: str, algorithm: str = "gpipd", save_dir: str = None) -> t
     env = make_env(is_eval=False)
     eval_env = make_env(is_eval=True)
 
-    print(f"\nCoatOptMODiscreteWrapper")
+    print("\nCoatOptMODiscreteWrapper")
     print(f"  Objectives : {env.objectives}")
     print(
         f"  Actions    : {env.n_actions}  "

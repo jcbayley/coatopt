@@ -7,7 +7,6 @@ reward computation, step function, and multi-objective optimization.
 
 import json
 from pathlib import Path
-from typing import Dict
 
 import numpy as np
 import pytest
@@ -151,7 +150,7 @@ class TestCoatingEnvironmentReset:
         env.done = True
 
         # Reset
-        state = env.reset()
+        env.reset()
         assert env.current_index == 0
         assert env.done is False
 
@@ -610,7 +609,7 @@ class TestCoatingEnvironmentConstrainedTraining:
         env = CoatingEnvironment(basic_config, materials)
 
         env.update_warmup_best("reflectivity", 0.8)
-        captured = capsys.readouterr()
+        capsys.readouterr()
 
         assert env.warmup_best_rewards["reflectivity"] == 0.8
 

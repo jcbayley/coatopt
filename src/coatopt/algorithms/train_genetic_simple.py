@@ -18,14 +18,11 @@ Config section: [nsga2]
   mutation_eta             = 20.0
   min_layers_before_air    = 0              # Min layers before air allowed
 """
-import os
-import time
+
 from pathlib import Path
 from typing import Optional
 
-import matplotlib.pyplot as plt
 import numpy as np
-import pandas as pd
 from pymoo.algorithms.moo.moead import MOEAD
 from pymoo.algorithms.moo.nsga2 import NSGA2
 from pymoo.algorithms.moo.nsga3 import NSGA3
@@ -39,7 +36,7 @@ from pymoo.util.ref_dirs import get_reference_directions
 
 from coatopt.environments.environment import CoatingEnvironment
 from coatopt.environments.state import CoatingState
-from coatopt.utils.configs import Config, DataConfig, TrainingConfig, load_config
+from coatopt.utils.configs import load_config
 from coatopt.utils.plotting import plot_coating_stack, plot_pareto_front
 from coatopt.utils.utils import convert_pymoo_to_dataframes, load_materials
 
@@ -288,7 +285,6 @@ def train_genetic(config_path: str, save_dir: Optional[str] = None):
         print(f"  Mutation prob: {mutation_prob}")
 
     # Run optimization
-    start_time = time.time()
     result = minimize(
         problem,
         algo,
@@ -296,10 +292,9 @@ def train_genetic(config_path: str, save_dir: Optional[str] = None):
         seed=seed,
         verbose=verbose,
     )
-    end_time = time.time()
 
     if verbose:
-        print(f"\nOptimization complete!")
+        print("\nOptimization complete!")
         print(f"Pareto front size: {len(result.F)}")
 
     # Convert PyMOO results to standardized DataFrames
@@ -320,7 +315,7 @@ def train_genetic(config_path: str, save_dir: Optional[str] = None):
             plot_df, env.optimise_parameters, save_dir, plot_type="rewards"
         )
         if verbose:
-            print(f"  Saved Pareto front plots")
+            print("  Saved Pareto front plots")
 
         # Plot sample designs
         n_samples = min(5, len(result.X))

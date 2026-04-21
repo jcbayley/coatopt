@@ -35,28 +35,18 @@ def generate_submit_file(
     project_path = config.get("condor", "project_path")
     results_dir = config.get("condor", "results_dir", fallback="runs/")
     venv_path = f"{project_path}/.venv"
-    src_path = f"{project_path}/src"
-    pyproject_path = f"{project_path}/pyproject.toml"
 
     # Get base run name to append run_id to
     base_run_name = config.get("general", "run_name", fallback="")
 
-    # Get basenames for transferred files (they'll be in job's scratch dir)
-    config_basename = Path(config_file_path).name
-    materials_basename = Path(materials_file_path).name
-
     # Convert to absolute paths for transfer_input_files
     config_absolute = Path(config_file_path).resolve()
-    materials_absolute = Path(materials_file_path).resolve()
 
     # Check if comparison should be generated
     generate_comparison = config.getboolean(
         "condor", "generate_comparison", fallback=False
     )
     comparison_flag = " --generate-comparison" if generate_comparison else ""
-
-    # Get base seed for parallel runs
-    base_seed = config.getint("condor", "base_seed", fallback=1000)
 
     # Resource requirements
     request_cpus = config.get("condor", "request_cpus", fallback="1")
@@ -195,11 +185,11 @@ def main():
     dag_file = generate_dag_file(config, output_dir, submit_file)
 
     print(f"\n✓ Files generated successfully in {output_dir}/")
-    print(f"\nTo submit the DAG:")
+    print("\nTo submit the DAG:")
     print(f"  cd {output_dir}")
     print(f"  condor_submit_dag {dag_file.name}")
-    print(f"\nTo monitor progress:")
-    print(f"  condor_q")
+    print("\nTo monitor progress:")
+    print("  condor_q")
     print(f"  tail -f {dag_file.stem}.dagman.out")
 
 

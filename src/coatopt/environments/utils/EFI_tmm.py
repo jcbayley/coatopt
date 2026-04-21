@@ -1,19 +1,13 @@
-import datetime as dt
 import logging
-import math as m
-import os
 import warnings
 
 import matplotlib.pyplot as plt
+import plotly.express as px
 
 # import tmm
 import numpy as np
 import pandas as pd
 import tmm  # Keep original tmm for position_resolved and find_in_structure_with_inf
-import tmm_fast as tmm_fast_module
-from scipy import integrate as TG
-from scipy.optimize import curve_fit, least_squares, leastsq
-from scipy.signal import find_peaks
 from tmm_fast import coh_tmm as coh_tmm_fast
 
 
@@ -104,8 +98,7 @@ def CalculateEFI_tmm(
     ]  # refractive index of silica at the laser wavelength of 1064 nm
     t_sub = 100  # thickness of substrate in nm
 
-    total_thickness = t_air + sum(t_coat) + t_sub  # total thickness of system in  nm
-
+    # total_thickness = t_air + sum(t_coat) + t_sub
     ##################################################
     # set up calculation of EFI
     # polarisation = 'p'
@@ -138,8 +131,6 @@ def CalculateEFI_tmm(
 
     poyn = []
     absor = []
-    poyn_in = []
-    absor_in = []
     E = []
     E_sub = []
     layer_idx = []
@@ -339,7 +330,6 @@ def CalculateAbsorption_tmm(
 
     # Create a function to calculate absorption at any given depth in a layer
     def absorption_fn(layer, depth_in_layer):
-        n = n_list[layer]
         return tmm.absorp_analytic_fn(layer, depth_in_layer, coh_tmm_data)
 
     # Calculate absorption in each layer
@@ -737,7 +727,6 @@ def stack_RT_fast(
     plot_range=None,
     verbose=False,
 ):
-
     # stack, theta=0.0, pol='unpolarized'):
     """
 
@@ -771,7 +760,6 @@ def stack_RT_fast(
 
     # calculate physical thicknesses if not provided
     if tphys is None:
-
         print("tmm-fast : Calculating physical thickness... ")
         tphys = []
         for layer_material in materialLayer:
@@ -842,7 +830,6 @@ def stack_RT_fast(
         transmission_spec_scaled = transmission * 100
 
         if plots:
-
             plt.figure(figsize=(10, 6))
             plt.plot(
                 lambda_list,
@@ -857,7 +844,6 @@ def stack_RT_fast(
             plt.show()
 
         elif isinstance(plots, str) and "plotly" in plots.lower():
-
             if plot_range is None:
                 plot_range = [380, 1500]
             import pandas as pd
