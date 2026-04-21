@@ -356,43 +356,77 @@ def plot_pairwise_comparison_interactive(
                     x, y = x[m], y[m]
                 if len(x):
                     idx = np.argsort(x)
-                    fig.add_trace(
-                        go.Scatter(
-                            x=x[idx],
-                            y=y[idx],
-                            mode="lines",
-                            line=dict(color=color, width=2, dash="dash"),
-                            opacity=0.4,
-                            name=leg_v,
-                            legendgroup=legend_group,
-                            legendgrouptitle_text=legend_group if group_runs else None,
-                            showlegend=False,
-                            hoverinfo="skip",
-                        ),
-                        row=row,
-                        col=1,
-                    )
-                    fig.add_trace(
-                        go.Scatter(
-                            x=x,
-                            y=y,
-                            mode="markers",
-                            marker=dict(
-                                color=color, size=8, line=dict(width=1, color="black")
+                    if pareto_only:
+                        fig.add_trace(
+                            go.Scatter(
+                                x=x[idx],
+                                y=y[idx],
+                                mode="lines+markers",
+                                line=dict(color=color, width=2, shape="hv"),
+                                marker=dict(
+                                    color=color,
+                                    size=6,
+                                    line=dict(width=1, color="black"),
+                                ),
+                                name=leg_v,
+                                legendgroup=legend_group,
+                                legendgrouptitle_text=(
+                                    legend_group if group_runs else None
+                                ),
+                                showlegend=first_row,
+                                hovertemplate=(
+                                    f"<b>%{{fullData.name}}</b><br>"
+                                    f"{_obj_label(obj_x)}: %{{x:.3e}}<br>"
+                                    f"{_obj_label(obj_y)}: %{{y:.3e}}<br><extra></extra>"
+                                ),
                             ),
-                            name=leg_v,
-                            legendgroup=legend_group,
-                            legendgrouptitle_text=legend_group if group_runs else None,
-                            showlegend=first_row,
-                            hovertemplate=(
-                                f"<b>%{{fullData.name}}</b><br>"
-                                f"{_obj_label(obj_x)}: %{{x:.3e}}<br>"
-                                f"{_obj_label(obj_y)}: %{{y:.3e}}<br><extra></extra>"
+                            row=row,
+                            col=1,
+                        )
+                    else:
+                        fig.add_trace(
+                            go.Scatter(
+                                x=x[idx],
+                                y=y[idx],
+                                mode="lines",
+                                line=dict(color=color, width=2, dash="dash"),
+                                opacity=0.4,
+                                name=leg_v,
+                                legendgroup=legend_group,
+                                legendgrouptitle_text=(
+                                    legend_group if group_runs else None
+                                ),
+                                showlegend=False,
+                                hoverinfo="skip",
                             ),
-                        ),
-                        row=row,
-                        col=1,
-                    )
+                            row=row,
+                            col=1,
+                        )
+                        fig.add_trace(
+                            go.Scatter(
+                                x=x,
+                                y=y,
+                                mode="markers",
+                                marker=dict(
+                                    color=color,
+                                    size=8,
+                                    line=dict(width=1, color="black"),
+                                ),
+                                name=leg_v,
+                                legendgroup=legend_group,
+                                legendgrouptitle_text=(
+                                    legend_group if group_runs else None
+                                ),
+                                showlegend=first_row,
+                                hovertemplate=(
+                                    f"<b>%{{fullData.name}}</b><br>"
+                                    f"{_obj_label(obj_x)}: %{{x:.3e}}<br>"
+                                    f"{_obj_label(obj_y)}: %{{y:.3e}}<br><extra></extra>"
+                                ),
+                            ),
+                            row=row,
+                            col=1,
+                        )
 
             # REWARD panel
             if rdf is not None and obj_x in rdf.columns and obj_y in rdf.columns:
@@ -405,44 +439,79 @@ def plot_pairwise_comparison_interactive(
                     x, y = x[m], y[m]
                 if len(x):
                     idx = np.argsort(x)
-                    fig.add_trace(
-                        go.Scatter(
-                            x=x[idx],
-                            y=y[idx],
-                            mode="lines",
-                            line=dict(color=color, width=2, dash="dash"),
-                            opacity=0.4,
-                            name=leg_r,
-                            legendgroup=legend_group,
-                            legendgrouptitle_text=legend_group if group_runs else None,
-                            showlegend=False,
-                            hoverinfo="skip",
-                        ),
-                        row=row,
-                        col=2,
-                    )
-                    fig.add_trace(
-                        go.Scatter(
-                            x=x,
-                            y=y,
-                            mode="markers",
-                            marker=dict(
-                                color=color, size=8, line=dict(width=1, color="black")
+                    if pareto_only:
+                        fig.add_trace(
+                            go.Scatter(
+                                x=x[idx],
+                                y=y[idx],
+                                mode="lines+markers",
+                                line=dict(color=color, width=2, shape="hv"),
+                                marker=dict(
+                                    color=color,
+                                    size=6,
+                                    line=dict(width=1, color="black"),
+                                ),
+                                name=leg_r,
+                                legendgroup=legend_group,
+                                legendgrouptitle_text=(
+                                    legend_group if group_runs else None
+                                ),
+                                showlegend=False,
+                                hovertemplate=(
+                                    f"<b>%{{fullData.name}}</b><br>"
+                                    f"{obj_x.replace('_', ' ').title()} reward: %{{x:.4f}}<br>"
+                                    f"{obj_y.replace('_', ' ').title()} reward: %{{y:.4f}}<br>"
+                                    "<extra></extra>"
+                                ),
                             ),
-                            name=leg_r,
-                            legendgroup=legend_group,
-                            legendgrouptitle_text=legend_group if group_runs else None,
-                            showlegend=False,
-                            hovertemplate=(
-                                f"<b>%{{fullData.name}}</b><br>"
-                                f"{obj_x.replace('_', ' ').title()} reward: %{{x:.4f}}<br>"
-                                f"{obj_y.replace('_', ' ').title()} reward: %{{y:.4f}}<br>"
-                                "<extra></extra>"
+                            row=row,
+                            col=2,
+                        )
+                    else:
+                        fig.add_trace(
+                            go.Scatter(
+                                x=x[idx],
+                                y=y[idx],
+                                mode="lines",
+                                line=dict(color=color, width=2, dash="dash"),
+                                opacity=0.4,
+                                name=leg_r,
+                                legendgroup=legend_group,
+                                legendgrouptitle_text=(
+                                    legend_group if group_runs else None
+                                ),
+                                showlegend=False,
+                                hoverinfo="skip",
                             ),
-                        ),
-                        row=row,
-                        col=2,
-                    )
+                            row=row,
+                            col=2,
+                        )
+                        fig.add_trace(
+                            go.Scatter(
+                                x=x,
+                                y=y,
+                                mode="markers",
+                                marker=dict(
+                                    color=color,
+                                    size=8,
+                                    line=dict(width=1, color="black"),
+                                ),
+                                name=leg_r,
+                                legendgroup=legend_group,
+                                legendgrouptitle_text=(
+                                    legend_group if group_runs else None
+                                ),
+                                showlegend=False,
+                                hovertemplate=(
+                                    f"<b>%{{fullData.name}}</b><br>"
+                                    f"{obj_x.replace('_', ' ').title()} reward: %{{x:.4f}}<br>"
+                                    f"{obj_y.replace('_', ' ').title()} reward: %{{y:.4f}}<br>"
+                                    "<extra></extra>"
+                                ),
+                            ),
+                            row=row,
+                            col=2,
+                        )
 
         # Best-solution markers
         ux_v, uy_v = best_val.get(obj_x), best_val.get(obj_y)
