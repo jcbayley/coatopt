@@ -4,7 +4,6 @@ from typing import List, Optional, Tuple, Union
 
 import numpy as np
 import torch
-from torch.nn import functional as F
 
 from coatopt.algorithms.action_utils import (
     create_material_mask_from_coating_state,
@@ -20,7 +19,6 @@ from coatopt.algorithms.hppo.core.networks.pre_networks import (
     PreNetworkLSTM,
 )
 from coatopt.algorithms.hppo.core.replay_buffer import ReplayBuffer
-from coatopt.environments.core.state import CoatingState
 from coatopt.utils.math_utils import TruncatedNormalDist
 
 
@@ -226,7 +224,7 @@ class PCHPPO:
 
         # Initialize policy and value networks (current and old versions)
         if use_mixture_of_experts:
-            print(f"\nINITIALIZING MIXTURE OF EXPERTS:")
+            print("\nINITIALIZING MIXTURE OF EXPERTS:")
             print(f"   Number of experts: {self.moe_n_experts}")
             print(f"   Expert specialization: {self.moe_expert_specialization}")
             print(f"   Gating temperature: {self.moe_gate_temperature}")
@@ -252,7 +250,7 @@ class PCHPPO:
 
             # Log expert regions for verification
             expert_regions = self.policy_discrete.expert_regions
-            print(f"   Expert regions configured:")
+            print("   Expert regions configured:")
             for i, region in enumerate(expert_regions):
                 weights_str = ", ".join([f"{w:.1f}" for w in region.tolist()])
                 print(f"      Expert {i}: [{weights_str}]")
@@ -1065,7 +1063,6 @@ class PCHPPO:
                 returns.std() + HPPOConstants.EPSILON
             )
 
-        state_vals = torch.cat(list(self.replay_buffer.state_values)).to(torch.float32)
         old_lprobs_discrete = (
             torch.cat(list(self.replay_buffer.logprobs_discrete))
             .to(torch.float32)
@@ -1124,7 +1121,6 @@ class PCHPPO:
             for batch_idx, batch_indices in enumerate(mini_batch_indices):
                 # Extract mini-batch data
                 batch_returns = returns[batch_indices]
-                batch_state_vals = state_vals[batch_indices]
                 batch_old_lprobs_discrete = old_lprobs_discrete[batch_indices]
                 batch_old_lprobs_continuous = old_lprobs_continuous[batch_indices]
                 batch_objective_weights = objective_weights[batch_indices]

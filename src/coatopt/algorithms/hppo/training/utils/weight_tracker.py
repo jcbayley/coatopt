@@ -3,8 +3,7 @@ Weight cycling utilities for multi-objective optimization.
 Simple functions for handling weight sampling and cycling strategies.
 """
 
-import warnings
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional
 
 import numpy as np
 
@@ -557,11 +556,6 @@ def sample_reward_weights(
         weights = np.random.dirichlet(alpha=np.ones(n_objectives))
 
     elif cycle_weights == "linear":
-        # Create an N-dimensional grid of weights
-        steps = 5  # Number of steps per dimension
-        grid_axes = [np.linspace(0, 1, steps) for _ in range(n_objectives)]
-        mesh = np.meshgrid(*grid_axes)
-        flat = [m.flatten() for m in mesh]
         T_cycle = final_weight_epoch // n_weight_cycles
         phase_steps = T_cycle // n_objectives
         T_transition = int(transfer_fraction * phase_steps)

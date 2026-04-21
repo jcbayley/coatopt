@@ -27,18 +27,14 @@ Config section: [sb3_discrete]
   lstm_num_layers          = 2
   lstm_features_dim        = 128
 """
+
 import configparser
 import random
-import shutil
-import time
-import warnings
 from datetime import datetime
 from pathlib import Path
 
 import gymnasium as gym
-import mlflow
 import numpy as np
-import pandas as pd
 import torch as th
 import torch.nn as nn
 from sb3_contrib import MaskablePPO
@@ -46,15 +42,12 @@ from stable_baselines3.common.callbacks import CallbackList
 from stable_baselines3.common.torch_layers import BaseFeaturesExtractor
 
 from coatopt.environments.environment import CoatingEnvironment
-from coatopt.environments.state import CoatingState
 from coatopt.utils.callbacks import (
     EntropyAnnealingCallback,
     MLflowLoggingCallback,
-    PlottingCallback,
     PolicyResetCallback,
 )
-from coatopt.utils.configs import Config, DataConfig, TrainingConfig, load_config
-from coatopt.utils.plotting import plot_coating_stack_from_state_array
+from coatopt.utils.configs import Config, load_config
 from coatopt.utils.utils import evaluate_model, load_materials
 
 
@@ -279,14 +272,14 @@ class CoatOptDiscreteGymWrapper(gym.Env):
         if self.is_warmup:
             self.is_warmup = False
             self.env.is_warmup = False
-            print(f"\nWARMUP COMPLETE")
+            print("\nWARMUP COMPLETE")
             print(f"Observed value bounds (phase 1): {self.env.observed_value_bounds}")
             print(
                 f"Best normalised rewards during warmup (phase 1): {self.env.warmup_best_rewards}"
             )
             for obj in self.objectives:
                 print(f"  {obj}: [0.0, {self.env.warmup_best_rewards[obj]:.4f}]")
-            print(f"STARTING CONSTRAINED PHASE \n")
+            print("STARTING CONSTRAINED PHASE \n")
 
         # Episode count relative to end of warmup
         constrained_episode = self.episode_count - self.total_warmup_episodes
@@ -416,29 +409,6 @@ class CoatOptDiscreteGymWrapper(gym.Env):
                 "thickness": thickness,
                 "current_layer": self.current_layer,
             }
-
-            # Debug: print episode results with rewards and constraints
-            phase_str = (
-                "WARMUP"
-                if self.is_warmup
-                else f"P{self.current_phase}/L{self.current_level}"
-            )
-            r_reward = rewards.get("reflectivity", 0.0)
-            a_reward = rewards.get("absorption", 0.0)
-            r_constr = (
-                f"{self.constraints['reflectivity']:.3f}"
-                if "reflectivity" in self.constraints
-                else "none"
-            )
-            a_constr = (
-                f"{self.constraints['absorption']:.3f}"
-                if "absorption" in self.constraints
-                else "none"
-            )
-            constr_str = f"C[R≥{r_constr}, A≥{a_constr}]"
-            # print(
-            #    f"Ep{self.episode_count:4d} {phase_str:8s} target={self.target_objective[:4]:4s} | R_rew={r_reward:.4f} A_rew={a_reward:.4f} | {constr_str} | total={total_reward:.4f}"
-            # )
 
         return obs, float(total_reward), done, truncated, info
 
@@ -697,9 +667,6 @@ def train(config_path: str, save_dir: str = None):
         adaptive_to_constraints=adaptive_entropy_to_constraints,
         constraint_window=50,  # Track last 50 episodes
     )
-    mlflow_log_callback = MLflowLoggingCallback(
-        log_freq=mlflow_log_freq, verbose=verbose
-    )
     print(f"\nStarting training for {total_timesteps} timesteps...")
     # Combine callbacks
     callbacks = [
@@ -721,10 +688,7 @@ def train(config_path: str, save_dir: str = None):
             )
         )
 
-    # Start timing
-    start_time = time.time()
     model.learn(total_timesteps=total_timesteps, callback=CallbackList(callbacks))
-    end_time = time.time()
 
     model_path = save_dir / "coatopt_ppo_discrete"
     model.save(str(model_path))

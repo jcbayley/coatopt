@@ -30,6 +30,7 @@ Config section: [sb3_dqn]
   exploration_final_eps    = 0.05
   net_arch                 = [64, 64]
 """
+
 import time
 from pathlib import Path
 
@@ -190,10 +191,10 @@ class CoatOptDQNGymWrapper(gym.Env):
         if self.is_warmup:
             self.is_warmup = False
             self.env.is_warmup = False
-            print(f"\n=== WARMUP COMPLETE (DQN) ===")
+            print("\n=== WARMUP COMPLETE (DQN) ===")
             print(f"Observed bounds: {self.env.observed_value_bounds}")
             print(f"Best warmup rewards: {self.env.warmup_best_rewards}")
-            print(f"=== STARTING CONSTRAINED PHASE ===\n")
+            print("=== STARTING CONSTRAINED PHASE ===\n")
 
         constrained_episode = self.episode_count - self.total_warmup_episodes
         new_phase = (constrained_episode - 1) // self.episodes_per_step
@@ -452,7 +453,7 @@ def train(config_path: str, save_dir: str):
         pareto_dominance_bonus=pareto_dominance_bonus,
     )
 
-    print(f"\nEnvironment created (DQN):")
+    print("\nEnvironment created (DQN):")
     print(f"  Observation space: {env.observation_space.shape}")
     print(f"  Action space: Discrete({env.action_space.n})")
     print(f"  = {env.env.n_materials} materials × {n_thickness_bins} thickness bins")
@@ -474,7 +475,7 @@ def train(config_path: str, save_dir: str):
         net_arch=net_arch,
     )
 
-    print(f"\nDQN Network Architecture:")
+    print("\nDQN Network Architecture:")
     print(f"  Q-network: {net_arch}")
 
     # Create DQN model

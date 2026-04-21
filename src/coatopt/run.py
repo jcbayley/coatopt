@@ -2,7 +2,6 @@
 import argparse
 import ast
 import configparser
-import shutil
 import sys
 import time
 import warnings

@@ -8,7 +8,6 @@ Usage:
 
 import argparse
 import configparser
-import shutil
 import sys
 import tempfile
 from pathlib import Path
@@ -78,7 +77,7 @@ def run_multiple_experiments(config_path: str, num_runs: int, start_seed: int = 
             Path(temp_config_path).unlink(missing_ok=True)
 
     print("\n" + "=" * 60)
-    print(f"All runs completed!")
+    print("All runs completed!")
     print(f"  Successful: {successful_runs}/{num_runs}")
     print(f"  Failed: {failed_runs}/{num_runs}")
     print("=" * 60)

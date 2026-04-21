@@ -3,9 +3,7 @@ Preference-constrained training tracker for managing reward bounds and constrain
 Integrates with existing TrainingCheckpointManager for persistence.
 """
 
-from typing import Any, Dict, List, Optional
-
-import numpy as np
+from typing import Any, Dict, List
 
 
 class PreferenceConstrainedTracker:

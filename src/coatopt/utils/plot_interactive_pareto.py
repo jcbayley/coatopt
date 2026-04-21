@@ -13,7 +13,7 @@ import itertools
 import json
 import os
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Tuple
 
 import numpy as np
 import pandas as pd
@@ -21,7 +21,6 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
 from coatopt.utils.interactive_plots import (
-    _OBJ_CONFIG,
     _detect_objectives,
     _obj_label,
     _obj_scale,
@@ -521,7 +520,7 @@ Example:
             elif candidate4.exists():
                 materials_path = candidate4
             else:
-                print(f"Error: Could not find materials file at:")
+                print("Error: Could not find materials file at:")
                 print(f"  {candidate1}")
                 print(f"  {candidate2}")
                 print(f"  {candidate3}")
@@ -529,14 +528,14 @@ Example:
         else:
             materials_path = Path(materials_path)
     except (configparser.NoSectionError, configparser.NoOptionError):
-        print(f"Error: Could not find 'materials_path' in config.ini")
+        print("Error: Could not find 'materials_path' in config.ini")
         return 1
 
     # Output path
     output_path = directory / "pareto_interactive.html"
 
     print(f"Directory: {directory}")
-    print(f"Loading Pareto front...")
+    print("Loading Pareto front...")
     try:
         designs_df, values_df, rewards_df = load_pareto_front(directory)
         print(f"  Found {len(designs_df)} designs")
@@ -548,7 +547,7 @@ Example:
     materials = load_materials(str(materials_path))
     print(f"  Found {len(materials)} materials")
 
-    print(f"Creating interactive visualization...")
+    print("Creating interactive visualization...")
     fig, n_pairs = create_interactive_plot(
         designs_df, values_df, materials, max_designs=args.max_designs
     )
@@ -583,10 +582,8 @@ Example:
     )
 
     print(f"\nDone! Open {output_path} in your browser to view the interactive plot.")
-    print(f"Click on any point in the Pareto front to view its coating design.")
-    print(
-        f"You can also use the dropdown menu on the right to select specific designs."
-    )
+    print("Click on any point in the Pareto front to view its coating design.")
+    print("You can also use the dropdown menu on the right to select specific designs.")
 
     return 0
 

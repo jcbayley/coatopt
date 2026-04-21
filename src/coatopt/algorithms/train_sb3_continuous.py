@@ -13,6 +13,7 @@ Config section: [sb3_simple] or [sb3_continuous]
   target_absorption        = 1              # Target constraint (tightest, ppm)
   tensorboard_log          = ./sb3_logs
 """
+
 from pathlib import Path
 
 import gymnasium as gym
@@ -380,13 +381,13 @@ def train(config_path: str):
 
     # Compute derived schedule info
     steps_per_obj = env.steps_per_objective
-    print(f"Environment created:")
+    print("Environment created:")
     print(f"  Observation space: {env.observation_space.shape}")
     print(f"  Action space: {env.action_space}")
     print(f"  Max layers: {env.env.max_layers}")
     print(f"  N materials: {env.env.n_materials}")
     print(f"  Objectives: {env.objectives}")
-    print(f"\nAnnealing schedule:")
+    print("\nAnnealing schedule:")
     print(f"  Epochs per step: {env.episodes_per_step}")
     print(f"  Steps per objective: {steps_per_obj}")
     print(f"  Total levels: {env.total_levels}")

@@ -371,9 +371,7 @@ class MixtureOfExpertsBase(nn.Module):
             expert_regions.unsqueeze(0).expand(
                 batch_size, -1, -1
             ),  # (batch_size, n_experts, n_objectives)
-        ).squeeze(
-            1
-        )  # (batch_size, n_experts)
+        ).squeeze(1)  # (batch_size, n_experts)
 
         # Encourage gate to select experts closest to their specialization
         # Lower distance should lead to higher gate weight

@@ -1,16 +1,13 @@
 """Shared utility functions for CoatOpt experiments."""
 
 import json
-import math
 import platform
 import subprocess
-import time
 from datetime import datetime
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
-from stable_baselines3.common.callbacks import BaseCallback
 
 
 def get_git_hash() -> str:
@@ -27,7 +24,7 @@ def get_git_hash() -> str:
             .decode("ascii")
             .strip()
         )
-    except:
+    except Exception:
         return "unknown"
 
 
@@ -101,7 +98,6 @@ def convert_pymoo_to_dataframes(result, env):
     from coatopt.environments.state import CoatingState
 
     X = result.X  # Design variables
-    F = result.F  # Objectives (minimized)
 
     design_data = []
     value_data = []

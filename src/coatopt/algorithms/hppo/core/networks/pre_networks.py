@@ -4,7 +4,6 @@ from torch.nn.utils.rnn import pad_packed_sequence
 
 
 class PositionalEncoding(torch.nn.Module):
-
     def __init__(self, d_model: int, dropout: float = 0.1, max_len: int = 5000):
         super().__init__()
         self.dropout = torch.nn.Dropout(p=dropout)

@@ -6,7 +6,6 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import mlflow
 import numpy as np
-import torch
 from stable_baselines3.common.callbacks import BaseCallback
 
 from coatopt.utils.plotting import plot_coating_stack_from_state_array
@@ -380,7 +379,7 @@ class PlottingCallback(BaseCallback):
         infos = self.locals.get("infos", [])
         for info in infos:
             if "episode" in info:
-                if type(info["episode"]) == int:
+                if isinstance(info["episode"], int):
                     continue
                 ep_reward = info["episode"]["r"]
                 ep_length = info["episode"]["l"]
@@ -459,7 +458,7 @@ class PlottingCallback(BaseCallback):
                                 mlflow.log_metric(
                                     "hypervolume", hv, step=self.episode_count
                                 )
-                        except Exception as e:
+                        except Exception:
                             # If hypervolume computation fails, skip it
                             pass
 

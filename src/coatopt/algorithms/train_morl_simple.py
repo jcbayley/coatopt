@@ -26,12 +26,12 @@ Config section: [morl] or [morld]
   mask_consecutive_materials = true         # Correct consecutive material actions
   consecutive_penalty      = 0.2            # Penalty for corrected actions
 """
+
 import time
 from pathlib import Path
 
 import gymnasium as gym
 import numpy as np
-import pandas as pd
 from gymnasium.spaces import Box
 
 from coatopt.environments.environment import CoatingEnvironment
@@ -381,7 +381,6 @@ def run_morl_training_loop(agent, setup_dict: dict, algorithm: str):
         setup_dict: Dictionary from setup_morl_training()
         algorithm: Algorithm name for logging
     """
-    import pandas as pd
 
     env = setup_dict["env"]
     eval_env = setup_dict["eval_env"]
@@ -436,7 +435,7 @@ def run_morl_training_loop(agent, setup_dict: dict, algorithm: str):
         print("\nWarning: No Pareto solutions found.")
 
     print(f"\n{'='*60}")
-    print(f"  Training complete!")
+    print("  Training complete!")
     print(f"  Duration       : {duration_min:.1f} min")
     print(f"  Pareto front   : {len(rewards_df)} solutions")
     print(f"{'='*60}")

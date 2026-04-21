@@ -1060,7 +1060,7 @@ class HybridMultiAgentPPO:
             try:
                 hv = self.envs[0].base_env.compute_hypervolume(space="reward")
                 metrics["pareto.hypervolume"] = hv
-            except:
+            except Exception:
                 pass
 
         for obj, best in self.warmup_best.items():
@@ -1414,7 +1414,7 @@ def train(config_path: str, save_dir: str = None) -> dict:
     save_dir.mkdir(parents=True, exist_ok=True)
 
     print(f"\n{'='*60}")
-    print(f"  Hybrid Multi-Agent + Sequential PPO")
+    print("  Hybrid Multi-Agent + Sequential PPO")
     print(f"  Agents      : {n_agents}")
     print(f"  Episodes    : {total_episodes:,}")
     print(f"  Device      : {device}")

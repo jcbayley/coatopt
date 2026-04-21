@@ -1,4 +1,4 @@
-from typing import List, Optional, Tuple
+from typing import Optional, Tuple
 
 import numpy as np
 import torch
@@ -75,8 +75,6 @@ class CoatingState:
         """Create CoatingState from PyTorch tensor (with one-hot materials)."""
         # Assume tensor shape is (max_layers, n_materials + 1)
         # Column 0: thickness, Columns 1+: one-hot encoded materials
-        max_layers = state_tensor.shape[0]
-
         # Extract thickness and material indices
         thicknesses = state_tensor[:, 0].cpu().numpy()
         material_onehot = state_tensor[:, 1:].cpu().numpy()

@@ -101,7 +101,7 @@ def objective(
                     ).info.experiment_id
                 ).experiment_id
             ],
-            order_by=[f"attributes.start_time DESC"],
+            order_by=["attributes.start_time DESC"],
             max_results=1,
         )
 
@@ -180,7 +180,7 @@ def run_sweep(config_path: str, n_trials: int = 50, study_name: str = None):
     print(f"Starting Optuna sweep: {study_name}")
     print(f"Optimizing metric: {metric} ({direction})")
     print(f"Number of trials: {n_trials}")
-    print(f"Parameters to sweep:")
+    print("Parameters to sweep:")
     for param_name, param_config in sweep_params.items():
         print(f"  - {param_name}: {param_config}")
     print()

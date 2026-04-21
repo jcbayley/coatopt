@@ -7,7 +7,6 @@ reward computation, step function, and multi-objective optimization.
 
 import json
 from pathlib import Path
-from typing import Dict
 
 import numpy as np
 import pytest
@@ -151,7 +150,7 @@ class TestCoatingEnvironmentReset:
         env.done = True
 
         # Reset
-        state = env.reset()
+        env.reset()
         assert env.current_index == 0
         assert env.done is False
 
@@ -491,7 +490,8 @@ class TestCoatingEnvironmentParetoFront:
         state.set_layer(0, 100e-9, 2)
 
         objectives = {"reflectivity": 0.95}
-        env.update_pareto_front(objectives, state)
+        env._stage_pareto_candidate(objectives, state)
+        env.flush_pareto_candidates()
 
         # Single objective should not maintain pareto front
         assert len(env.pareto_front_rewards) == 0
@@ -504,7 +504,8 @@ class TestCoatingEnvironmentParetoFront:
         state.set_layer(0, 100e-9, 2)
 
         objectives = {"reflectivity": 0.95, "absorption": 100.0}
-        env.update_pareto_front(objectives, state)
+        env._stage_pareto_candidate(objectives, state)
+        env.flush_pareto_candidates()
 
         assert len(env.pareto_front_rewards) == 1
         assert len(env.pareto_front_values) == 1
@@ -518,11 +519,13 @@ class TestCoatingEnvironmentParetoFront:
 
         # Add a good point
         objectives1 = {"reflectivity": 0.99, "absorption": 10.0}
-        env.update_pareto_front(objectives1, state)
+        env._stage_pareto_candidate(objectives1, state)
+        env.flush_pareto_candidates()
 
         # Add a dominated point (worse in both objectives)
         objectives2 = {"reflectivity": 0.90, "absorption": 100.0}
-        env.update_pareto_front(objectives2, state)
+        env._stage_pareto_candidate(objectives2, state)
+        env.flush_pareto_candidates()
 
         # Should still have only 1 point
         assert len(env.pareto_front_rewards) == 1
@@ -534,11 +537,13 @@ class TestCoatingEnvironmentParetoFront:
 
         # Add first point
         objectives1 = {"reflectivity": 0.90, "absorption": 100.0}
-        env.update_pareto_front(objectives1, state)
+        env._stage_pareto_candidate(objectives1, state)
+        env.flush_pareto_candidates()
 
         # Add dominating point
         objectives2 = {"reflectivity": 0.99, "absorption": 10.0}
-        env.update_pareto_front(objectives2, state)
+        env._stage_pareto_candidate(objectives2, state)
+        env.flush_pareto_candidates()
 
         # Should have only the new point
         assert len(env.pareto_front_rewards) == 1
@@ -549,7 +554,8 @@ class TestCoatingEnvironmentParetoFront:
         state = env.reset()
 
         objectives = {"reflectivity": 0.95, "absorption": 50.0}
-        env.update_pareto_front(objectives, state)
+        env._stage_pareto_candidate(objectives, state)
+        env.flush_pareto_candidates()
 
         pareto_front = env.get_pareto_front(space="reward")
 
@@ -562,7 +568,8 @@ class TestCoatingEnvironmentParetoFront:
         state = env.reset()
 
         objectives = {"reflectivity": 0.95, "absorption": 50.0}
-        env.update_pareto_front(objectives, state)
+        env._stage_pareto_candidate(objectives, state)
+        env.flush_pareto_candidates()
 
         pareto_front = env.get_pareto_front(space="value")
 
@@ -579,7 +586,7 @@ class TestCoatingEnvironmentConstrainedTraining:
         env.enable_constrained_training(
             warmup_episodes_per_objective=100,
             steps_per_objective=5,
-            epochs_per_step=200,
+            episodes_per_step=200,
             constraint_penalty=15.0,
         )
 
@@ -610,7 +617,7 @@ class TestCoatingEnvironmentConstrainedTraining:
         env = CoatingEnvironment(basic_config, materials)
 
         env.update_warmup_best("reflectivity", 0.8)
-        captured = capsys.readouterr()
+        capsys.readouterr()
 
         assert env.warmup_best_rewards["reflectivity"] == 0.8
 
@@ -653,7 +660,8 @@ class TestCoatingEnvironmentParetoBonus:
 
         # Add some inferior points to pareto front
         objectives1 = {"reflectivity": 0.90, "absorption": 100.0}
-        env.update_pareto_front(objectives1, state)
+        env._stage_pareto_candidate(objectives1, state)
+        env.flush_pareto_candidates()
 
         # Compute bonus for dominating point
         vals = {"reflectivity": 0.99, "absorption": 10.0}

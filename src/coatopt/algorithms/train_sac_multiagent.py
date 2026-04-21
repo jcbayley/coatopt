@@ -41,7 +41,6 @@ from typing import Dict, List, Tuple
 import gymnasium as gym
 import mlflow
 import numpy as np
-import pandas as pd
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -660,7 +659,6 @@ class MultiAgentSAC:
             print(f"Warmup for ~{self.warmup_steps} steps ({self.n_agents} agents)...")
 
         log_interval = max(1, total_timesteps // 20)
-        last_logs: Dict[str, float] = {}
 
         while self.step_count < total_timesteps:
             # Warmup → constrained transition
@@ -788,7 +786,7 @@ def train(config_path: str, save_dir: str = None) -> dict:
     save_dir.mkdir(parents=True, exist_ok=True)
 
     print(f"\n{'='*60}")
-    print(f"  Multi-agent Discrete SAC")
+    print("  Multi-agent Discrete SAC")
     print(f"  Agents          : {n_agents}")
     print(f"  Timesteps       : {total_timesteps:,}")
     print(f"  Buffer size     : {buffer_size:,}")

@@ -3,11 +3,9 @@ Efficient Pareto front utilities for multi-objective optimization.
 Contains optimized algorithms for non-dominated sorting and Pareto front maintenance.
 """
 
-from typing import List, Optional, Tuple
+from typing import Optional, Tuple
 
 import numpy as np
-from numba import jit, types
-from numba.typed import List as TypedList
 from pymoo.util.nds.non_dominated_sorting import NonDominatedSorting
 
 

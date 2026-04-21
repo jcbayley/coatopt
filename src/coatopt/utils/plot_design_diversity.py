@@ -31,9 +31,8 @@ _CLUSTER_COLORS = plt.cm.tab10.colors
 
 def _build_features(designs_df: pd.DataFrame) -> np.ndarray:
     """Encode designs as a numeric matrix suitable for distance-based methods."""
-    from sklearn.preprocessing import StandardScaler
 
-    thick_cols = sorted(
+    thick_cols = sorted(  # noqa: F841
         [
             c
             for c in designs_df.columns
@@ -49,8 +48,6 @@ def _build_features(designs_df: pd.DataFrame) -> np.ndarray:
         ],
         key=lambda c: int(c.split("_")[1]),
     )
-
-    T = StandardScaler().fit_transform(designs_df[thick_cols].values.astype(float))
 
     mat_vals = designs_df[mat_cols].values.astype(int)
     n_mat = int(mat_vals.max()) + 1

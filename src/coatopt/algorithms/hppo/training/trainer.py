@@ -5,12 +5,8 @@ Refactored from pc_hppo_oml.py for improved readability and maintainability.
 """
 
 import os
-import pickle
 import queue
-import shutil
 import time
-import traceback
-from collections import defaultdict
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
@@ -34,7 +30,6 @@ from coatopt.algorithms.hppo.training.utils.weight_tracker import (
 from coatopt.utils.plotting.stack import plot_stack
 from coatopt.utils.plotting.training import (
     make_loss_plot,
-    make_materials_plot,
     make_reward_plot,
     make_val_plot,
 )
@@ -301,7 +296,6 @@ class HPPOTrainer:
 
                 if specialization == "adaptive_constraints":
                     self.use_adaptive_moe = True
-                    n_objectives = len(self.env.get_parameter_names())
 
                     # Get configuration from agent's network config
                     config = getattr(self.agent, "config", None)
@@ -638,7 +632,6 @@ class HPPOTrainer:
                 episode % self.callbacks.progress_interval == 0
                 or current_time - self.last_progress_time > 30
             ):  # At least every 30 seconds
-
                 if self.callbacks.on_periodic_update:
                     progress_info = {
                         "episode": episode,
