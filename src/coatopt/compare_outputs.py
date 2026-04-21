@@ -1154,6 +1154,17 @@ Examples:
             group_runs=args.group_runs,
             compute_hv_fn=compute_hypervolume_from_df,
         )
+        print("\nGenerating 2D Pareto front projection plot...")
+        plot_pairwise_comparison_interactive(
+            pareto_fronts,
+            save_path=output_path,
+            title=args.title + " (2D Pareto front per panel)",
+            reference_values=reference_values,
+            reference_rewards=reference_rewards,
+            group_runs=args.group_runs,
+            compute_hv_fn=compute_hypervolume_from_df,
+            pareto_only=True,
+        )
         print("\nGenerating 3D Pareto front plot...")
         plot_pareto_3d_interactive(
             pareto_fronts,
@@ -1209,6 +1220,16 @@ Examples:
                     reference_rewards=reference_rewards,
                     group_runs=args.group_runs,
                     compute_hv_fn=compute_hypervolume_from_df,
+                )
+                plot_pairwise_comparison_interactive(
+                    top_n_fronts,
+                    save_path=top_n_path,
+                    title=f"{args.title} (Top {args.top_n} by Reward Hypervolume, 2D Pareto front per panel)",
+                    reference_values=reference_values,
+                    reference_rewards=reference_rewards,
+                    group_runs=args.group_runs,
+                    compute_hv_fn=compute_hypervolume_from_df,
+                    pareto_only=True,
                 )
             else:
                 plot_both_spaces_comparison(
