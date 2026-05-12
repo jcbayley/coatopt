@@ -132,23 +132,29 @@ class CoatingRepair(Repair):
         return X
 
     def _repair_individual(self, x: np.ndarray) -> np.ndarray:
-        """Repair a single individual to prevent consecutive same materials.
-
-        Note: Air layer handling is done in _evaluate, not here.
-        """
+        """Repair a single individual to enforce all design constraints."""
+        thicknesses = x[: self.env.max_layers].copy()
         materials_continuous = x[self.env.max_layers :].copy()
         materials_idx = np.floor(materials_continuous).astype(int)
 
-        # Fix consecutive same materials (excluding air)
+        # Fix consecutive same materials (excluding air); never pick air as
+        # replacement to avoid prematurely terminating the coating stack
         for j in range(1, len(materials_idx)):
             if (
                 materials_idx[j] == materials_idx[j - 1]
                 and materials_idx[j] != self.env.air_material_index
             ):
-                # Change to a different random material
                 available = [
-                    m for m in range(self.env.n_materials) if m != materials_idx[j - 1]
+                    m
+                    for m in range(self.env.n_materials)
+                    if m != materials_idx[j - 1] and m != self.env.air_material_index
                 ]
+                if not available:  # fallback: only exclude previous material
+                    available = [
+                        m
+                        for m in range(self.env.n_materials)
+                        if m != materials_idx[j - 1]
+                    ]
                 if available:
                     materials_idx[j] = np.random.choice(available)
 
@@ -165,8 +171,18 @@ class CoatingRepair(Repair):
                     if available:
                         materials_idx[j] = np.random.choice(available)
 
-        # Write back repaired material indices
-        # Convert to continuous representation (add 0.5 so floor gives correct int)
+        # Enforce air cascade: once air appears all subsequent layers must be air.
+        # This makes result.X consistent with what _evaluate actually computes.
+        air_found = False
+        for j in range(len(materials_idx)):
+            if air_found:
+                materials_idx[j] = self.env.air_material_index
+                thicknesses[j] = 0.0
+            elif materials_idx[j] == self.env.air_material_index:
+                air_found = True
+                thicknesses[j] = 0.0
+
+        x[: self.env.max_layers] = thicknesses
         x[self.env.max_layers :] = materials_idx + 0.5
 
         return x
@@ -321,8 +337,15 @@ def train_genetic(config_path: str, save_dir: Optional[str] = None):
         n_samples = min(5, len(result.X))
         for i in range(n_samples):
             x = result.X[i]
-            thicknesses = x[: env.max_layers]
+            thicknesses = x[: env.max_layers].copy()
             materials_idx = np.floor(x[env.max_layers :]).astype(int)
+            # Apply air cascade (already done by repair, but be explicit for plots)
+            air_found = False
+            for k in range(env.max_layers):
+                if air_found or materials_idx[k] == env.air_material_index:
+                    air_found = True
+                    materials_idx[k] = env.air_material_index
+                    thicknesses[k] = 0.0
             plot_coating_stack(
                 thicknesses, materials_idx, materials, save_dir / f"stack_{i}.png"
             )

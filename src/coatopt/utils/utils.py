@@ -108,6 +108,14 @@ def convert_pymoo_to_dataframes(result, env):
         thicknesses = x[: env.max_layers]
         materials_idx = np.floor(x[env.max_layers :]).astype(int)
 
+        # Apply air cascade so saved designs match what was actually evaluated
+        air_found = False
+        for k in range(env.max_layers):
+            if air_found or materials_idx[k] == env.air_material_index:
+                air_found = True
+                materials_idx[k] = env.air_material_index
+                thicknesses[k] = 0.0
+
         design_row = {}
         for j in range(env.max_layers):
             design_row[f"thickness_{j}"] = thicknesses[j]
@@ -122,14 +130,9 @@ def convert_pymoo_to_dataframes(result, env):
             materials=env.materials,
         )
 
-        # Fill state (handle air layer constraint)
-        air_found = False
+        # Fill state (air cascade already applied above)
         for k in range(env.max_layers):
-            if air_found or materials_idx[k] == env.air_material_index:
-                air_found = True
-                state.set_layer(k, 0.0, env.air_material_index)
-            else:
-                state.set_layer(k, thicknesses[k], materials_idx[k])
+            state.set_layer(k, thicknesses[k], materials_idx[k])
 
         # Get rewards and values
         normalised_rewards, vals = env.compute_reward(state, normalised=True)
