@@ -177,10 +177,10 @@ class CoatingRepair(Repair):
         for j in range(len(materials_idx)):
             if air_found:
                 materials_idx[j] = self.env.air_material_index
-                thicknesses[j] = 0.0
+                thicknesses[j] = self.env.min_thickness
             elif materials_idx[j] == self.env.air_material_index:
                 air_found = True
-                thicknesses[j] = 0.0
+                thicknesses[j] = self.env.min_thickness
 
         x[: self.env.max_layers] = thicknesses
         x[self.env.max_layers :] = materials_idx + 0.5
