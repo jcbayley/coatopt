@@ -80,6 +80,12 @@ def run_experiment(
         else parser.get("general", "run_name", fallback="")
     )
 
+    # Validate materials before starting the run
+    materials_path = parser.get("general", "materials_path", fallback=None)
+    if materials_path:
+        from coatopt.utils.utils import validate_materials
+        validate_materials(materials_path)
+
     # Get or generate experiment name (problem definition)
     experiment_name = parser.get("general", "experiment_name", fallback=None)
 
