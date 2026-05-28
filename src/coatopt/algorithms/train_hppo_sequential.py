@@ -973,7 +973,60 @@ def train(config_path: str, save_dir: str):
     ep_rewards = []
     ep_vals = []
     ep_lengths = []  # Track episode lengths
-    sample_designs = []  # Track sample designs during warmup for debugging
+    sample_designs = []  # Keep track of sample designs generated during warmup
+
+    # Define beautiful rich live dashboard generator
+    def generate_dashboard(episode, total_episodes, phase, target_obj, lr, ent_coef, best_r, best_abs, best_tn, n_pareto, ppo_logs_mean, mean_len):
+        from rich.table import Table
+        from rich.panel import Panel
+        
+        # 1. Table of targets and current bests
+        best_table = Table(show_header=True, header_style="bold cyan", box=None)
+        best_table.add_column("Objective", style="bold white")
+        best_table.add_column("LIGO Target", style="yellow")
+        best_table.add_column("Best Found So Far", style="green")
+        
+        best_table.add_row("Reflectivity", ">= 0.99999", f"{best_r:.6f}" if best_r > 0 else "N/A")
+        best_table.add_row("Absorption", "<= 0.5 ppm", f"{best_abs * 1e6:.3f} ppm" if best_abs < 1.0 else "N/A")
+        best_table.add_row("Thermal Noise", "<= 1.0e-20", f"{best_tn:.3e} m/√Hz" if best_tn < 1.0 else "N/A")
+        
+        # 2. Table of training metrics
+        metrics_table = Table(show_header=True, header_style="bold magenta", box=None)
+        metrics_table.add_column("Metric", style="bold white")
+        metrics_table.add_column("Value", style="yellow")
+        
+        metrics_table.add_row("Policy Loss", f"{ppo_logs_mean.get('policy_loss', 0.0):.4f}")
+        metrics_table.add_row("Value Loss", f"{ppo_logs_mean.get('value_loss', 0.0):.4f}")
+        metrics_table.add_row("Entropy Loss", f"{ppo_logs_mean.get('entropy', 0.0):.4f}")
+        metrics_table.add_row("Clip Frac", f"{ppo_logs_mean.get('clip_frac', 0.0):.4f}")
+        metrics_table.add_row("Mean Ep Length", f"{mean_len:.1f}" if mean_len > 0 else "N/A")
+        
+        # 3. Create progress string
+        progress_pct = min(100.0, (episode / total_episodes) * 100)
+        progress_bar = f"[bold green]Progress:[/bold green] [{'█' * int(progress_pct // 5)}{'░' * (20 - int(progress_pct // 5))}] {progress_pct:.1f}% ({episode}/{total_episodes} episodes)"
+        
+        # 4. Status panel
+        status_info = (
+            f"[bold white]Phase:[/bold white] [bold yellow]{phase.upper()}[/bold yellow]\n"
+            f"[bold white]Target Objective:[/bold white] [cyan]{target_obj}[/cyan]\n"
+            f"[bold white]Learning Rate:[/bold white] [cyan]{lr:.2e}[/cyan]\n"
+            f"[bold white]Entropy Coeff:[/bold white] [cyan]{ent_coef:.4f}[/cyan]\n"
+            f"[bold white]Pareto Front Size:[/bold white] [bold green]{n_pareto} designs[/bold green]"
+        )
+        
+        # Assemble main Layout
+        main_table = Table.grid(padding=1)
+        main_table.add_row(
+            Panel(status_info, title="[bold white]Agent Status[/bold white]", border_style="cyan", expand=True),
+            Panel(best_table, title="[bold white]Pareto Best Targets[/bold white]", border_style="green", expand=True)
+        )
+        main_table.add_row(
+            Panel(progress_bar, border_style="green", expand=True),
+            Panel(metrics_table, title="[bold white]Training Metrics[/bold white]", border_style="magenta", expand=True)
+        )
+        
+        return Panel(main_table, title="[bold cyan]CoatOpt Training Monitor[/bold cyan]", border_style="cyan")
+    
     objectives = list(config.data.optimise_parameters)
 
     # Create objective name -> index mapping for value head selection
@@ -1010,6 +1063,27 @@ def train(config_path: str, save_dir: str):
 
     if verbose:
         print(f"Training for {total_episodes} episodes")
+
+    from rich.live import Live
+    from rich.console import Console
+    console = Console()
+    
+    # Initialize PPO logs and best values for rich dashboard
+    ppo_logs_mean = {}
+    mean_len = 0.0
+    phase = "warmup" if env.is_warmup else "constrained"
+    target_obj = env.env.target_objective
+    best_r = 0.0
+    best_abs = 1.0
+    best_tn = 1.0
+    n_pareto = 0
+    current_lr = lr
+    current_ent_coef = ent_coef
+
+    live = None
+    if console.is_terminal and verbose:
+        live = Live(generate_dashboard(env.episode_count, total_episodes, phase, target_obj, current_lr, current_ent_coef, best_r, best_abs, best_tn, n_pareto, ppo_logs_mean, mean_len), console=console, auto_refresh=False)
+        live.start()
 
     while env.episode_count < total_episodes:
         # Collect episodes for this update
@@ -1162,11 +1236,30 @@ def train(config_path: str, save_dir: str):
             env_wrapper=env,
         )
         # Logging
-        if env.episode_count % mlflow_log_freq == 0:
+        # Compute mean metrics from ppo_logs
+        ppo_logs_mean = ppo_logs if isinstance(ppo_logs, dict) else {}
+                    
+        # Update metrics for dashboard
+        phase = "warmup" if env.is_warmup else "constrained"
+        target_obj = env.env.target_objective
+        current_lr_display = agent.optimizer.param_groups[0]["lr"]
+        
+        designs_df, values_df, _ = env.env.export_pareto_dataframes()
+        if not values_df.empty:
+            best_r = values_df['reflectivity'].max() if 'reflectivity' in values_df.columns else 0.0
+            best_abs = values_df['absorption'].min() if 'absorption' in values_df.columns else 1.0
+            best_tn = values_df['thermal_noise'].min() if 'thermal_noise' in values_df.columns else 1.0
+            n_pareto = len(values_df)
+        
+        if ep_lengths:
+            mean_len = np.mean(ep_lengths[-20:])
+            
+        # Update rich Live dashboard
+        if live is not None:
+            live.update(generate_dashboard(env.episode_count, total_episodes, phase, target_obj, current_lr_display, current_ent_coef, best_r, best_abs, best_tn, n_pareto, ppo_logs_mean, mean_len), refresh=True)
+            
+        if (env.episode_count - 1) % mlflow_log_freq == 0:
             if verbose:
-                n_pareto = len(env.env.pareto_front_rewards)
-                phase = "warmup" if env.is_warmup else "constrained"
-                current_lr_display = agent.optimizer.param_groups[0]["lr"]
                 air_bias = float(policy.material_head.bias[0].item())
 
                 # Episode length stats
@@ -1176,11 +1269,12 @@ def train(config_path: str, save_dir: str):
                     mean_len = np.mean(recent_lengths)
                     ep_len_str = f" | ep_len {mean_len:.1f}"
 
-                print(
-                    f"  [{phase}] episode {env.episode_count}/{total_episodes} | step {step_count} | "
-                    f"pareto {n_pareto} | ent {current_ent_coef:.4f} | lr {current_lr_display:.2e} | "
-                    f"air_bias {air_bias:.2f}{ep_len_str}"
-                )
+                if live is None:
+                    print(
+                        f"  [{phase}] episode {env.episode_count}/{total_episodes} | step {step_count} | "
+                        f"pareto {n_pareto} | ent {current_ent_coef:.4f} | lr {current_lr_display:.2e} | "
+                        f"air_bias {air_bias:.2f}{ep_len_str}"
+                    )
 
             if mlflow.active_run():
                 metrics = {
@@ -1260,7 +1354,7 @@ def train(config_path: str, save_dir: str):
                 mlflow.log_metrics(metrics, step=env.episode_count)
 
         # Periodic checkpointing
-        if env.episode_count % plot_freq == 0 and env.episode_count > 0:
+        if (env.episode_count - 1) % plot_freq == 0 and env.episode_count > 1:
             try:
                 designs_df, values_df, rewards_df = env.env.export_pareto_dataframes()
                 if not values_df.empty:
@@ -1279,6 +1373,14 @@ def train(config_path: str, save_dir: str):
                         save_path / "pareto_rewards.csv",
                         index=False,
                     )
+
+                    # Update training progress history log and 4-panel visualizer
+                    try:
+                        from coatopt.utils.plot_progress import update_training_progress_plot
+                        update_training_progress_plot(save_path, env.episode_count, values_df)
+                    except Exception as e:
+                        if verbose:
+                            print(f"  [progress plot] skipped: {e}")
 
                     # Save model weights + training state
                     save_checkpoint(
@@ -1318,11 +1420,23 @@ def train(config_path: str, save_dir: str):
             )
 
             save_path = Path(save_dir)
+            
+            # Save final training progress plot
+            try:
+                from coatopt.utils.plot_progress import update_training_progress_plot
+                update_training_progress_plot(save_path, env.episode_count, values_df)
+            except Exception as e:
+                if verbose:
+                    print(f"  [final progress plot] skipped: {e}")
+
             plot_design_diversity(designs_df, values_df, save_path)
             plot_cluster_designs(designs_df, values_df, save_path, materials=materials)
         except Exception as e:
             if verbose:
                 print(f"  [diversity plot] skipped: {e}")
+
+    if live is not None:
+        live.stop()
 
     # Return results
     return {

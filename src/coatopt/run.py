@@ -66,11 +66,22 @@ def run_experiment(
         )
 
     # Override seed if provided
+    from rich.console import Console
+    from rich.panel import Panel
+    from rich.table import Table
+    console = Console()
+
     if seed_override is not None:
         parser.set(algorithm, "seed", str(seed_override))
-        print(f"Overriding seed to: {seed_override}")
+        console.print(f"[bold yellow]⚠ Overriding seed to: {seed_override}[/bold yellow]")
 
-    print(f"Running algorithm: {algorithm}")
+    console.print(Panel.fit(
+        f"[bold cyan]CoatOpt Reinforcement Learning & Optimization[/bold cyan]\n"
+        f"Algorithm:   [bold yellow]{algorithm}[/bold yellow]\n"
+        f"Config Path: [bold green]{config_path.resolve()}[/bold green]",
+        title="[bold white]Startup[/bold white]",
+        border_style="cyan"
+    ))
 
     # [General] section
     base_save_dir = parser.get("general", "save_dir")
@@ -116,17 +127,19 @@ def run_experiment(
     # Check if directory exists
     if save_dir.exists():
         if not continue_run:
-            warnings.warn(
-                f"\nWARNING: Run directory already exists: {save_dir}\n"
-                f"    Use --continue to resume training from a checkpoint.\n",
-                UserWarning,
-            )
+            console.print(Panel.fit(
+                f"[bold red]❌ WARNING: Save directory already exists:[/bold red]\n"
+                f"[yellow]{save_dir}[/yellow]\n\n"
+                f"[bold white]Use --continue to resume training from a checkpoint.[/bold white]",
+                border_style="red",
+                title="[bold red]Error[/bold red]"
+            ))
             sys.exit()
         checkpoint_path = save_dir / "checkpoint_latest.pt"
         if checkpoint_path.exists():
-            print(f"Continuing training from checkpoint: {checkpoint_path}")
+            console.print(f"[bold green]✓ Continuing training from checkpoint:[/bold green] [cyan]{checkpoint_path.name}[/cyan]")
         else:
-            print(f"No checkpoint found in {save_dir}, starting from scratch.")
+            console.print(f"[bold yellow]⚠ No checkpoint found in {save_dir.name}, starting from scratch.[/bold yellow]")
 
     save_dir.mkdir(parents=True, exist_ok=True)
 
@@ -143,8 +156,22 @@ def run_experiment(
     mlflow.log_param("config_path", str(config_path))
     mlflow.log_param("run_directory", str(save_dir))
 
-    print(f"Save directory: {save_dir}")
-    print(f"MLflow run: {run_dir_name}")
+    # Print Configuration Summary in a premium Table
+    table = Table(title="[bold magenta]Experiment Run Configuration Summary[/bold magenta]", show_header=True, header_style="bold cyan")
+    table.add_column("Parameter", style="bold white")
+    table.add_column("Value", style="yellow")
+    
+    table.add_row("Experiment Name", str(experiment_name))
+    table.add_row("Algorithm", str(algorithm))
+    table.add_row("Save Directory", str(save_dir))
+    table.add_row("MLflow Run Name", str(run_dir_name))
+    table.add_row("Template Layers", str(n_layers))
+    table.add_row("Thickness Bounds", f"{min_thickness:.2f} to {max_thickness:.2f}")
+    if seed_override is not None:
+        table.add_row("Seed Override", str(seed_override))
+    
+    console.print(table)
+    console.print(f"\n[bold green]🚀 Commencing training via {algorithm}...[/bold green]\n")
 
     # Algorithm-specific training
     start_time = time.time()
@@ -252,11 +279,49 @@ def run_experiment(
 
         if not values_df.empty:
             print("\nGenerating interactive Pareto front visualization...")
-            fig = create_interactive_plot(
+            fig, n_pairs = create_interactive_plot(
                 designs_df, values_df, materials, max_designs=10
             )
             html_path = save_dir / "pareto_interactive.html"
-            fig.write_html(str(html_path))
+            plotly_config = {
+                "displayModeBar": True,
+                "displaylogo": False,
+                "modeBarButtonsToRemove": ["lasso2d", "select2d"],
+            }
+            post_script = f"""
+                var N_PAIRS = {n_pairs};
+                var plotDiv = document.getElementsByClassName('plotly-graph-div')[0];
+                if (plotDiv) {{
+                    plotDiv.on('plotly_click', function(data) {{
+                        var pt = data.points[0];
+                        if (pt.curveNumber < N_PAIRS) {{
+                            var designIdx = pt.customdata;
+                            
+                            var vis = [];
+                            for (var i = 0; i < plotDiv.data.length; i++) {{
+                                var trace = plotDiv.data[i];
+                                if (i < N_PAIRS) {{
+                                    vis.push(true);
+                                }} else if (trace.name === "highlight_" + designIdx || 
+                                           trace.name === "coating_" + designIdx ||
+                                           trace.name === "field_" + designIdx ||
+                                           trace.name === "spectrum_" + designIdx) {{
+                                    vis.push(true);
+                                }} else {{
+                                    vis.push(false);
+                                }}
+                            }}
+                            Plotly.restyle(plotDiv, {{ 'visible': vis }});
+                        }}
+                    }});
+                }}
+            """
+            fig.write_html(
+                str(html_path),
+                config=plotly_config,
+                include_plotlyjs="cdn",
+                post_script=post_script,
+            )
             print(f"Saved interactive visualization to {html_path}")
 
             if not designs_df.empty:

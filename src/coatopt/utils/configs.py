@@ -47,6 +47,9 @@ class DataConfig:
     apply_air_penalty: bool = True
     air_penalty_weight: float = 0.5
 
+    # Reflectivity Gatekeeper (0.0 to disable, or e.g. 0.99 / 0.999)
+    reflectivity_gatekeeper_threshold: float = 0.0
+
     # Preference constraints (disabled by default for SB3)
     apply_preference_constraints: bool = False
 
@@ -149,6 +152,7 @@ def load_config(config_path: str) -> Config:
                 "max_thickness",
                 "air_penalty_weight",
                 "objective_bounds_penalty_weight",
+                "reflectivity_gatekeeper_threshold",
             ):
                 data_kwargs[key] = float(value)
             # Parse lists and dicts using ast.literal_eval

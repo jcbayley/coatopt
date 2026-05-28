@@ -25,6 +25,7 @@ dependencies = [
     "optuna-integration[mlflow]>=4.7.0",
     "plotly>=6.5.2",
     "torchrl>=0.10.1",
+    "rich>=12.0.0",
 ]
 
 [tool.setuptools.packages.find]

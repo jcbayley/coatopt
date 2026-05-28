@@ -12,6 +12,7 @@ import configparser
 import itertools
 import json
 import os
+import sys
 from pathlib import Path
 from typing import Dict, List, Tuple
 
@@ -27,6 +28,16 @@ from coatopt.utils.interactive_plots import (
     _obj_transform,
 )
 from coatopt.utils.utils import load_pareto_front
+
+# Setup library path for CoatingAnalysis once at module level
+lib_path = "/Users/simon/Library/CloudStorage/GoogleDrive-simon.tait@ligo.org/My Drive/BackupFromDropbox/Python/CoatingAnalysis/src"
+if lib_path not in sys.path:
+    sys.path.insert(0, lib_path)
+
+try:
+    from coating_analysis.Coatings_development import thin_film_stack
+except ImportError:
+    thin_film_stack = None
 
 
 def load_materials(materials_path: str) -> Dict:
@@ -61,61 +72,138 @@ def parse_design(row: pd.Series) -> Tuple[np.ndarray, np.ndarray]:
 
 
 def create_coating_trace(
-    thicknesses: np.ndarray,
+    thicknesses_nm: np.ndarray,
     material_indices: np.ndarray,
     materials: Dict,
     name: str = "Coating",
     visible: bool = True,
+    shown_in_legend: set = None,
 ) -> List[go.Bar]:
     """Create bar chart traces for coating design visualization.
 
-    Args:
-        thicknesses: Array of layer thicknesses
-        material_indices: Array of material indices
-        materials: Material properties dictionary
-        name: Name for the trace
-        visible: Whether trace is initially visible
-
-    Returns:
-        Single bar trace with all layers stacked
+    Each layer is added as a separate go.Bar trace so Plotly stacks them correctly.
     """
-    # Material colors
+    # Material colors mapping
     color_map = {
         "air": "#F0F0F0",
         "SiO2": "#1f77b4",
-        "Ti:Ta2O5": "#ff7f0e",
-        "aSi": "#2ca02c",
+        "Ti:Ta2O5": "#c837ab",
+        "TiGermania": "#c837ab",
+        "substrate": "#7f7f7f",
     }
 
-    # Convert to nanometers
-    thicknesses_nm = thicknesses * 1e9
+    traces = []
+    accumulated_thickness = 0.0
+    
+    # We add one trace per layer in order from substrate to air (or bottom to top)
+    for i in range(len(thicknesses_nm)):
+        mat_idx = material_indices[i]
+        mat_name = materials.get(mat_idx, {}).get("name", "Unknown")
+        color = color_map.get(mat_name, "#7f7f7f")
+        thick_val = thicknesses_nm[i]
+        
+        # Build legend visibility (only show each material name once in legend)
+        show_leg = False
+        if shown_in_legend is not None and mat_name not in shown_in_legend:
+            show_leg = True
+            shown_in_legend.add(mat_name)
 
-    # Get colors for each layer based on material
-    colors = [
-        color_map.get(materials[idx]["name"], "#cccccc") for idx in material_indices
-    ]
+        # Build hover info
+        hover_text = (
+            f"Layer {i+1}<br>"
+            f"Material: {mat_name}<br>"
+            f"Thickness: {thick_val:.2f} nm<br>"
+            f"Cumulative: {accumulated_thickness + thick_val:.2f} nm"
+        )
+        
+        # Create a single bar for this layer
+        trace = go.Bar(
+            name=mat_name,
+            x=["Coating Stack"],
+            y=[thick_val],
+            marker=dict(
+                color=color,
+                line=dict(color="black", width=1.5)
+            ),
+            showlegend=show_leg,
+            legendgroup=mat_name,
+            visible=visible,
+            hovertemplate="%{text}<extra></extra>",
+            text=hover_text,
+        )
+        traces.append(trace)
+        accumulated_thickness += thick_val
 
-    # Create hover text for each layer
-    hover_text = [
-        f"Layer {i}<br>{materials[material_indices[i]]['name']}<br>Thickness: {thicknesses_nm[i]:.2f} nm"
-        for i in range(len(thicknesses))
-    ]
+    return traces
 
-    # Single trace with all layers
-    trace = go.Bar(
-        name=name,
-        x=[0] * len(thicknesses_nm),  # Single column
-        y=thicknesses_nm,
-        marker_color=colors,
-        marker_line_color="black",
-        marker_line_width=1,
-        showlegend=False,
-        visible=visible,
-        hovertemplate="%{text}<extra></extra>",
-        text=hover_text,
-    )
 
-    return [trace]
+def get_physical_thicknesses(
+    dOpt: np.ndarray,
+    materialLayer: np.ndarray,
+    materials: dict,
+    lambda_nm: float = 1064.0,
+) -> np.ndarray:
+    """Calculate physical thicknesses in nanometers using thin_film_stack or fallback."""
+    # Filter out inactive layers (where material is 0/Air or thickness is 0)
+    active_mask = (materialLayer != 0) & (dOpt > 0)
+    if not np.any(active_mask):
+        return np.array([])
+        
+    active_dOpt = dOpt[active_mask]
+    active_materialLayer = materialLayer[active_mask]
+    
+    # Use preloaded library
+    try:
+        if thin_film_stack is None:
+            raise ImportError("thin_film_stack is not imported")
+        
+        # Build materialParams structure
+        materialParams = {}
+        for k, v in materials.items():
+            mat_key = int(k)
+            mat_data = v.copy()
+            if mat_data.get("n") is None:
+                mat_data["n"] = 1.0
+            if mat_data.get("k") is None:
+                mat_data["k"] = 0.0
+                
+            if mat_key == 0:
+                materialParams[999] = mat_data
+                materialParams[0] = mat_data
+            else:
+                materialParams[mat_key] = mat_data
+        
+        if 999 not in materialParams:
+            materialParams[999] = {'name': 'air', 'n': 1.0, 'k': 0.0}
+            materialParams[0] = {'name': 'air', 'n': 1.0, 'k': 0.0}
+            
+        # Map materialLayer: 0 becomes 999
+        mapped_layer = np.array([999 if m == 0 else m for m in active_materialLayer])
+        n_input = np.array([materialParams[m]['n'] for m in mapped_layer])
+        
+        # Call thin_film_stack
+        _, _, d_physical_m = thin_film_stack(
+            dOpt=active_dOpt,
+            n_input=n_input,
+            materialLayer=mapped_layer,
+            materialParams=materialParams,
+            lambda_=lambda_nm,
+            plots=False,
+            verbose=False,
+        )
+        # Convert meters to nanometers
+        return d_physical_m * 1e9
+        
+    except Exception as e:
+        # Fallback to direct Python calculation
+        d_physical_nm = []
+        for i in range(len(active_dOpt)):
+            mat_idx = active_materialLayer[i]
+            refractive_index = materials.get(mat_idx, {}).get('n', 1.45)
+            # physical = optical * wavelength / n
+            t_nm = active_dOpt[i] * lambda_nm / refractive_index
+            d_physical_nm.append(t_nm)
+        return np.array(d_physical_nm)
 
 
 def create_interactive_plot(
@@ -124,22 +212,20 @@ def create_interactive_plot(
     materials: Dict,
     max_designs: int = None,
 ) -> Tuple[go.Figure, int]:
-    """Create interactive Plotly figure with pairwise Pareto projections and coating designs.
+    """Create interactive Plotly figure with a premium Coating-Inspection two-column layout.
 
-    For 2 objectives: single Pareto scatter + coating design (1×2 grid).
-    For N > 2 objectives: lower-triangle pairwise grid + coating design in top-right.
-    Points are coloured by a third objective (viridis) when available.
-
-    Args:
-        designs_df: DataFrame with design variables
-        values_df: DataFrame with objective values
-        materials: Material properties dictionary
-        max_designs: Maximum number of designs to include (None = all)
-
-    Returns:
-        (figure, n_pairs) – the Plotly figure and the number of Pareto scatter panels,
-        needed to correctly route click events in the HTML post_script.
+    Left Column: 2x2 grid representing Pareto projections (R vs Abs, R vs TN, Abs vs TN).
+    Right Column: 3 vertically stacked axes representing physical diagnostics of the selected design:
+      - Coating stack diagram (stacked bars with legend)
+      - Electric field profile (blue lines with dashed interface markers)
+      - Simulated spectral response (transmission spectrum line)
     """
+    # Import physics functions from CoatingAnalysis
+    lib_path = "/Users/simon/Library/CloudStorage/GoogleDrive-simon.tait@ligo.org/My Drive/BackupFromDropbox/Python/CoatingAnalysis/src"
+    if lib_path not in sys.path:
+        sys.path.insert(0, lib_path)
+    from coating_analysis.EFI_tmm import CalculateEFI_tmm, CalculateTransmission_tmm
+
     # ── sort & limit ──────────────────────────────────────────────────────────
     combined_df = pd.concat([designs_df, values_df], axis=1)
     sort_col = (
@@ -154,6 +240,17 @@ def create_interactive_plot(
         combined_df = combined_df.head(max_designs)
     n_designs = len(combined_df)
 
+    # Calculate active layer counts and template max_layers
+    active_counts = []
+    max_layers = 50
+    for idx, row in combined_df.iterrows():
+        dOpt, mat_idx = parse_design(row)
+        active_mask = (mat_idx != 0) & (dOpt > 0)
+        active_counts.append(int(np.sum(active_mask)))
+        max_layers = len(dOpt)
+    combined_df['active_layer_count'] = active_counts
+    combined_df['max_layers'] = max_layers
+
     # ── objectives ────────────────────────────────────────────────────────────
     objectives = _detect_objectives(values_df)
     n_obj = len(objectives)
@@ -161,27 +258,58 @@ def create_interactive_plot(
     n_pairs = len(pairs)
 
     # ── layout ────────────────────────────────────────────────────────────────
-    # Grid: n_rows = n_obj-1, n_cols = n_obj
-    # Lower triangle (col <= row): pairwise Pareto panels
-    # Top-right corner (row=0, col=n_obj-1): coating design
-    n_rows = max(1, n_obj - 1)
-    n_cols = n_obj  # last col reserved for coating
+    # Grid: 6 rows, 3 columns
+    # Left column spans 3 rows for each of the 2 Pareto rows (Col 1 & Col 2)
+    # Right column spans 2 rows for each of the 3 diagnostic subplots (Col 3)
+    n_rows = 6
+    n_cols = 3
 
-    # Build specs (None = hidden/empty cell)
-    specs = []
-    for r in range(n_rows):
-        row_specs = []
-        for c in range(n_cols):
-            if r == 0 and c == n_cols - 1:
-                row_specs.append({"type": "bar"})
-            elif c < n_cols - 1 and c <= r:
-                row_specs.append({"type": "scatter"})
-            else:
-                row_specs.append(None)
-        specs.append(row_specs)
+    specs = [
+        # Row 1
+        [
+            {"type": "scatter", "rowspan": 3},   # Col 1: R vs Absorption
+            None,                                 # Col 2: Empty
+            {"type": "bar", "rowspan": 2},       # Col 3: Coating stack
+        ],
+        # Row 2
+        [
+            None,                                 # Col 1: Spanned
+            None,                                 # Col 2: Empty
+            None,                                 # Col 3: Spanned
+        ],
+        # Row 3
+        [
+            None,                                 # Col 1: Spanned
+            None,                                 # Col 2: Empty
+            {"type": "scatter", "rowspan": 2},   # Col 3: Electric field
+        ],
+        # Row 4
+        [
+            {"type": "scatter", "rowspan": 3},   # Col 1: R vs TN
+            {"type": "scatter", "rowspan": 3},   # Col 2: Abs vs TN
+            None,                                 # Col 3: Spanned
+        ],
+        # Row 5
+        [
+            None,                                 # Col 1: Spanned
+            None,                                 # Col 2: Spanned
+            {"type": "scatter", "rowspan": 2},   # Col 3: Spectral response
+        ],
+        # Row 6
+        [
+            None,                                 # Col 1: Spanned
+            None,                                 # Col 2: Spanned
+            None,                                 # Col 3: Spanned
+        ],
+    ]
 
-    # Equal column widths
-    col_widths = [1.0 / n_cols] * n_cols
+    # Width ratios: Left column is slightly wider to hold the 2x2 grid beautifully
+    coating_width = 0.44
+    scatter_cols = 2
+    col_widths = []
+    for c in range(scatter_cols):
+        col_widths.append((1.0 - coating_width) / scatter_cols)
+    col_widths.append(coating_width)
 
     fig = make_subplots(
         rows=n_rows,
@@ -189,13 +317,15 @@ def create_interactive_plot(
         specs=specs,
         column_widths=col_widths,
         horizontal_spacing=0.08,
-        vertical_spacing=0.14,
+        vertical_spacing=0.18,
     )
 
-    # Map pair index → (plotly_row, plotly_col) – both 1-indexed
-    # Pair (ci, cj) with ci < cj maps to grid cell (row=cj-1, col=ci) 0-indexed
-    # → Plotly (row=cj, col=ci+1)
-    panel_pos = [(cj, ci + 1) for (ci, cj) in pairs]
+    # Subplot placements matching left-hand and right-hand targets
+    panel_pos = [
+        (1, 1),  # 1 - Reflectivity vs Absorption (row=1, col=1)
+        (4, 1),  # 1 - Reflectivity vs Thermal Noise (row=4, col=1)
+        (4, 2),  # Absorption vs Thermal Noise (row=4, col=2)
+    ]
 
     # ── colour range for third-objective coloring ─────────────────────────────
     color_ranges: Dict[int, Tuple[float, float]] = {}
@@ -212,11 +342,11 @@ def create_interactive_plot(
                     color_ranges[ck] = (float(fin.min()), float(fin.max()))
 
     # ── Trace layout ──────────────────────────────────────────────────────────
-    # Indices 0 … n_pairs-1                : main Pareto scatter (always visible)
-    # Indices n_pairs … n_pairs*(1+n_designs)-1: highlighted points (pair-major order)
-    # Indices n_pairs*(1+n_designs) … +n_designs-1: coating bars
+    # Track the exact trace counts for visibility dropdown configuration
+    diagnostic_traces_by_design = {d: [] for d in range(n_designs)}
+    total_traces = 0
 
-    # Add main Pareto scatter traces (one per pair panel)
+    # 1. Add main Pareto scatter traces
     for pair_idx, (ci, cj) in enumerate(pairs):
         r1, c1 = panel_pos[pair_idx]
         obj_x, obj_y = objectives[ci], objectives[cj]
@@ -226,15 +356,26 @@ def create_interactive_plot(
         ck_list = [k for k in range(n_obj) if k not in (ci, cj)]
         ck = ck_list[0] if ck_list else None
 
+        active_c = combined_df['active_layer_count'].values
+        max_l = int(combined_df['max_layers'].values[0])
+        thresh = int(0.8 * max_l)
+        
+        sizes = [10 if count >= thresh else 6 for count in active_c]
+        symbols = ['circle' if count >= thresh else 'x' for count in active_c]
+
         if ck is not None and ck in color_ranges:
             color_vals = _obj_transform(
                 objectives[ck], combined_df[objectives[ck]].values
             )
             vmin, vmax = color_ranges[ck]
-            # Only show colorbar on the first panel to avoid duplicates
             show_cbar = pair_idx == 0
+            
+            # Position colorbar in the gap between scatter plots and the coating stack
+            cbar_x = (1.0 - coating_width) - 0.02
+            
             marker = dict(
-                size=10,
+                size=sizes,
+                symbol=symbols,
                 color=color_vals,
                 colorscale="Viridis",
                 cmin=vmin,
@@ -244,7 +385,7 @@ def create_interactive_plot(
                     dict(
                         title=dict(text=_obj_label(objectives[ck]), side="right"),
                         len=0.5,
-                        x=1.02,
+                        x=cbar_x,
                     )
                     if show_cbar
                     else None
@@ -253,7 +394,10 @@ def create_interactive_plot(
             )
         else:
             marker = dict(
-                size=10, color="steelblue", line=dict(width=0.8, color="black")
+                size=sizes,
+                symbol=symbols,
+                color="steelblue",
+                line=dict(width=0.8, color="black")
             )
 
         fig.add_trace(
@@ -275,8 +419,9 @@ def create_interactive_plot(
             row=r1,
             col=c1,
         )
+        total_traces += 1
 
-    # Add highlighted point traces (n_pairs × n_designs, pair-major order)
+    # 2. Add highlighted point traces
     for pair_idx, (ci, cj) in enumerate(pairs):
         r1, c1 = panel_pos[pair_idx]
         obj_x, obj_y = objectives[ci], objectives[cj]
@@ -296,34 +441,177 @@ def create_interactive_plot(
                     marker=dict(
                         size=15, color="red", line=dict(width=2, color="darkred")
                     ),
-                    name="Selected",
+                    name=f"highlight_{idx}",
                     showlegend=False,
                     visible=(idx == 0),
                 ),
                 row=r1,
                 col=c1,
             )
+            total_traces += 1
 
-    # Add coating design traces (top-right corner, row=1, col=n_cols)
-    coating_row, coating_col = 1, n_cols
-    for idx in range(n_designs):
+    # Build materialParams structure dynamically
+    materialParams = {}
+    for k, v in materials.items():
+        mat_key = int(k)
+        mat_data = v.copy()
+        if mat_data.get("n") is None:
+            mat_data["n"] = 1.0
+        if mat_data.get("k") is None:
+            mat_data["k"] = 0.0
+            
+        if mat_key == 0:
+            materialParams[999] = mat_data
+            materialParams[0] = mat_data
+        else:
+            materialParams[mat_key] = mat_data
+            
+    if 999 not in materialParams:
+        materialParams[999] = {'name': 'air', 'n': 1.0, 'k': 0.0}
+        materialParams[0] = {'name': 'air', 'n': 1.0, 'k': 0.0}
+    if 1 not in materialParams:
+        materialParams[1] = {'name': 'SiO2', 'n': 1.45, 'k': 0.0}
+
+    # 3. Add coating stack diagram, electric field, and spectral response traces
+    shown_in_legend = set()
+    
+    try:
+        from tqdm import tqdm
+        design_iterator = tqdm(range(n_designs), desc="  Simulating coating designs")
+    except ImportError:
+        design_iterator = range(n_designs)
+        
+    for idx in design_iterator:
+        if not hasattr(design_iterator, "container") and (idx % 50 == 0 or idx == n_designs - 1):
+            print(f"  Simulated {idx + 1}/{n_designs} designs...")
+            
         row_data = combined_df.iloc[idx]
-        thicknesses, material_indices = parse_design(row_data)
+        dOpt, material_indices = parse_design(row_data)
+        
+        # Filter active layers
+        active_mask = (material_indices != 0) & (dOpt > 0)
+        active_dOpt = dOpt[active_mask]
+        active_materialLayer = material_indices[active_mask]
+
+        # A. Physical thicknesses
+        thicknesses_nm = get_physical_thicknesses(dOpt, material_indices, materials)
+        
+        # Coating Stack Bars
         traces = create_coating_trace(
-            thicknesses,
-            material_indices,
+            thicknesses_nm,
+            active_materialLayer,
             materials,
-            f"Design {idx}",
+            f"coating_{idx}",
             visible=(idx == 0),
+            shown_in_legend=shown_in_legend if idx == 0 else None,
         )
         for trace in traces:
-            fig.add_trace(trace, row=coating_row, col=coating_col)
+            fig.add_trace(trace, row=1, col=3)
+            diagnostic_traces_by_design[idx].append(total_traces)
+            total_traces += 1
+            
+        # Add substrate bar
+        if len(thicknesses_nm) > 0:
+            sub_trace = go.Bar(
+                name="Substrate",
+                x=["Coating Stack"],
+                y=[100.0],  # Mock substrate thickness
+                marker=dict(color="#7f7f7f", line=dict(color="black", width=1.5)),
+                showlegend=(idx == 0 and "Substrate" not in shown_in_legend),
+                legendgroup="Substrate",
+                visible=(idx == 0),
+                hovertemplate="Substrate (SiO2)<extra></extra>",
+            )
+            if idx == 0:
+                shown_in_legend.add("Substrate")
+            fig.add_trace(sub_trace, row=1, col=3)
+            diagnostic_traces_by_design[idx].append(total_traces)
+            total_traces += 1
+
+        # B. Electric Field Profile using CalculateEFI_tmm
+        try:
+            # We pass active layers with t_air=500nm
+            _, _, ds, E, _, _, _ = CalculateEFI_tmm(
+                dOpt=active_dOpt,
+                materialLayer=active_materialLayer,
+                materialParams=materialParams,
+                lambda_=1064.0,  # Pass in nanometers
+                plots=False,
+            )
+            
+            # Add blue E-field line trace
+            field_trace = go.Scatter(
+                x=ds,
+                y=E,
+                mode="lines",
+                line=dict(color="blue", width=2),
+                name=f"field_{idx}",
+                showlegend=False,
+                visible=(idx == 0),
+                hovertemplate="Depth: %{x:.1f} nm<br>Electric Field: %{y:.3f}<extra></extra>",
+            )
+            fig.add_trace(field_trace, row=3, col=3)
+            diagnostic_traces_by_design[idx].append(total_traces)
+            total_traces += 1
+            
+            # Add vertical dashed lines representing interfaces
+            accumulated = 0.0
+            # Air to Layer 1 interface is at 0
+            interfaces = [0.0]
+            for t_val in thicknesses_nm:
+                accumulated += t_val
+                interfaces.append(accumulated)
+                
+            for x_val in interfaces:
+                line_trace = go.Scatter(
+                     x=[x_val, x_val],
+                     y=[0, max(E) * 1.1 if len(E) > 0 else 4.0],
+                     mode="lines",
+                     line=dict(color="gray", width=1, dash="dash"),
+                     name=f"field_{idx}",
+                     showlegend=False,
+                     visible=(idx == 0),
+                     hoverinfo="skip",
+                )
+                fig.add_trace(line_trace, row=3, col=3)
+                diagnostic_traces_by_design[idx].append(total_traces)
+                total_traces += 1
+                
+        except Exception as e:
+            print(f"Warning: Could not calculate electric field profile: {e}")
+ 
+        # C. Simulated Spectral Response using CalculateTransmission_tmm
+        try:
+            # Wavelength list from 400nm to 1400nm (in nanometers)
+            lambda_list = np.linspace(400.0, 1400.0, 200)
+            wavelengths, transmission, _ = CalculateTransmission_tmm(
+                dOpt=active_dOpt,
+                materialLayer=active_materialLayer,
+                materialParams=materialParams,
+                lambda_list=lambda_list,
+                lambda_0=1064.0,  # Pass in nanometers
+                plots=False,
+            )
+            
+            # Add orange transmission trace
+            spectrum_trace = go.Scatter(
+                x=wavelengths,
+                y=transmission * 100,  # Convert fraction to percentage
+                mode="lines",
+                line=dict(color="#ff7f0e", width=2),
+                name=f"spectrum_{idx}",
+                showlegend=False,
+                visible=(idx == 0),
+                hovertemplate="Wavelength: %{x:.1f} nm<br>Transmission: %{y:.3f}%<extra></extra>",
+            )
+            fig.add_trace(spectrum_trace, row=5, col=3)
+            diagnostic_traces_by_design[idx].append(total_traces)
+            total_traces += 1
+            
+        except Exception as e:
+            print(f"Warning: Could not calculate spectral response: {e}")
 
     # ── Dropdown buttons ──────────────────────────────────────────────────────
-    # Visibility layout:
-    #   [0 .. n_pairs-1]                        always True
-    #   [n_pairs + pair*n_designs + d]           True only when d == idx
-    #   [n_pairs*(1+n_designs) + d]              True only when d == idx
     buttons = []
     for idx in range(n_designs):
         row_data = combined_df.iloc[idx]
@@ -334,14 +622,19 @@ def create_interactive_plot(
         ]
         title_str = f"Design {idx + 1}<br>" + " | ".join(title_parts)
 
-        vis: List[bool] = []
-        for _ in range(n_pairs):  # main pareto panels: always on
-            vis.append(True)
-        for _ in range(n_pairs):  # highlighted points per panel
+        # Build precise visibility array
+        vis = [True] * n_pairs  # main scatter always True
+        
+        # Highlighted traces
+        for pair_idx in range(n_pairs):
             for d in range(n_designs):
                 vis.append(d == idx)
-        for d in range(n_designs):  # coating traces
-            vis.append(d == idx)
+                
+        # Coating, field, and spectrum diagnostic traces
+        for d in range(n_designs):
+            n_diag = len(diagnostic_traces_by_design[d])
+            for _ in range(n_diag):
+                vis.append(d == idx)
 
         buttons.append(
             dict(
@@ -374,23 +667,44 @@ def create_interactive_plot(
             col=c1,
         )
 
-    fig.update_xaxes(showticklabels=False, row=coating_row, col=coating_col)
+    # Coating Stack formatting
+    fig.update_xaxes(showticklabels=False, row=1, col=3)
     fig.update_yaxes(
-        title_text="Thickness (nm)",
+        title_text="Physical Thickness (nm)",
         showgrid=True,
         gridwidth=1,
         gridcolor="lightgray",
-        row=coating_row,
-        col=coating_col,
+        row=1,
+        col=3,
     )
 
-    # Add panel title annotations manually (subplot_titles not used to avoid
-    # ambiguity with None specs)
+    # Electric Field formatting
+    fig.update_xaxes(title_text="Depth (nm)", showgrid=True, row=3, col=3)
+    fig.update_yaxes(
+        title_text="Electric Field Intensity",
+        showgrid=True,
+        gridwidth=1,
+        gridcolor="lightgray",
+        row=3,
+        col=3,
+    )
+
+    # Simulated Spectral Response formatting
+    fig.update_xaxes(title_text="Wavelength (nm)", showgrid=True, row=5, col=3)
+    fig.update_yaxes(
+        title_text="Transmission (%)",
+        showgrid=True,
+        gridwidth=1,
+        gridcolor="lightgray",
+        row=5,
+        col=3,
+    )
+
+    # Add annotations
     annotations = list(fig.layout.annotations)
     for pair_idx, (ci, cj) in enumerate(pairs):
         r1, c1 = panel_pos[pair_idx]
         obj_x, obj_y = objectives[ci], objectives[cj]
-        # Get the subplot domain to position the title
         xref = f"x{'' if c1 == 1 else c1} domain"
         yref = f"y{'' if r1 == 1 else r1} domain"
         annotations.append(
@@ -406,11 +720,38 @@ def create_interactive_plot(
                 font=dict(size=11),
             )
         )
+        
     annotations.append(
         dict(
-            text="<b>Coating Design</b>",
-            xref=f"x{n_cols} domain",
+            text="<b>Coating Stack Diagram</b>",
+            xref="x3 domain",
             yref="y domain",
+            x=0.5,
+            y=1.05,
+            xanchor="center",
+            yanchor="bottom",
+            showarrow=False,
+            font=dict(size=11),
+        )
+    )
+    annotations.append(
+        dict(
+            text="<b>Electric Field Profile</b>",
+            xref="x3 domain",
+            yref="y3 domain",
+            x=0.5,
+            y=1.05,
+            xanchor="center",
+            yanchor="bottom",
+            showarrow=False,
+            font=dict(size=11),
+        )
+    )
+    annotations.append(
+        dict(
+            text="<b>Simulated Spectral Response</b>",
+            xref="x3 domain",
+            yref="y5 domain",
             x=0.5,
             y=1.05,
             xanchor="center",
@@ -422,17 +763,24 @@ def create_interactive_plot(
     fig.update_layout(annotations=annotations)
 
     # ── Overall layout ────────────────────────────────────────────────────────
-    height = max(600, 320 * n_rows)
-    width = max(1200, 340 * n_cols)
+    height = 950
+    width = 1600
 
     fig.update_layout(
         title_text=(
-            f"Interactive Pareto Front — {n_designs} designs, {n_obj} objectives<br>"
-            f"<sub>Click any point to view its coating design</sub>"
+            f"Interactive Pareto Front & Coating Inspection Dashboard<br>"
+            f"<sub>Click any point in the left panels to inspect its physical diagnostics on the right</sub>"
         ),
         title_x=0.5,
         title_font_size=16,
-        showlegend=False,
+        showlegend=True,
+        legend=dict(
+            orientation="v",
+            yanchor="top",
+            y=0.95,
+            xanchor="left",
+            x=1.02,
+        ),
         height=height,
         width=width,
         hovermode="closest",
@@ -447,7 +795,7 @@ def create_interactive_plot(
                 showactive=True,
                 x=1.02,
                 xanchor="left",
-                y=1.0,
+                y=0.5,
                 yanchor="top",
             )
         ],
@@ -481,7 +829,6 @@ Example:
     # Convert to Path object, resolving relative to current working directory
     directory = Path(args.directory)
     if not directory.is_absolute():
-        # Resolve relative to the actual shell's current directory
         directory = Path(os.getcwd()) / directory
 
     directory = directory.resolve()
@@ -502,7 +849,6 @@ Example:
 
     try:
         materials_path = config.get("general", "materials_path")
-        # Resolve relative to config directory or one level above
         if not Path(materials_path).is_absolute():
             candidate1 = (config_path.parent / materials_path).resolve()
             candidate2 = (config_path.parent.parent / materials_path).resolve()
@@ -558,8 +904,8 @@ Example:
         "displaylogo": False,
         "modeBarButtonsToRemove": ["lasso2d", "select2d"],
     }
-    # Click on any main Pareto scatter panel (curveNumber 0 .. n_pairs-1)
-    # triggers the dropdown to show that design's coating
+    
+    # Restyle interactive javascript click event handler for Coating Inspection Dashboard
     post_script = f"""
         var N_PAIRS = {n_pairs};
         var plotDiv = document.getElementsByClassName('plotly-graph-div')[0];
@@ -568,8 +914,22 @@ Example:
                 var pt = data.points[0];
                 if (pt.curveNumber < N_PAIRS) {{
                     var designIdx = pt.customdata;
-                    var buttons = document.querySelectorAll('[data-title^="Design"]');
-                    if (buttons[designIdx]) {{ buttons[designIdx].click(); }}
+                    
+                    var vis = [];
+                    for (var i = 0; i < plotDiv.data.length; i++) {{
+                        var trace = plotDiv.data[i];
+                        if (i < N_PAIRS) {{
+                            vis.push(true);
+                        }} else if (trace.name === "highlight_" + designIdx || 
+                                   trace.name === "coating_" + designIdx ||
+                                   trace.name === "field_" + designIdx ||
+                                   trace.name === "spectrum_" + designIdx) {{
+                            vis.push(true);
+                        }} else {{
+                            vis.push(false);
+                        }}
+                    }}
+                    Plotly.restyle(plotDiv, {{ 'visible': vis }});
                 }}
             }});
         }}

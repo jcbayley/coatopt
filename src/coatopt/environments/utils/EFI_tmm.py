@@ -406,12 +406,12 @@ def CalculateTransmission_tmm(
     if tphys is None:
         print("tmm - Calculating physical thickness... ")
         tphys = []
-        for layer_material in materialLayer:
+        for layer_idx, layer_material in enumerate(materialLayer):
             n_i = materialParams[layer_material]["n"]
             physical_thickness = optical_to_physical(
-                dOpt[layer_material], lambda_0, n_i
+                dOpt[layer_idx], lambda_0, n_i
             )
-            # print(f"Layer {layer_material}: Optical Thickness: {dOpt[layer_material]}, Physical Thickness: {physical_thickness}, Refractive Index: {n_i}")
+            # print(f"Layer {layer_material}: Optical Thickness: {dOpt[layer_idx]}, Physical Thickness: {physical_thickness}, Refractive Index: {n_i}")
             tphys.append(physical_thickness)
         tphys = np.array(tphys)
     else:
@@ -564,10 +564,10 @@ def CalculateTransmission_tmm2(
     if tphys is None:
         print("Calculating physical thickness... ")
         tphys = []
-        for layer_material in materialLayer:
+        for layer_idx, layer_material in enumerate(materialLayer):
             n_i = materialParams[layer_material]["n"]
-            physical_thickness = dOpt[layer_material] * lambda_0 / n_i  # in nm
-            # print(f"Layer {layer_material}: Optical Thickness: {dOpt[layer_material]}, Physical Thickness: {physical_thickness}, Refractive Index: {n_i}")
+            physical_thickness = dOpt[layer_idx] * lambda_0 / n_i  # in nm
+            # print(f"Layer {layer_material}: Optical Thickness: {dOpt[layer_idx]}, Physical Thickness: {physical_thickness}, Refractive Index: {n_i}")
             tphys.append(physical_thickness)
         tphys = np.array(tphys)
     else:

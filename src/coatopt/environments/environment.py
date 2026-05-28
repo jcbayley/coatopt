@@ -95,6 +95,9 @@ class CoatingEnvironment:
         self.reward_normalisation_apply_clipping = getattr(
             data, "reward_normalisation_apply_clipping", True
         )
+        self.reflectivity_gatekeeper_threshold = getattr(
+            data, "reflectivity_gatekeeper_threshold", 0.0
+        )
 
         # Warmup tracking (for constrained training)
         self.warmup_best_rewards = {obj: 0.0 for obj in self.optimise_parameters}
@@ -144,6 +147,7 @@ class CoatingEnvironment:
 
     def reset(self) -> CoatingState:
         """Reset environment to initial state."""
+        self.episode_count += 1
         self.current_state = CoatingState(
             max_layers=self.max_layers,
             n_materials=self.n_materials,
@@ -265,12 +269,24 @@ class CoatingEnvironment:
                         self.observed_value_bounds[obj]["max"], val
                     )
 
-    def update_warmup_best(self, objective: str, normalised_reward: float):
+    def update_warmup_best(self, objective: str, normalised_reward: float, physical_value: Optional[float] = None):
         """Update best normalised reward seen during warmup."""
         old_best = self.warmup_best_rewards[objective]
         if normalised_reward > old_best:
+            val_str = ""
+            if physical_value is not None:
+                if objective == "reflectivity":
+                    val_str = f" (physical: {physical_value:.6f})"
+                elif objective == "absorption":
+                    val_str = f" (physical: {physical_value:.3f} ppm)"
+                elif objective == "thermal_noise":
+                    val_str = f" (physical: {physical_value:.3e} m/√Hz)"
+                else:
+                    val_str = f" (physical: {physical_value:.4e})"
+            
+            ep_str = f"[Episode {self.episode_count}] " if self.episode_count > 0 else ""
             print(
-                f"    WARMUP: New best {objective}={normalised_reward:.4f} (was {old_best:.4f})"
+                f"    {ep_str}WARMUP: New best {objective}={normalised_reward:.4f}{val_str} (was {old_best:.4f})"
             )
         self.warmup_best_rewards[objective] = max(old_best, normalised_reward)
 
@@ -318,6 +334,11 @@ class CoatingEnvironment:
         """Stage a candidate for the Pareto front. Call flush_pareto_candidates() to commit."""
         if not self.multi_objective:
             return
+
+        if self.reflectivity_gatekeeper_threshold > 0.0 and not self.is_warmup:
+            reflectivity = objectives.get("reflectivity", 0.0)
+            if reflectivity < self.reflectivity_gatekeeper_threshold:
+                return  # Filter out low-reflectivity solutions from Pareto front
 
         val_vector = np.array(
             [objectives.get(param, 0.0) for param in self.optimise_parameters]
@@ -545,6 +566,30 @@ class CoatingEnvironment:
         normalised = self.use_constrained_training and self.use_reward_normalisation
         individual_rewards, vals = self.compute_reward(state, normalised=normalised)
 
+        # Apply Soft Reflectivity Gatekeeper Logic (only active during the constrained Phase 2)
+        if self.reflectivity_gatekeeper_threshold > 0.0 and not self.is_warmup:
+            reflectivity = vals.get("reflectivity", 0.0)
+            floor = 0.80  # Threshold floor where rewards begin to ramp up
+            target = self.reflectivity_gatekeeper_threshold
+            
+            if reflectivity < floor:
+                alpha = 0.0
+            elif reflectivity >= target:
+                alpha = 1.0
+            else:
+                alpha = (reflectivity - floor) / (target - floor)
+
+            # Suppress non-reflectivity objectives proportionally
+            for obj in ["absorption", "thermal_noise"]:
+                if obj in individual_rewards:
+                    if normalised:
+                        # Ramps smoothly from 0.0 to full reward
+                        individual_rewards[obj] = float(individual_rewards[obj] * alpha)
+                    else:
+                        # For raw log rewards (which are negative), interpolate between -100.0 and raw reward
+                        true_reward = individual_rewards[obj]
+                        individual_rewards[obj] = float(-100.0 + (true_reward - (-100.0)) * alpha)
+
         # Update observed bounds (for constrained training)
         if self.use_constrained_training:
             self.update_observed_bounds(vals)
@@ -555,7 +600,11 @@ class CoatingEnvironment:
             if self.is_warmup:
                 # Phase 1 (Warmup): Optimize single objective
                 total_reward = individual_rewards.get(self.target_objective, 0.0)
-                self.update_warmup_best(self.target_objective, total_reward)
+                self.update_warmup_best(
+                    self.target_objective, 
+                    total_reward, 
+                    physical_value=vals.get(self.target_objective)
+                )
             else:
                 # Phase 2 (Constrained): Optimize target objective with constraints
                 total_reward = individual_rewards.get(self.target_objective, 0.0)

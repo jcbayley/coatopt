@@ -480,6 +480,7 @@ def merit_function(
         total_absorption, _, _, _ = getCoatAbsorption(
             light_wavelength, layer_optical_thicknesses, aLayer, nLayer, rbar, r
         )
+        total_absorption = total_absorption * 1e6
         D = float(np.sum(layer_thicknesses))  # Total physical thickness in m
 
     # logging.info(f"Integrating over the Electric Field Intensity .......")
