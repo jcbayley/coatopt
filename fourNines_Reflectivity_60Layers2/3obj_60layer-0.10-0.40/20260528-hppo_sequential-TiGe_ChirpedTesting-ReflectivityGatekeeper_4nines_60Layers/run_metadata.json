@@ -1,0 +1,19 @@
+{
+  "algorithm": "ppo_sequential",
+  "start_time": "2026-05-28T16:08:24.639848",
+  "end_time": "2026-05-30T21:16:24.209245",
+  "duration_seconds": 191279.57,
+  "duration_minutes": 3187.99,
+  "duration_hours": 53.13,
+  "pareto_front_size": 361,
+  "total_episodes": 90000,
+  "total_generations": null,
+  "config_path": "/home/controls/Python/coatopt/fourNines_Reflectivity_60Layers2/3obj_60layer-0.10-0.40/20260528-hppo_sequential-TiGe_ChirpedTesting-ReflectivityGatekeeper_4nines_60Layers/config.ini",
+  "git_hash": "076f49c",
+  "platform": {
+    "system": "Linux",
+    "python_version": "3.12.2",
+    "machine": "x86_64"
+  },
+  "training_time_seconds": 191279.5693974495
+}
