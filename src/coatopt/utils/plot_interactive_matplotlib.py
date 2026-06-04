@@ -315,7 +315,10 @@ def export_design(row, rank: int, materials: dict, directory: Path, export_base_
                 plots=False,
                 verbose=False
             )
-            d_physical_nm = d_physical_m * 1e9
+            if np.any(d_physical_m > 1e-3):
+                d_physical_nm = d_physical_m
+            else:
+                d_physical_nm = d_physical_m * 1e9
         except Exception:
             pass
 
@@ -398,14 +401,15 @@ aLIGO_params["dOpt"]           = dOpt                               # optical th
 aLIGO_params["materialLayer"]  = materialLayer                      # material array containing keys which index materialParams
 aLIGO_params["materialParams"] = materialParams                     # dictionary of material properties 
 aLIGO_params["materialSub"]    = 1                                  # substrate type - Silica 
-aLIGO_params["lambda_"]        = {lambda_nm:.1f}                    # IFO wavelength (nm)
+lambda_ = {lambda_nm:.1f}
+aLIGO_params["lambda_"]        = lambda_                            # IFO wavelength (nm)
 aLIGO_params["f"]              = np.logspace(1, 3, 100)             # Frequency range to evaluate CTN 
 aLIGO_params["wBeam"]          = 0.062                              # laser beam size on ETM (m)
 aLIGO_params["Temp"]           = 293.0                              # detector temperature (K)
 aLIGO_params["plots "]         = False                              # boolean for activating plots 
 aLIGO_params["t_air"]          = 500                                # thickness of air in EFI calculations for optical absorption : Default is 500nm
 aLIGO_params["polarisation"]   = 'p'                                # light polarisation for EFI calculations 
-aLIGO_params["lambda_list"]    = np.linspace(0, aLIGO_params["lambda_"]*1.5, 10000)
+aLIGO_params["lambda_list"]    = np.linspace(0, lambda_*1.5, 10000)
 
 # --- Design Table ---
 # Layer | Material Name | Refractive Index | dOpt | Physical Thickness (nm)
@@ -788,6 +792,15 @@ def main():
                 transmission_1064 = f"{transmission_lambda_0 * 1e6:.5f} ppm"
                 stack_name = f"Rank {design_index + 1} Design"
 
+                # Pre-calculate physical thicknesses in nm to pass as dphysical
+                d_physical_nm_calc = []
+                for i in range(len(active_dOpt)):
+                    mat_idx = mapped_layer[i]
+                    n_layer = materialParams.get(mat_idx, {}).get("n", 1.45)
+                    t_nm = active_dOpt[i] * lambda_nm / n_layer
+                    d_physical_nm_calc.append(t_nm)
+                d_physical_nm_calc = np.array(d_physical_nm_calc)
+
                 f_output = io.StringIO()
                 with contextlib.redirect_stdout(f_output):
                     _, _, d_physical_m = thin_film_stack(
@@ -799,13 +812,17 @@ def main():
                         base_path=str(directory),
                         plots=False,
                         verbose=True,
+                        dphysical=d_physical_nm_calc,
                         absorption=f"{absor_val:.2f} ppm",
                         CTN_at_100Hz=tn,
                         Reflectivity_1064=reflectivity_lambda_0,
                         Transmission_1064=transmission_1064,
                         stack_name=stack_name
                     )
-                d_physical_nm = d_physical_m * 1e9
+                if np.any(d_physical_m > 1e-3):
+                    d_physical_nm = d_physical_m
+                else:
+                    d_physical_nm = d_physical_m * 1e9
                 info_text = f_output.getvalue().strip().replace('\t', '    ')
             except Exception as e:
                 info_text = f"Warning: thin_film_stack failed: {e}\n"

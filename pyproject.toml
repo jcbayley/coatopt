@@ -85,3 +85,27 @@ exclude_lines = [
     "if 0:",
     "if __name__ == .__main__.:"
 ]
+
+[[tool.uv.index]]
+name = "pytorch-cu118"
+url = "https://download.pytorch.org/whl/cu118"
+explicit = true
+
+[[tool.uv.index]]
+name = "pypi"
+url = "https://pypi.org/simple"
+
+[tool.uv.sources]
+torch = [
+  { index = "pytorch-cu118", marker = "sys_platform == 'linux'" },
+  { index = "pypi", marker = "sys_platform != 'linux'" }
+]
+torchvision = [
+  { index = "pytorch-cu118", marker = "sys_platform == 'linux'" },
+  { index = "pypi", marker = "sys_platform != 'linux'" }
+]
+torchaudio = [
+  { index = "pytorch-cu118", marker = "sys_platform == 'linux'" },
+  { index = "pypi", marker = "sys_platform != 'linux'" }
+]
+
