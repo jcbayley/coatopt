@@ -1,0 +1,205 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Coating Stack Designer & Simulator</title>
+    <!-- Google Fonts: Inter and JetBrains Mono -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+    <!-- Plotly.js CDN -->
+    <script src="https://cdn.plot.ly/plotly-2.24.1.min.js"></script>
+    <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body class="dark-mode">
+    <header class="header">
+        <div class="header-content">
+            <div class="logo-area">
+                <h1>Coating Stack Simulator</h1>
+                <span class="divider">|</span>
+                <p>LIGO Coating Analysis Suite</p>
+            </div>
+            
+            <div class="toolbar">
+                <div class="connection-status" id="connectionStatus">
+                    <span class="status-indicator status-online"></span>
+                    <span class="status-label">Online</span>
+                </div>
+                
+                <button class="btn-icon" id="btnOpenSettings" title="Simulation Parameters">⚙️</button>
+                <button class="btn-icon" id="btnOpenMaterials" title="Edit Material Properties">🧱</button>
+                <button class="btn-icon" id="btnReset" title="Reset to Initial (44 Layers)">🔄</button>
+                <span class="divider">|</span>
+                <button class="btn-icon" id="btnExportJson" title="Export JSON Design">💾</button>
+                <button class="btn-icon" id="btnImportJson" title="Import JSON Design">📂</button>
+                <button class="btn-icon" id="btnExportCsv" title="Export CSV Layers">📤</button>
+                <button class="btn-icon" id="btnImportCsv" title="Import CSV Layers">📥</button>
+                
+                <!-- Hidden inputs for file loading -->
+                <input type="file" id="fileInputJson" accept=".json" style="display: none;">
+                <input type="file" id="fileInputCsv" accept=".csv" style="display: none;">
+            </div>
+        </div>
+    </header>
+
+    <main class="container">
+        <!-- LEFT COLUMN: COATING STACK DIAGRAM & TABLE -->
+        <section class="left-col">
+            <!-- Plotly Coating Stack Visual Diagram -->
+            <div class="card">
+                <div class="card-title">Coating Stack Diagram</div>
+                <div id="plotStack" style="height: 350px; width: 100%;"></div>
+            </div>
+
+            <!-- Coating Stack Layout Table -->
+            <div class="card table-card">
+                <div class="card-title">
+                    <span>Coating Stack Layout</span>
+                    <div style="display: flex; gap: 6px;">
+                        <button class="btn btn-primary btn-small" id="btnAddLayerFront">[+] Add to Front</button>
+                        <button class="btn btn-primary btn-small" id="btnAddLayerBack">[+] Add to End</button>
+                    </div>
+                </div>
+                <div class="table-container">
+                    <table class="stack-table" id="stackTable">
+                        <thead>
+                            <tr>
+                                <th style="width: 8%;">#</th>
+                                <th style="width: 25%;">Material</th>
+                                <th style="width: 28%;">Physical (nm)</th>
+                                <th style="width: 22%;">Optical (waves)</th>
+                                <th style="width: 17%;">Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody id="stackTableBody">
+                            <!-- Rows will be injected here -->
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </section>
+
+        <!-- RIGHT COLUMN: RE-CALCULATED PROPERTIES & PLOTS -->
+        <section class="right-col">
+            <!-- Monospace Output Summary Card -->
+            <div class="card console-card">
+                <div class="card-title">Calculated Properties Console</div>
+                <pre id="consoleOutput" class="info-card">Running simulation...</pre>
+            </div>
+
+            <!-- Selected Layer Slider/Editor -->
+            <div class="card editor-card" id="layerEditorCard">
+                <div class="card-title">Edit Selected Layer #<span id="editLayerNumber">-</span></div>
+                <div class="editor-row">
+                    <div class="input-field" style="flex: 2;">
+                        <label>Material</label>
+                        <select id="editMaterial">
+                            <!-- Options generated dynamically -->
+                        </select>
+                    </div>
+                    <div class="input-field" style="flex: 3;">
+                        <label>Physical Thickness (nm)</label>
+                        <div class="numeric-input-group">
+                            <input type="number" id="editThicknessText" min="0" max="2000" step="0.01" value="100">
+                            <span class="unit-label">nm</span>
+                        </div>
+                    </div>
+                </div>
+                <div class="slider-group">
+                    <input type="range" id="editThicknessSlider" min="0" max="500" step="0.1" value="100">
+                    <div class="slider-bounds">
+                        <span>0 nm</span>
+                        <span>500 nm</span>
+                    </div>
+                </div>
+                <div style="font-size: 11px; color: #888; margin-top: 5px;">
+                    Optical Thickness: <span id="editOpticalThickness" class="mono">-</span> waves
+                </div>
+            </div>
+
+            <!-- Diagnostic Plots -->
+            <div class="card plots-card">
+                <div class="tabs-header">
+                    <button class="tab-btn active" data-tab="tabSpectrum">Wavelength Spectrum</button>
+                    <button class="tab-btn" data-tab="tabEFI">Electric Field Intensity (EFI)</button>
+                    <button class="tab-btn" data-tab="tabNoise">Noise Spectrum</button>
+                </div>
+                <div class="tabs-content">
+                    <div class="tab-pane active" id="tabSpectrum">
+                        <div class="plot-container" id="plotSpectrum"></div>
+                    </div>
+                    <div class="tab-pane" id="tabEFI">
+                        <div class="plot-container" id="plotEFI"></div>
+                    </div>
+                    <div class="tab-pane" id="tabNoise">
+                        <div class="plot-container" id="plotNoise"></div>
+                    </div>
+                </div>
+            </div>
+        </section>
+    </main>
+
+    <!-- MODAL 1: SIMULATION PARAMETERS -->
+    <dialog id="settingsModal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>Simulation Parameters</h3>
+                <button class="modal-close" onclick="document.getElementById('settingsModal').close()">✕</button>
+            </div>
+            <div class="modal-body">
+                <div class="grid-2-col">
+                    <div class="input-field">
+                        <label for="inputLambda">Laser Wavelength (nm)</label>
+                        <input type="number" id="inputLambda" value="1064" step="1">
+                    </div>
+                    <div class="input-field">
+                        <label for="inputTargetLambda">Secondary Target (nm)</label>
+                        <input type="number" id="inputTargetLambda" value="532" step="1">
+                    </div>
+                    <div class="input-field">
+                        <label for="inputWBeam">Beam Width (m)</label>
+                        <input type="number" id="inputWBeam" value="0.062" step="0.001">
+                    </div>
+                    <div class="input-field">
+                        <label for="inputTemp">Temperature (K)</label>
+                        <input type="number" id="inputTemp" value="293" step="1">
+                    </div>
+                    <div class="input-field">
+                        <label for="selectPolarisation">Polarisation</label>
+                        <select id="selectPolarisation">
+                            <option value="p" selected>p-polarised</option>
+                            <option value="s">s-polarised</option>
+                        </select>
+                    </div>
+                    <div class="input-field">
+                        <label for="inputAngle">Incident Angle (°)</label>
+                        <input type="number" id="inputAngle" value="0.0" step="0.1">
+                    </div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-primary" onclick="document.getElementById('settingsModal').close(); triggerSimulation();">Apply Parameters</button>
+            </div>
+        </div>
+    </dialog>
+
+    <!-- MODAL 2: MATERIALS CONFIGURATION -->
+    <dialog id="materialsModal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>Material Constants Settings</h3>
+                <button class="modal-close" onclick="document.getElementById('materialsModal').close()">✕</button>
+            </div>
+            <div class="modal-body" id="materialsModalBody">
+                <!-- Editable material parameters dynamically populated here -->
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-primary" onclick="document.getElementById('materialsModal').close();">Apply Constants</button>
+            </div>
+        </div>
+    </dialog>
+
+    <script src="/static/main.js"></script>
+</body>
+</html>

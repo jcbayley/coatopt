@@ -250,6 +250,78 @@ def precompute_tmm_details(combined_df: pd.DataFrame, materials_dict: dict, max_
     return tmm_data
 
 
+def calculate_log_ticks(cmin: float, cmax: float, is_ctn: bool = False) -> Tuple[list, list]:
+    """Calculate clean log-scale ticks and formatting labels dynamically based on range span."""
+    pmin = 10.0 ** cmin
+    pmax = 10.0 ** cmax
+    span = cmax - cmin
+    
+    if span > 3.0:
+        mantissas = [1.0]
+    elif span > 1.5:
+        mantissas = [1.0, 2.0, 5.0]
+    elif span > 0.6:
+        mantissas = [1.0, 2.0, 3.0, 5.0, 7.0]
+    else:
+        mantissas = [1.0, 1.2, 1.5, 2.0, 2.5, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0]
+        
+    min_exp = int(np.floor(cmin))
+    max_exp = int(np.ceil(cmax))
+    
+    ticks = []
+    for exp in range(min_exp - 1, max_exp + 2):
+        for m in mantissas:
+            val = m * (10.0 ** exp)
+            log_val = np.log10(val)
+            if (cmin - 1e-9) <= log_val <= (cmax + 1e-9):
+                ticks.append((log_val, val))
+                
+    ticks = sorted(ticks, key=lambda x: x[0])
+    
+    if len(ticks) < 2:
+        log_vals = np.linspace(cmin, cmax, 5)
+        tickvals = list(log_vals)
+        if is_ctn:
+            ticktext = [f"{10.0**v:.2e}" for v in log_vals]
+        else:
+            ticktext = [f"{10.0**v:.2f}" for v in log_vals]
+        return tickvals, ticktext
+        
+    tickvals = [t[0] for t in ticks]
+    ticktext = []
+    for _, val in ticks:
+        if is_ctn:
+            log10_val = np.log10(val)
+            if abs(log10_val - round(log10_val)) < 1e-9:
+                ticktext.append(f"10^{int(round(log10_val))}")
+            else:
+                s = f"{val:.2e}"
+                s = s.replace("e+", "e").replace("e-0", "e-").replace(".00", "")
+                ticktext.append(s)
+        else:
+            if val >= 1.0:
+                if val == int(val):
+                    ticktext.append(str(int(val)))
+                else:
+                    ticktext.append(f"{val:.1f}")
+            else:
+                log10_val = np.log10(val)
+                if abs(log10_val - round(log10_val)) < 1e-9:
+                    ticktext.append(f"10^{int(round(log10_val))}")
+                else:
+                    if val >= 0.1:
+                        ticktext.append(f"{val:.1f}")
+                    elif val >= 0.01:
+                        ticktext.append(f"{val:.2f}")
+                    else:
+                        s = f"{val:.3f}".rstrip('0')
+                        if s.endswith('.'):
+                            s = s[:-1]
+                        ticktext.append(s)
+                        
+    return tickvals, ticktext
+
+
 def create_3d_rank_plot(
     designs_df: pd.DataFrame,
     values_df: pd.DataFrame,
@@ -270,11 +342,12 @@ def create_3d_rank_plot(
     weight_tn: float = 0.45,
     weight_thick: float = 0.10,
     compare_thick: Optional[float] = None,
-    target_refl: float = 0.9999,
+    target_refl: float = 0.99999,
     target_abs: float = 0.30,
     target_tn: float = 4.0e-21,
     target_thick: float = 6000.0,
     top_n: Optional[int] = None,
+    color_mode: str = "reflectivity_log",
 ) -> Tuple[go.Figure, pd.DataFrame]:
     """Create interactive 3D scatter plot of Absorption, TN, and Rank.
 
@@ -426,19 +499,112 @@ def create_3d_rank_plot(
     y_data = combined_df["thermal_noise"].values
     z_data = combined_df["rank"].values
 
-    # Determine marker colorscale and values
     if color_by_loss:
-        color_values = 1.0 - combined_df["reflectivity"].values
-        colorbar_title = "Reflectivity Loss (1-R)"
-        colorscale = "Magma" if dark_mode else "Reds"
-        cmin = float(np.min(color_values))
-        cmax = float(np.max(color_values))
-    else:
+        color_mode = "loss_linear"
+
+    # Determine marker colorscale and values
+    tickvals = None
+    ticktext = None
+    is_reversed = False
+    if color_mode == "reflectivity_linear":
         color_values = combined_df["reflectivity"].values
         colorbar_title = "Reflectivity"
         colorscale = "Plasma" if dark_mode else "Viridis"
         cmin = float(np.min(color_values))
         cmax = float(np.max(color_values))
+        is_reversed = False
+    elif color_mode == "reflectivity_log":
+        # Number of nines: -log10(1-R)
+        losses = np.maximum(1e-10, 1.0 - combined_df["reflectivity"].values)
+        color_values = -np.log10(losses)
+        colorbar_title = "Reflectivity (Log/Nines)"
+        colorscale = "Plasma" if dark_mode else "Viridis"
+        cmin = float(np.min(color_values))
+        cmax = float(np.max(color_values))
+        is_reversed = False
+        
+        min_int = int(np.floor(cmin))
+        max_int = int(np.ceil(cmax))
+        tickvals = list(range(min_int, max_int + 1))
+        ticktext = []
+        for v in tickvals:
+            if v == 2: ticktext.append("0.99")
+            elif v == 3: ticktext.append("0.999")
+            elif v == 4: ticktext.append("0.9999")
+            elif v == 5: ticktext.append("0.99999")
+            elif v == 6: ticktext.append("0.999999")
+            elif v == 7: ticktext.append("0.9999999")
+            else: ticktext.append(f"1-10^-{v}")
+    elif color_mode == "absorption_linear":
+        color_values = combined_df["absorption"].values
+        colorbar_title = "Absorption (ppm)"
+        colorscale = "Viridis_r" if dark_mode else "Viridis"
+        cmin = float(np.min(color_values))
+        cmax = float(np.max(color_values))
+        is_reversed = True
+    elif color_mode == "absorption_log":
+        color_values = np.log10(np.maximum(1e-3, combined_df["absorption"].values))
+        colorbar_title = "Absorption (Log10 ppm)"
+        colorscale = "Viridis_r" if dark_mode else "Viridis"
+        cmin = float(np.min(color_values))
+        cmax = float(np.max(color_values))
+        is_reversed = True
+        tickvals, ticktext = calculate_log_ticks(cmin, cmax, is_ctn=False)
+    elif color_mode == "ctn_linear":
+        color_values = combined_df["thermal_noise"].values
+        colorbar_title = "Thermal Noise (m/√Hz)"
+        colorscale = "Viridis_r" if dark_mode else "Viridis"
+        cmin = float(np.min(color_values))
+        cmax = float(np.max(color_values))
+        is_reversed = True
+    elif color_mode == "ctn_log":
+        color_values = np.log10(np.maximum(1e-24, combined_df["thermal_noise"].values))
+        colorbar_title = "Thermal Noise (Log10)"
+        colorscale = "Viridis_r" if dark_mode else "Viridis"
+        cmin = float(np.min(color_values))
+        cmax = float(np.max(color_values))
+        is_reversed = True
+        tickvals, ticktext = calculate_log_ticks(cmin, cmax, is_ctn=True)
+    elif color_mode == "loss_linear":
+        color_values = 1.0 - combined_df["reflectivity"].values
+        colorbar_title = "Reflectivity Loss (1-R)"
+        colorscale = "Magma" if dark_mode else "Reds"
+        cmin = float(np.min(color_values))
+        cmax = float(np.max(color_values))
+        is_reversed = not dark_mode
+    elif color_mode == "loss_log":
+        # log10(1-R)
+        losses = np.maximum(1e-10, 1.0 - combined_df["reflectivity"].values)
+        color_values = np.log10(losses)
+        colorbar_title = "Loss (Log10)"
+        colorscale = "Magma" if dark_mode else "Reds"
+        cmin = float(np.min(color_values))
+        cmax = float(np.max(color_values))
+        is_reversed = not dark_mode
+        
+        min_int = int(np.floor(cmin))
+        max_int = int(np.ceil(cmax))
+        tickvals = list(range(min_int, max_int + 1))
+        ticktext = [f"10^{v}" for v in tickvals]
+    else:
+        # Fallback
+        color_values = combined_df["reflectivity"].values
+        colorbar_title = "Reflectivity"
+        colorscale = "Plasma" if dark_mode else "Viridis"
+        cmin = float(np.min(color_values))
+        cmax = float(np.max(color_values))
+        is_reversed = False
+
+    # Compute outline colors based on lightness mapping
+    span = cmax - cmin if cmax > cmin else 1.0
+    normalized_vals = (color_values - cmin) / span
+    outline_colors = []
+    for t in normalized_vals:
+        is_light = (t < 0.4) if is_reversed else (t > 0.6)
+        if is_light:
+            outline_colors.append("rgba(0, 0, 0, 0.8)")
+        else:
+            outline_colors.append("rgba(255, 255, 255, 0.8)")
 
     fig = go.Figure()
 
@@ -458,12 +624,14 @@ def create_3d_rank_plot(
                 colorbar=dict(
                     title=dict(text=colorbar_title, side="right", font=dict(color="#e0e0e0" if dark_mode else "#333333")),
                     tickfont=dict(color="#e0e0e0" if dark_mode else "#333333"),
+                    tickvals=tickvals,
+                    ticktext=ticktext,
                     thickness=18,
                     len=0.7,
                 ),
                 showscale=True,
                 opacity=0.9,
-                line=dict(width=0.5, color="black" if not dark_mode else "white"),
+                line=dict(width=1.0, color=outline_colors),
             ),
             customdata=customdata,
             name="Pareto Front Designs",
@@ -762,7 +930,7 @@ def main():
         "--target-refl",
         type=float,
         default=None,
-        help="Target reflectivity for utility scoring (defaults to --compare-refl if set, else 0.9999)",
+        help="Target reflectivity for utility scoring (defaults to --compare-refl if set, else 0.99999)",
     )
     parser.add_argument(
         "--target-abs",
@@ -788,11 +956,24 @@ def main():
         default=-1,
         help="Number of top designs to precompute full TMM details (EFI and spectrum) for (default: -1, meaning all)",
     )
+    parser.add_argument(
+        "--color-mode",
+        type=str,
+        choices=["reflectivity_linear", "reflectivity_log", "absorption_linear", "absorption_log", "ctn_linear", "ctn_log", "loss_linear", "loss_log"],
+        default="reflectivity_log",
+        help="Default color mapping mode for 3D scatter plot markers (default: reflectivity_log)",
+    )
     args = parser.parse_args()
+
+    # Determine default color mode, supporting backward compatibility with --color-by-loss
+    if args.color_by_loss:
+        color_mode = "loss_linear"
+    else:
+        color_mode = args.color_mode
 
     # Resolve target values, defaulting to comparison design values if they are provided,
     # and falling back to default values otherwise.
-    target_refl = args.target_refl if args.target_refl is not None else (args.compare_refl if args.compare_refl is not None else 0.9999)
+    target_refl = args.target_refl if args.target_refl is not None else (args.compare_refl if args.compare_refl is not None else 0.99999)
     target_abs = args.target_abs if args.target_abs is not None else (args.compare_abs if args.compare_abs is not None else 0.30)
     target_tn = args.target_tn if args.target_tn is not None else (args.compare_tn if args.compare_tn is not None else 4.0e-21)
     target_thick = args.target_thick if args.target_thick is not None else (args.compare_thick if args.compare_thick is not None else 6000.0)
@@ -861,7 +1042,7 @@ def main():
         values_df=values_df,
         title=title,
         dark_mode=not args.light,
-        color_by_loss=args.color_by_loss,
+        color_mode=color_mode,
         compare_refl=args.compare_refl,
         compare_abs=args.compare_abs,
         compare_tn=args.compare_tn,
@@ -931,7 +1112,7 @@ def main():
     import plotly.utils
     plotly_data_json = json.dumps(fig.data, cls=plotly.utils.PlotlyJSONEncoder)
     plotly_layout_json = json.dumps(fig.layout, cls=plotly.utils.PlotlyJSONEncoder)
-    compare_refl_val = args.compare_refl if args.compare_refl is not None else 0.9999
+    compare_refl_val = args.compare_refl if args.compare_refl is not None else 0.99999
     compare_abs_val = args.compare_abs if args.compare_abs is not None else 0.3
     compare_tn_val = args.compare_tn if args.compare_tn is not None else 4e-21
     compare_thick_val = args.compare_thick if args.compare_thick is not None else 0.0
@@ -1145,6 +1326,18 @@ def main():
                 <button class="btn" id="btn-toggle-x-scale">Toggle X-Scale (Log/Linear)</button>
                 <button class="btn" id="btn-toggle-y-scale">Toggle Y-Scale (Log/Linear)</button>
                 
+                <span style="font-size: 11px; color: #888; font-weight: bold; margin-left: 15px; margin-right: 5px; text-transform: uppercase; letter-spacing: 0.5px;">COLOR BY:</span>
+                <select id="select-color-mode" style="background: #2b2b2b; border: 1px solid #444; color: #e0e0e0; padding: 5px 8px; border-radius: 4px; font-size: 12px; height: 29px; box-sizing: border-box; vertical-align: middle;">
+                    <option value="reflectivity_linear">Reflectivity (Linear)</option>
+                    <option value="reflectivity_log">Reflectivity (Log/Nines)</option>
+                    <option value="absorption_linear">Absorption (Linear)</option>
+                    <option value="absorption_log">Absorption (Log)</option>
+                    <option value="ctn_linear">CTN (Linear)</option>
+                    <option value="ctn_log">CTN (Log)</option>
+                    <option value="loss_linear">Loss (Linear)</option>
+                    <option value="loss_log">Loss (Log)</option>
+                </select>
+
                 <span style="font-size: 11px; color: #888; font-weight: bold; margin-left: 15px; margin-right: 5px; text-transform: uppercase; letter-spacing: 0.5px;">SHOW TOP:</span>
                 <input type="text" id="input-top-x" placeholder="All" style="width: 50px; background: #2b2b2b; border: 1px solid #444; color: #e0e0e0; padding: 5px 8px; border-radius: 4px; font-size: 12px; text-align: center; box-sizing: border-box;">
                 <button class="btn" id="btn-apply-top">Apply</button>
@@ -1183,7 +1376,7 @@ def main():
                 <div class="targets-grid">
                     <div>
                         <label for="input-comp-refl">Reflectivity (R)</label>
-                        <input type="number" id="input-comp-refl" step="any" placeholder="e.g. 0.9999">
+                        <input type="number" id="input-comp-refl" step="any" placeholder="e.g. 0.99999">
                     </div>
                     <div>
                         <label for="input-comp-abs">Absorption (ppm)</label>
@@ -1250,9 +1443,10 @@ def main():
         }
 
         // Initialize target fields
+        document.getElementById('select-color-mode').value = "__DEFAULT_COLOR_MODE__";
         document.getElementById('input-target-refl').value = __TARGET_REFL__;
         document.getElementById('input-target-abs').value = __TARGET_ABS__;
-        document.getElementById('input-target-tn').value = __TARGET_TN__.toExponential(4);
+        document.getElementById('input-target-tn').value = "__TARGET_TN__";
         document.getElementById('input-target-thick').value = __TARGET_THICK__;
 
         // Initialize custom comparison point fields
@@ -1293,7 +1487,15 @@ def main():
 
         // Update colorbar title
         if(data3d[0].marker && data3d[0].marker.colorbar) {
-            data3d[0].marker.colorbar.title = { text: 'Reflectivity', font: { color: '#e0e0e0' } };
+            if (data3d[0].marker.colorbar.title) {
+                if (typeof data3d[0].marker.colorbar.title === 'object') {
+                    data3d[0].marker.colorbar.title.font = { color: '#e0e0e0' };
+                } else {
+                    data3d[0].marker.colorbar.title = { text: data3d[0].marker.colorbar.title, font: { color: '#e0e0e0' } };
+                }
+            } else {
+                data3d[0].marker.colorbar.title = { text: '', font: { color: '#e0e0e0' } };
+            }
             data3d[0].marker.colorbar.tickfont = { color: '#e0e0e0' };
         }
 
@@ -1646,21 +1848,21 @@ def main():
             
             if (idx === -1) {
                 var loss = compareRefl !== null ? 1.0 - compareRefl : 0.0;
-                var text = "  REFERENCE DESIGN SUMMARY\n";
-                text += "  -------------------------\n";
-                text += "  Label: " + referenceLabel + "\n";
+                var text = "  REFERENCE DESIGN SUMMARY\\n";
+                text += "  -------------------------\\n";
+                text += "  Label: " + referenceLabel + "\\n";
                 if (compareRefl !== null) {
-                    text += "  Reflectivity: " + compareRefl.toFixed(6) + "\n";
-                    text += "  Loss (1 - R): " + loss.toExponential(4) + "\n";
+                    text += "  Reflectivity: " + compareRefl.toFixed(6) + "\\n";
+                    text += "  Loss (1 - R): " + loss.toExponential(4) + "\\n";
                 }
                 if (compareAbs !== null) {
-                    text += "  Absorption: " + compareAbs.toFixed(3) + " ppm\n";
+                    text += "  Absorption: " + compareAbs.toFixed(3) + " ppm\\n";
                 }
                 if (compareTN !== null) {
-                    text += "  Thermal Noise: " + compareTN.toExponential(4) + " m/sqrt(Hz)\n";
+                    text += "  Thermal Noise: " + compareTN.toExponential(4) + " m/sqrt(Hz)\\n";
                 }
                 if (compareThick !== null && compareThick > 0) {
-                    text += "  Physical Thickness: " + compareThick.toFixed(2) + " nm\n";
+                    text += "  Physical Thickness: " + compareThick.toFixed(2) + " nm\\n";
                 }
                 document.getElementById('info-content').innerText = text;
                 document.getElementById('btn-export-py').disabled = true;
@@ -1891,6 +2093,101 @@ def main():
             }
         });
 
+        function getLogTicks(cmin, cmax, isCtn) {
+            var pmin = Math.pow(10, cmin);
+            var pmax = Math.pow(10, cmax);
+            var min_exp = Math.floor(cmin);
+            var max_exp = Math.ceil(cmax);
+            var span = cmax - cmin;
+            var mantissas = [];
+            if (span > 3.0) {
+                mantissas = [1.0];
+            } else if (span > 1.5) {
+                mantissas = [1.0, 2.0, 5.0];
+            } else if (span > 0.6) {
+                mantissas = [1.0, 2.0, 3.0, 5.0, 7.0];
+            } else {
+                mantissas = [1.0, 1.2, 1.5, 2.0, 2.5, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0];
+            }
+            
+            var ticks = [];
+            for (var exp = min_exp - 1; exp <= max_exp + 1; exp++) {
+                for (var i = 0; i < mantissas.length; i++) {
+                    var m = mantissas[i];
+                    var val = m * Math.pow(10, exp);
+                    var log_val = Math.log10(val);
+                    if (log_val >= (cmin - 1e-9) && log_val <= (cmax + 1e-9)) {
+                        ticks.push({log_val: log_val, val: val});
+                    }
+                }
+            }
+            
+            ticks.sort((a, b) => a.log_val - b.log_val);
+            
+            if (ticks.length < 2) {
+                var tickvals = [];
+                var ticktext = [];
+                for (var i = 0; i < 5; i++) {
+                    var v = cmin + (cmax - cmin) * (i / 4);
+                    tickvals.push(v);
+                    var physical_val = Math.pow(10, v);
+                    if (isCtn) {
+                        ticktext.push(physical_val.toExponential(2));
+                    } else {
+                        ticktext.push(physical_val.toFixed(2));
+                    }
+                }
+                return {tickvals: tickvals, ticktext: ticktext};
+            }
+            
+            var tickvals = [];
+            var ticktext = [];
+            for (var i = 0; i < ticks.length; i++) {
+                var t = ticks[i];
+                tickvals.push(t.log_val);
+                var val = t.val;
+                if (isCtn) {
+                    var log10_val = Math.log10(val);
+                    if (Math.abs(log10_val - Math.round(log10_val)) < 1e-9) {
+                        ticktext.push("10^" + Math.round(log10_val));
+                    } else {
+                        var s = val.toExponential(2);
+                        s = s.replace("e+", "e").replace("e-0", "e-").replace(".00", "");
+                        ticktext.push(s);
+                    }
+                } else {
+                    if (val >= 1.0) {
+                        if (val === Math.round(val)) {
+                            ticktext.push(Math.round(val).toString());
+                        } else {
+                            ticktext.push(val.toFixed(1));
+                        }
+                    } else {
+                        var log10_val = Math.log10(val);
+                        if (Math.abs(log10_val - Math.round(log10_val)) < 1e-9) {
+                            ticktext.push("10^" + Math.round(log10_val));
+                        } else {
+                            if (val >= 0.1) {
+                                ticktext.push(val.toFixed(1));
+                            } else if (val >= 0.01) {
+                                ticktext.push(val.toFixed(2));
+                            } else {
+                                var s = val.toFixed(3);
+                                while (s.endsWith("0")) {
+                                    s = s.slice(0, -1);
+                                }
+                                if (s.endsWith(".")) {
+                                    s = s.slice(0, -1);
+                                }
+                                ticktext.push(s);
+                            }
+                        }
+                    }
+                }
+            }
+            return {tickvals: tickvals, ticktext: ticktext};
+        }
+
         function recalculateUtilityAndRerank() {
             var target_refl = parseFloat(document.getElementById('input-target-refl').value);
             var target_abs = parseFloat(document.getElementById('input-target-abs').value);
@@ -1991,9 +2288,111 @@ def main():
                 d.originalIdx
             ]);
 
-            var color_values = displayList.map(d => d.reflectivity);
+            var colorMode = document.getElementById('select-color-mode').value;
+            var color_values = [];
+            var colorbar_title = "";
+            var tickvals = null;
+            var ticktext = null;
+            var isReversed = false;
+            var colorscale = (layout3d.template === "plotly_dark" || layout3d.paper_bgcolor !== '#ffffff') ? "Plasma" : "Viridis";
+
+            if (colorMode === "reflectivity_linear") {
+                color_values = displayList.map(d => d.reflectivity);
+                colorbar_title = "Reflectivity";
+                isReversed = false;
+            } else if (colorMode === "reflectivity_log") {
+                // -log10(1-R)
+                color_values = displayList.map(d => {
+                    var loss = Math.max(1e-10, 1.0 - d.reflectivity);
+                    return -Math.log10(loss);
+                });
+                colorbar_title = "Reflectivity (Log/Nines)";
+                isReversed = false;
+                
+                var min_val = Math.min(...color_values);
+                var max_val = Math.max(...color_values);
+                var min_int = Math.floor(min_val);
+                var max_int = Math.ceil(max_val);
+                tickvals = [];
+                ticktext = [];
+                for (var v = min_int; v <= max_int; v++) {
+                    tickvals.push(v);
+                    if (v === 2) ticktext.push("0.99");
+                    else if (v === 3) ticktext.push("0.999");
+                    else if (v === 4) ticktext.push("0.9999");
+                    else if (v === 5) ticktext.push("0.99999");
+                    else if (v === 6) ticktext.push("0.999999");
+                    else if (v === 7) ticktext.push("0.9999999");
+                    else ticktext.push("1-10^-" + v);
+                }
+            } else if (colorMode === "absorption_linear") {
+                color_values = displayList.map(d => d.absorption);
+                colorbar_title = "Absorption (ppm)";
+                colorscale = (layout3d.template === "plotly_dark" || layout3d.paper_bgcolor !== '#ffffff') ? "Viridis_r" : "Viridis";
+                isReversed = true;
+            } else if (colorMode === "absorption_log") {
+                color_values = displayList.map(d => Math.log10(Math.max(1e-3, d.absorption)));
+                colorbar_title = "Absorption (Log10 ppm)";
+                colorscale = (layout3d.template === "plotly_dark" || layout3d.paper_bgcolor !== '#ffffff') ? "Viridis_r" : "Viridis";
+                isReversed = true;
+                
+                var min_val = Math.min(...color_values);
+                var max_val = Math.max(...color_values);
+                var ticks_obj = getLogTicks(min_val, max_val, false);
+                tickvals = ticks_obj.tickvals;
+                ticktext = ticks_obj.ticktext;
+            } else if (colorMode === "ctn_linear") {
+                color_values = displayList.map(d => d.thermal_noise);
+                colorbar_title = "Thermal Noise (m/√Hz)";
+                colorscale = (layout3d.template === "plotly_dark" || layout3d.paper_bgcolor !== '#ffffff') ? "Viridis_r" : "Viridis";
+                isReversed = true;
+            } else if (colorMode === "ctn_log") {
+                color_values = displayList.map(d => Math.log10(Math.max(1e-24, d.thermal_noise)));
+                colorbar_title = "Thermal Noise (Log10)";
+                colorscale = (layout3d.template === "plotly_dark" || layout3d.paper_bgcolor !== '#ffffff') ? "Viridis_r" : "Viridis";
+                isReversed = true;
+                
+                var min_val = Math.min(...color_values);
+                var max_val = Math.max(...color_values);
+                var ticks_obj = getLogTicks(min_val, max_val, true);
+                tickvals = ticks_obj.tickvals;
+                ticktext = ticks_obj.ticktext;
+            } else if (colorMode === "loss_linear") {
+                color_values = displayList.map(d => 1.0 - d.reflectivity);
+                colorbar_title = "Reflectivity Loss (1-R)";
+                colorscale = (layout3d.template === "plotly_dark" || layout3d.paper_bgcolor !== '#ffffff') ? "Magma" : "Reds";
+                isReversed = !(layout3d.template === "plotly_dark" || layout3d.paper_bgcolor !== '#ffffff');
+            } else if (colorMode === "loss_log") {
+                // log10(1-R)
+                color_values = displayList.map(d => {
+                    var loss = Math.max(1e-10, 1.0 - d.reflectivity);
+                    return Math.log10(loss);
+                });
+                colorbar_title = "Loss (Log10)";
+                colorscale = (layout3d.template === "plotly_dark" || layout3d.paper_bgcolor !== '#ffffff') ? "Magma" : "Reds";
+                isReversed = !(layout3d.template === "plotly_dark" || layout3d.paper_bgcolor !== '#ffffff');
+                
+                var min_val = Math.min(...color_values);
+                var max_val = Math.max(...color_values);
+                var min_int = Math.floor(min_val);
+                var max_int = Math.ceil(max_val);
+                tickvals = [];
+                ticktext = [];
+                for (var v = min_int; v <= max_int; v++) {
+                    tickvals.push(v);
+                    ticktext.push("10^" + v);
+                }
+            }
+
             var cmin = Math.min(...color_values);
             var cmax = Math.max(...color_values);
+            var span = cmax > cmin ? (cmax - cmin) : 1.0;
+            
+            var outline_colors = color_values.map(val => {
+                var t = (val - cmin) / span;
+                var isLight = isReversed ? (t < 0.4) : (t > 0.6);
+                return isLight ? "rgba(0, 0, 0, 0.8)" : "rgba(255, 255, 255, 0.8)";
+            });
 
             data3d[0].x = x_data;
             data3d[0].y = y_data;
@@ -2002,6 +2401,18 @@ def main():
             data3d[0].marker.color = color_values;
             data3d[0].marker.cmin = cmin;
             data3d[0].marker.cmax = cmax;
+            data3d[0].marker.colorscale = colorscale;
+            data3d[0].marker.line.color = outline_colors;
+            data3d[0].marker.line.width = 1.0;
+            if (data3d[0].marker.colorbar) {
+                if (typeof data3d[0].marker.colorbar.title === 'object') {
+                    data3d[0].marker.colorbar.title.text = colorbar_title;
+                } else {
+                    data3d[0].marker.colorbar.title = { text: colorbar_title };
+                }
+                data3d[0].marker.colorbar.tickvals = tickvals;
+                data3d[0].marker.colorbar.ticktext = ticktext;
+            }
 
             // Recalculate custom comparison plot point virtual rank and update coordinates
             var comp_label = document.getElementById('input-comp-label').value.trim() || "Reference Design";
@@ -2095,6 +2506,7 @@ def main():
         }
 
         document.getElementById('btn-apply-top').addEventListener('click', recalculateUtilityAndRerank);
+        document.getElementById('select-color-mode').addEventListener('change', recalculateUtilityAndRerank);
         document.getElementById('input-top-x').addEventListener('keypress', function(e) {
             if (e.key === 'Enter') {
                 recalculateUtilityAndRerank();
@@ -2134,6 +2546,7 @@ def main():
     # Populate the placeholders using standard replace method (fully robust to f-string brackets)
     compiled_html = html_template.replace("__TITLE__", title)
     compiled_html = compiled_html.replace("__INITIAL_TOP_X__", initial_top_x_str)
+    compiled_html = compiled_html.replace("__DEFAULT_COLOR_MODE__", color_mode)
     compiled_html = compiled_html.replace("__PLOTLY_DATA_3D__", plotly_data_json)
     compiled_html = compiled_html.replace("__PLOTLY_LAYOUT_3D__", plotly_layout_json)
     compiled_html = compiled_html.replace("__TMM_DATA__", tmm_data_json)
