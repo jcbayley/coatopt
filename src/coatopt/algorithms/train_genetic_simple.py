@@ -133,7 +133,6 @@ class CoatingRepair(Repair):
 
     def _repair_individual(self, x: np.ndarray) -> np.ndarray:
         """Repair a single individual to enforce all design constraints."""
-        thicknesses = x[: self.env.max_layers].copy()
         materials_continuous = x[self.env.max_layers :].copy()
         materials_idx = np.floor(materials_continuous).astype(int)
 
@@ -171,18 +170,8 @@ class CoatingRepair(Repair):
                     if available:
                         materials_idx[j] = np.random.choice(available)
 
-        # Enforce air cascade: once air appears all subsequent layers must be air.
-        # This makes result.X consistent with what _evaluate actually computes.
-        air_found = False
-        for j in range(len(materials_idx)):
-            if air_found:
-                materials_idx[j] = self.env.air_material_index
-                thicknesses[j] = self.env.min_thickness
-            elif materials_idx[j] == self.env.air_material_index:
-                air_found = True
-                thicknesses[j] = self.env.min_thickness
-
-        x[: self.env.max_layers] = thicknesses
+        # Air cascade not enforced in genome (destroys diversity); applied at
+        # evaluation and final-trim instead.
         x[self.env.max_layers :] = materials_idx + 0.5
 
         return x
