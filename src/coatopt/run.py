@@ -267,60 +267,63 @@ def run_experiment(
 
     # Generate interactive Pareto front visualization (only if results are non-empty)
     try:
-        from coatopt.utils.plot_interactive_pareto import (
-            create_interactive_plot,
-            load_materials,
-        )
         from coatopt.utils.utils import load_pareto_front
-
-        materials_path = parser.get("general", "materials_path")
-        materials = load_materials(materials_path)
         designs_df, values_df, _ = load_pareto_front(save_dir)
 
         if not values_df.empty:
-            print("\nGenerating interactive Pareto front visualization...")
-            fig, n_pairs = create_interactive_plot(
-                designs_df, values_df, materials, max_designs=10
-            )
-            html_path = save_dir / "pareto_interactive.html"
-            plotly_config = {
-                "displayModeBar": True,
-                "displaylogo": False,
-                "modeBarButtonsToRemove": ["lasso2d", "select2d"],
-            }
-            post_script = f"""
-                var N_PAIRS = {n_pairs};
-                var plotDiv = document.getElementsByClassName('plotly-graph-div')[0];
-                if (plotDiv) {{
-                    plotDiv.on('plotly_click', function(data) {{
-                        var pt = data.points[0];
-                        if (pt.curveNumber < N_PAIRS) {{
-                            var designIdx = pt.customdata;
-                            
-                            var vis = [];
-                            for (var i = 0; i < plotDiv.data.length; i++) {{
-                                var trace = plotDiv.data[i];
-                                if (i < N_PAIRS) {{
-                                    vis.push(true);
-                                }} else if (trace.name === "highlight_" + designIdx || 
-                                           trace.name === "coating_" + designIdx ||
-                                           trace.name === "field_" + designIdx ||
-                                           trace.name === "spectrum_" + designIdx) {{
-                                    vis.push(true);
-                                }} else {{
-                                    vis.push(false);
-                                }}
-                            }}
-                            Plotly.restyle(plotDiv, {{ 'visible': vis }});
-                        }}
-                    }});
-                }}
-            """
-            fig.write_html(
-                str(html_path),
-                config=plotly_config,
-                include_plotlyjs="cdn",
-                post_script=post_script,
+            from coatopt.utils.plot_interactive_3d_rank import generate_3d_rank_dashboard
+
+            # Read comparison targets from [comparison] section if available
+            compare_refl = None
+            compare_abs = None
+            compare_tn = None
+            compare_thick = None
+            compare_label = "Reference Design"
+            color_mode = "reflectivity_log"
+            rank_by_utility = True
+            precompute_tmm_count = -1
+            target_refl = None
+            target_abs = None
+            target_tn = None
+            target_thick = None
+
+            if parser.has_section("comparison"):
+                compare_refl = parser.getfloat("comparison", "compare_refl", fallback=None)
+                compare_abs = parser.getfloat("comparison", "compare_abs", fallback=None)
+                compare_tn = parser.getfloat("comparison", "compare_tn", fallback=None)
+                compare_thick = parser.getfloat("comparison", "compare_thick", fallback=None)
+                compare_label = parser.get("comparison", "compare_label", fallback="Reference Design")
+                color_mode = parser.get("comparison", "color_mode", fallback="reflectivity_log")
+                rank_by_utility = parser.getboolean("comparison", "rank_by_utility", fallback=True)
+                precompute_tmm_count = parser.getint("comparison", "precompute_tmm_count", fallback=-1)
+                target_refl = parser.getfloat("comparison", "target_refl", fallback=None)
+                target_abs = parser.getfloat("comparison", "target_abs", fallback=None)
+                target_tn = parser.getfloat("comparison", "target_tn", fallback=None)
+                target_thick = parser.getfloat("comparison", "target_thick", fallback=None)
+
+            print("\nGenerating interactive Pareto front visualization (3D Rank Dashboard)...")
+            html_path = generate_3d_rank_dashboard(
+                directory=save_dir,
+                output=save_dir / "pareto_3d_rank.html",
+                light=False,
+                color_by_loss=False,
+                no_open=True,
+                compare_refl=compare_refl,
+                compare_abs=compare_abs,
+                compare_tn=compare_tn,
+                compare_label=compare_label,
+                compare_thick=compare_thick,
+                min_refl=None,
+                max_abs=None,
+                max_tn=None,
+                rank_by_utility=rank_by_utility,
+                top=None,
+                target_refl=target_refl,
+                target_abs=target_abs,
+                target_tn=target_tn,
+                target_thick=target_thick,
+                precompute_tmm_count=precompute_tmm_count,
+                color_mode=color_mode,
             )
             print(f"Saved interactive visualization to {html_path}")
 

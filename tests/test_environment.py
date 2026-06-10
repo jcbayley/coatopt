@@ -801,3 +801,141 @@ class TestCoatingEnvironmentObservedBounds:
         # reflectivity bounds should remain at infinity
         assert env.observed_value_bounds["reflectivity"]["min"] == np.inf
         assert env.observed_value_bounds["absorption"]["min"] == 100.0
+
+
+class TestCoatingEnvironmentGatekeeperAnnealing:
+    """Test reflectivity gatekeeper annealing functionality."""
+
+    def test_annealed_gatekeeper_threshold_disabled(self, basic_config, materials):
+        """Test gatekeeper threshold when annealing is disabled."""
+        basic_config.data.reflectivity_gatekeeper_threshold = 0.99
+        basic_config.data.reflectivity_gatekeeper_initial_threshold = 0.0
+        env = CoatingEnvironment(basic_config, materials)
+        env.enable_constrained_training(
+            warmup_episodes_per_objective=10,
+            steps_per_objective=5,
+            episodes_per_step=10,
+        )
+        env.is_warmup = False
+
+        # Should return target directly
+        assert env.get_current_gatekeeper_threshold() == 0.99
+
+    def test_annealed_gatekeeper_threshold_active(self, basic_config, materials):
+        """Test gatekeeper threshold annealing over episode progression."""
+        basic_config.data.reflectivity_gatekeeper_threshold = 0.99
+        basic_config.data.reflectivity_gatekeeper_initial_threshold = 0.90
+        env = CoatingEnvironment(basic_config, materials)
+        
+        # Warmup: 20 episodes (2 objectives * 10), Constrained: 5 levels * 10 episodes/level * 2 objectives = 100 episodes
+        env.enable_constrained_training(
+            warmup_episodes_per_objective=10,
+            steps_per_objective=5,
+            episodes_per_step=10,
+        )
+
+        # 1. Warmup phase: should return target directly
+        env.is_warmup = True
+        env.episode_count = 5
+        assert env.get_current_gatekeeper_threshold() == 0.99
+
+        # 2. Constrained phase - Start (progress = 0%)
+        env.is_warmup = False
+        env.episode_count = env.total_warmup_episodes  # Episode 20
+        assert np.isclose(env.get_current_gatekeeper_threshold(), 0.90)
+
+        # 3. Constrained phase - Middle (progress = 50%)
+        env.episode_count = env.total_warmup_episodes + 50  # Episode 70
+        assert np.isclose(env.get_current_gatekeeper_threshold(), 0.945)
+
+        # 4. Constrained phase - End (progress = 100%)
+        env.episode_count = env.total_warmup_episodes + 100  # Episode 120
+        assert np.isclose(env.get_current_gatekeeper_threshold(), 0.99)
+
+        # 5. Beyond end (clamped at 100%)
+        env.episode_count = 500
+        assert np.isclose(env.get_current_gatekeeper_threshold(), 0.99)
+
+
+class TestCoatingEnvironmentMaterialDiversityBonus:
+    """Test material diversity bonus reward shaping."""
+
+    def test_diversity_bonus_disabled(self, basic_config, materials):
+        """Test that no bonus is applied when material_diversity_bonus is 0."""
+        basic_config.data.material_diversity_bonus = 0.0
+        env = CoatingEnvironment(basic_config, materials)
+        state = env.reset()
+        
+        # Build a 3-material stack: Layer 0=SiO2 (1), Layer 1=TiGermania (2), Layer 2=aSi (3)
+        state.set_layer(0, 100e-9, 1)
+        state.set_layer(1, 100e-9, 2)
+        state.set_layer(2, 100e-9, 3)
+
+        _, _, individual_rewards = env.compute_training_reward(state, finished=True)
+        assert individual_rewards.get("material_diversity_bonus", 0.0) == 0.0
+
+    def test_diversity_bonus_intermediate_steps(self, basic_config, materials):
+        """Test that bonus is not applied during intermediate steps (finished=False)."""
+        basic_config.data.material_diversity_bonus = 0.5
+        env = CoatingEnvironment(basic_config, materials)
+        state = env.reset()
+        
+        state.set_layer(0, 100e-9, 1)
+        state.set_layer(1, 100e-9, 2)
+        state.set_layer(2, 100e-9, 3)
+
+        _, _, individual_rewards = env.compute_training_reward(state, finished=False)
+        assert individual_rewards.get("material_diversity_bonus", 0.0) == 0.0
+
+    def test_diversity_bonus_two_materials(self, basic_config, materials):
+        """Test that no bonus is applied for 2 materials even if finished."""
+        basic_config.data.material_diversity_bonus = 0.5
+        env = CoatingEnvironment(basic_config, materials)
+        state = env.reset()
+        
+        # 2 active materials: SiO2 (1) and TiGermania (2)
+        state.set_layer(0, 100e-9, 1)
+        state.set_layer(1, 100e-9, 2)
+
+        _, _, individual_rewards = env.compute_training_reward(state, finished=True)
+        assert individual_rewards.get("material_diversity_bonus", 0.0) == 0.0
+
+    def test_diversity_bonus_three_materials(self, basic_config, materials):
+        """Test that bonus is applied for 3 materials when finished."""
+        basic_config.data.material_diversity_bonus = 0.5
+        env = CoatingEnvironment(basic_config, materials)
+        state = env.reset()
+        
+        # 3 active materials: SiO2 (1), TiGermania (2), aSi (3)
+        state.set_layer(0, 100e-9, 1)
+        state.set_layer(1, 100e-9, 2)
+        state.set_layer(2, 100e-9, 3)
+
+        _, _, individual_rewards = env.compute_training_reward(state, finished=True)
+        # 3 materials -> (3 - 2) * 0.5 = 0.5 bonus
+        assert np.isclose(individual_rewards.get("material_diversity_bonus", 0.0), 0.5)
+
+    def test_diversity_bonus_four_materials(self, basic_config, materials):
+        """Test that bonus scales for 4 materials when finished."""
+        basic_config.data.material_diversity_bonus = 0.5
+        # Add a mock 4th material to materials dict
+        materials[4] = materials[2].copy()
+        materials[4]["name"] = "mock_mat"
+        materials[4]["n"] = 2.5
+        materials[4]["k"] = 1e-4
+        basic_config.data.n_layers = 20
+        
+        env = CoatingEnvironment(basic_config, materials)
+        state = env.reset()
+        
+        # 4 active materials: 1, 2, 3, 4
+        state.set_layer(0, 100e-9, 1)
+        state.set_layer(1, 100e-9, 2)
+        state.set_layer(2, 100e-9, 3)
+        state.set_layer(3, 100e-9, 4)
+
+        _, _, individual_rewards = env.compute_training_reward(state, finished=True)
+        # 4 materials -> (4 - 2) * 0.5 = 1.0 bonus
+        assert np.isclose(individual_rewards.get("material_diversity_bonus", 0.0), 1.0)
+
+

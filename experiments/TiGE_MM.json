@@ -1,0 +1,61 @@
+{
+    "0": {
+        "name": "air",
+        "desc": "Air",
+        "n": 1,
+        "a": null,
+        "alpha": null,
+        "beta": null,
+        "kappa": null,
+        "C": null,
+        "Y": null,
+        "prat": null,
+        "phiM": null,
+        "k": 0
+    },
+    "1": {
+        "name": "SiO2",
+        "desc": "Silica - Thin film Room Temperature",
+        "n": 1.45,
+        "a": 0,
+        "alpha": 5.1e-7,
+        "beta": 8e-6,
+        "kappa": 1.38,
+        "C": 1.6412e6,
+        "Y": 70e9,
+        "prat": 0.19,
+        "phiM": 2.3e-5,
+        "k": 0
+    },
+
+    "2": {
+        "name": "TiGermania",
+        "desc": "Titania doped Germania - Room Temperature LMA",
+        "n": 1.866,
+        "a": 1,
+        "alpha": 12.82e-7,
+        "beta": 2.4e-5,
+        "kappa": 33,
+        "C": 2.51e6,
+        "Y": 92e9,
+        "prat": 0.29,
+        "phiM": 9.013672e-05,
+        "k": 2e-7
+    },
+
+     "3": {
+        "name" : "aSi",
+        "desc" : "amorphous silicon - room temperature - Ion Planting",
+        "n"    : 3.73,
+        "a"    : 10,
+        "alpha": 2e-6,
+        "beta" : 10e-6,
+        "kappa": 30,
+        "C"    : 2.0e6,
+        "Y"    : 147e9,
+        "prat" : 0.23,
+        "phiM" : 2e-5,
+        "k"    : 5E-3
+    }
+
+}

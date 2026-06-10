@@ -98,6 +98,12 @@ class CoatingEnvironment:
         self.reflectivity_gatekeeper_threshold = getattr(
             data, "reflectivity_gatekeeper_threshold", 0.0
         )
+        self.reflectivity_gatekeeper_initial_threshold = getattr(
+            data, "reflectivity_gatekeeper_initial_threshold", 0.0
+        )
+        self.material_diversity_bonus = getattr(
+            data, "material_diversity_bonus", 0.0
+        )
 
         # Warmup tracking (for constrained training)
         self.warmup_best_rewards = {obj: 0.0 for obj in self.optimise_parameters}
@@ -215,6 +221,7 @@ class CoatingEnvironment:
             total_reward, vals, reward_components = self.compute_training_reward(
                 self.current_state,
                 objective_weights=objective_weights,
+                finished=finished,
             )
 
             # Stage pareto candidate; front is flushed once per rollout via flush_pareto_candidates()
@@ -335,9 +342,10 @@ class CoatingEnvironment:
         if not self.multi_objective:
             return
 
-        if self.reflectivity_gatekeeper_threshold > 0.0 and not self.is_warmup:
+        gatekeeper_threshold = self.get_current_gatekeeper_threshold()
+        if gatekeeper_threshold > 0.0 and not self.is_warmup:
             reflectivity = objectives.get("reflectivity", 0.0)
-            if reflectivity < self.reflectivity_gatekeeper_threshold:
+            if reflectivity < gatekeeper_threshold:
                 return  # Filter out low-reflectivity solutions from Pareto front
 
         val_vector = np.array(
@@ -549,6 +557,7 @@ class CoatingEnvironment:
         self,
         state,  # Can be CoatingState or numpy array
         objective_weights: Optional[Dict[str, float]] = None,
+        finished: bool = False,
     ) -> Tuple[float, Dict[str, float], Dict[str, float]]:
         """Compute reward for training (base rewards + modifiers).
 
@@ -567,10 +576,11 @@ class CoatingEnvironment:
         individual_rewards, vals = self.compute_reward(state, normalised=normalised)
 
         # Apply Soft Reflectivity Gatekeeper Logic (only active during the constrained Phase 2)
-        if self.reflectivity_gatekeeper_threshold > 0.0 and not self.is_warmup:
+        gatekeeper_threshold = self.get_current_gatekeeper_threshold()
+        if gatekeeper_threshold > 0.0 and not self.is_warmup:
             reflectivity = vals.get("reflectivity", 0.0)
-            floor = 0.80  # Threshold floor where rewards begin to ramp up
-            target = self.reflectivity_gatekeeper_threshold
+            target = gatekeeper_threshold
+            floor = min(0.80, target - 0.05)  # Ensure floor is always below target
             
             if reflectivity < floor:
                 alpha = 0.0
@@ -634,6 +644,29 @@ class CoatingEnvironment:
             bounds_penalty = self._compute_bounds_penalty(vals)
             total_reward -= bounds_penalty
             individual_rewards["bounds_penalty"] = -bounds_penalty
+
+        # Add material diversity bonus if enabled and episode is finished
+        diversity_bonus = 0.0
+        if finished and self.material_diversity_bonus > 0.0:
+            from coatopt.environments.state import CoatingState
+            if isinstance(state, CoatingState):
+                mats = state.get_materials()
+                thicknesses = state.get_thicknesses()
+            else:
+                thicknesses = state[:, 0]
+                mats = np.argmax(state[:, 1:], axis=1)
+
+            active_mats = set()
+            for i in range(len(thicknesses)):
+                if thicknesses[i] > 1e-12 and int(mats[i]) != self.air_material_index:
+                    active_mats.add(int(mats[i]))
+
+            n_unique = len(active_mats)
+            if n_unique >= 3:
+                diversity_bonus = (n_unique - 2) * self.material_diversity_bonus
+                total_reward += diversity_bonus
+        
+        individual_rewards["material_diversity_bonus"] = diversity_bonus
 
         return total_reward, vals, individual_rewards
 
@@ -733,6 +766,33 @@ class CoatingEnvironment:
 
         # Return bonus proportional to hypervolume improvement
         return hv_improvement * self.pareto_dominance_bonus
+
+    def get_current_gatekeeper_threshold(self) -> float:
+        """Get the current reflectivity gatekeeper threshold, optionally annealed."""
+        target = self.reflectivity_gatekeeper_threshold
+        if target <= 0.0 or self.is_warmup or not self.use_constrained_training:
+            return target
+
+        initial = getattr(self, "reflectivity_gatekeeper_initial_threshold", 0.0)
+        if initial <= 0.0:
+            return target
+
+        # Calculate progress through the constrained phase
+        total_warmup = getattr(self, "total_warmup_episodes", 0)
+        total_phases = getattr(self, "total_phases", 0)
+        episodes_per_step = getattr(self, "episodes_per_step", 1)
+        total_constrained = total_phases * episodes_per_step
+
+        if total_constrained <= 0:
+            return target
+
+        # Clamp constrained episode between 0 and total_constrained
+        constrained_episode = max(0, self.episode_count - total_warmup)
+        progress = min(1.0, constrained_episode / total_constrained)
+
+        # Linear interpolation
+        current_threshold = initial + progress * (target - initial)
+        return float(current_threshold)
 
     # Utility functions
     def sample_action_space(self) -> np.ndarray:

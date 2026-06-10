@@ -200,6 +200,13 @@ class CoatOptHybridEnv(gym.Env):
                         else max_frac
                     )
                     best = self.env.warmup_best_rewards.get(obj, 0.0)
+                    
+                    # Force constraint limits to target the actual user/LIGO specs if warmup best was poor
+                    target_specs = {"reflectivity": 0.99999, "absorption": 0.5, "thermal_noise": 1.0e-20}
+                    target_rewards = self.env.compute_objective_rewards(target_specs, normalised=True)
+                    if obj in target_rewards:
+                        best = max(best, target_rewards[obj])
+                        
                     constraints[obj] = frac * best
 
             self.env.target_objective = target_obj
@@ -976,7 +983,7 @@ def train(config_path: str, save_dir: str):
     sample_designs = []  # Keep track of sample designs generated during warmup
 
     # Define beautiful rich live dashboard generator
-    def generate_dashboard(episode, total_episodes, phase, target_obj, lr, ent_coef, best_r, best_abs, best_tn, n_pareto, ppo_logs_mean, mean_len):
+    def generate_dashboard(episode, total_episodes, phase, target_obj, lr, ent_coef, best_r, best_abs, best_tn, n_pareto, ppo_logs_mean, mean_len, three_mat_ratio):
         from rich.table import Table
         from rich.panel import Panel
         
@@ -987,7 +994,7 @@ def train(config_path: str, save_dir: str):
         best_table.add_column("Best Found So Far", style="green")
         
         best_table.add_row("Reflectivity", ">= 0.99999", f"{best_r:.6f}" if best_r > 0 else "N/A")
-        best_table.add_row("Absorption", "<= 0.5 ppm", f"{best_abs * 1e6:.3f} ppm" if best_abs < 1.0 else "N/A")
+        best_table.add_row("Absorption", "<= 0.5 ppm", f"{best_abs:.3f} ppm" if best_abs < 9999.0 else "N/A")
         best_table.add_row("Thermal Noise", "<= 1.0e-20", f"{best_tn:.3e} m/√Hz" if best_tn < 1.0 else "N/A")
         
         # 2. Table of training metrics
@@ -1011,7 +1018,8 @@ def train(config_path: str, save_dir: str):
             f"[bold white]Target Objective:[/bold white] [cyan]{target_obj}[/cyan]\n"
             f"[bold white]Learning Rate:[/bold white] [cyan]{lr:.2e}[/cyan]\n"
             f"[bold white]Entropy Coeff:[/bold white] [cyan]{ent_coef:.4f}[/cyan]\n"
-            f"[bold white]Pareto Front Size:[/bold white] [bold green]{n_pareto} designs[/bold green]"
+            f"[bold white]Pareto Front Size:[/bold white] [bold green]{n_pareto} designs[/bold green]\n"
+            f"[bold white]3-Mat Ratio (Pareto):[/bold white] [bold green]{three_mat_ratio * 100:.1f}%[/bold green]"
         )
         
         # Assemble main Layout
@@ -1074,15 +1082,16 @@ def train(config_path: str, save_dir: str):
     phase = "warmup" if env.is_warmup else "constrained"
     target_obj = env.env.target_objective
     best_r = 0.0
-    best_abs = 1.0
+    best_abs = 9999.0
     best_tn = 1.0
     n_pareto = 0
+    three_mat_ratio = 0.0
     current_lr = lr
     current_ent_coef = ent_coef
 
     live = None
     if console.is_terminal and verbose:
-        live = Live(generate_dashboard(env.episode_count, total_episodes, phase, target_obj, current_lr, current_ent_coef, best_r, best_abs, best_tn, n_pareto, ppo_logs_mean, mean_len), console=console, auto_refresh=False)
+        live = Live(generate_dashboard(env.episode_count, total_episodes, phase, target_obj, current_lr, current_ent_coef, best_r, best_abs, best_tn, n_pareto, ppo_logs_mean, mean_len, three_mat_ratio), console=console, auto_refresh=False)
         live.start()
 
     while env.episode_count < total_episodes:
@@ -1245,18 +1254,36 @@ def train(config_path: str, save_dir: str):
         current_lr_display = agent.optimizer.param_groups[0]["lr"]
         
         designs_df, values_df, _ = env.env.export_pareto_dataframes()
+        three_mat_ratio = 0.0
         if not values_df.empty:
             best_r = values_df['reflectivity'].max() if 'reflectivity' in values_df.columns else 0.0
-            best_abs = values_df['absorption'].min() if 'absorption' in values_df.columns else 1.0
+            best_abs = values_df['absorption'].min() if 'absorption' in values_df.columns else 9999.0
             best_tn = values_df['thermal_noise'].min() if 'thermal_noise' in values_df.columns else 1.0
             n_pareto = len(values_df)
+
+            # Compute 3-material ratio on Pareto front
+            if not designs_df.empty:
+                air_idx = env.env.air_material_index
+                max_layers = env.env.max_layers
+                mat_cols = [f"material_{j}" for j in range(max_layers) if f"material_{j}" in designs_df.columns]
+                thick_cols = [f"thickness_{j}" for j in range(max_layers) if f"thickness_{j}" in designs_df.columns]
+                if mat_cols and thick_cols:
+                    count_3mat = 0
+                    for _, row in designs_df.iterrows():
+                        active_mats = set()
+                        for m_col, t_col in zip(mat_cols, thick_cols):
+                            if row[t_col] > 1e-12 and int(row[m_col]) != air_idx:
+                                active_mats.add(int(row[m_col]))
+                        if len(active_mats) >= 3:
+                            count_3mat += 1
+                    three_mat_ratio = count_3mat / len(designs_df)
         
         if ep_lengths:
             mean_len = np.mean(ep_lengths[-20:])
             
         # Update rich Live dashboard
         if live is not None:
-            live.update(generate_dashboard(env.episode_count, total_episodes, phase, target_obj, current_lr_display, current_ent_coef, best_r, best_abs, best_tn, n_pareto, ppo_logs_mean, mean_len), refresh=True)
+            live.update(generate_dashboard(env.episode_count, total_episodes, phase, target_obj, current_lr_display, current_ent_coef, best_r, best_abs, best_tn, n_pareto, ppo_logs_mean, mean_len, three_mat_ratio), refresh=True)
             
         if (env.episode_count - 1) % mlflow_log_freq == 0:
             if verbose:
@@ -1280,6 +1307,7 @@ def train(config_path: str, save_dir: str):
                 metrics = {
                     "step": step_count,
                     "pareto.size": len(env.env.pareto_front_rewards),
+                    "three_material_ratio": three_mat_ratio,
                 }
                 # Add pareto episodes count if BC loss enabled
                 if bc_weight > 0 and hasattr(env.env, "pareto_front_episodes"):
@@ -1382,6 +1410,44 @@ def train(config_path: str, save_dir: str):
                         if verbose:
                             print(f"  [progress plot] skipped: {e}")
 
+                    # Save a snapshot of the best design to create a GIF later
+                    try:
+                        best_idx = 0
+                        if "thermal_noise" in values_df.columns and not values_df["thermal_noise"].isna().all():
+                            best_idx = values_df["thermal_noise"].idxmin()
+                        elif "absorption" in values_df.columns and not values_df["absorption"].isna().all():
+                            best_idx = values_df["absorption"].idxmin()
+                            
+                        best_design = designs_df.iloc[best_idx]
+                        thick_cols = [c for c in designs_df.columns if c.startswith("thickness_")]
+                        mat_cols = [c for c in designs_df.columns if c.startswith("material_")]
+                        thick_cols = sorted(thick_cols, key=lambda x: int(x.split("_")[1]))
+                        mat_cols = sorted(mat_cols, key=lambda x: int(x.split("_")[1]))
+                        
+                        thicknesses = best_design[thick_cols].values
+                        material_indices = best_design[mat_cols].values.astype(int)
+                        
+                        from coatopt.utils.plotting import plot_coating_stack
+                        history_dir = save_path / "design_history"
+                        history_dir.mkdir(parents=True, exist_ok=True)
+                        img_path = history_dir / f"design_ep_{env.episode_count:06d}.png"
+                        
+                        refl = values_df.iloc[best_idx].get("reflectivity", 0.0)
+                        abs_ppm = values_df.iloc[best_idx].get("absorption", 999.0)
+                        tn = values_df.iloc[best_idx].get("thermal_noise", 1e-15)
+                        
+                        plot_coating_stack(
+                            thicknesses=thicknesses,
+                            material_indices=material_indices,
+                            materials=materials,
+                            save_path=img_path,
+                            title=f"Best Pareto Design (Episode {env.episode_count})\nR={refl:.6f}, Abs={abs_ppm:.2f} ppm, TN={tn:.3e}",
+                            convert_to_nm=True,
+                        )
+                    except Exception as e:
+                        if verbose:
+                            print(f"  [design snapshot plot] skipped: {e}")
+
                     # Save model weights + training state
                     save_checkpoint(
                         save_dir,
@@ -1431,6 +1497,27 @@ def train(config_path: str, save_dir: str):
 
             plot_design_diversity(designs_df, values_df, save_path)
             plot_cluster_designs(designs_df, values_df, save_path, materials=materials)
+
+            # Compile design evolution GIF from all stored PNG frames
+            try:
+                from PIL import Image
+                history_dir = save_path / "design_history"
+                png_files = sorted(list(history_dir.glob("design_ep_*.png")))
+                if len(png_files) > 1:
+                    frames = [Image.open(f) for f in png_files]
+                    gif_path = save_path / "design_evolution.gif"
+                    frames[0].save(
+                        gif_path,
+                        save_all=True,
+                        append_images=frames[1:],
+                        duration=500, # 500ms per frame
+                        loop=0
+                    )
+                    if verbose:
+                        print(f"  Saved design evolution animation to {gif_path}")
+            except Exception as gif_err:
+                if verbose:
+                    print(f"  [gif generation] skipped: {gif_err}")
         except Exception as e:
             if verbose:
                 print(f"  [diversity plot] skipped: {e}")

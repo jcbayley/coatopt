@@ -191,8 +191,11 @@ def get_physical_thicknesses(
             plots=False,
             verbose=False,
         )
-        # Convert meters to nanometers
-        return d_physical_m * 1e9
+        # Convert meters to nanometers if returned in meters
+        if np.any(d_physical_m > 1e-3):
+            return d_physical_m
+        else:
+            return d_physical_m * 1e9
         
     except Exception as e:
         # Fallback to direct Python calculation

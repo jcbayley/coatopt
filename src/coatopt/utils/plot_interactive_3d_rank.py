@@ -336,13 +336,13 @@ def create_3d_rank_plot(
     max_abs: Optional[float] = None,
     max_tn: Optional[float] = None,
     materials: Optional[dict] = None,
-    rank_by_utility: bool = False,
+    rank_by_utility: bool = True,
     weight_refl: float = 0.10,
     weight_abs: float = 0.35,
     weight_tn: float = 0.45,
     weight_thick: float = 0.10,
     compare_thick: Optional[float] = None,
-    target_refl: float = 0.99999,
+    target_refl: float = 0.9999,
     target_abs: float = 0.30,
     target_tn: float = 4.0e-21,
     target_thick: float = 6000.0,
@@ -886,10 +886,12 @@ def main():
         help="Maximum thermal noise (CTN) threshold to filter Pareto designs before ranking",
     )
     parser.add_argument(
-        "--rank-by-utility",
-        action="store_true",
-        help="Rank designs on the Z-axis by multi-objective utility score instead of reflectivity",
+        "--rank-by-reflectivity",
+        dest="rank_by_utility",
+        action="store_false",
+        help="Rank designs on the Z-axis by reflectivity instead of utility score",
     )
+    parser.set_defaults(rank_by_utility=True)
     parser.add_argument(
         "--top",
         type=int,
@@ -930,7 +932,7 @@ def main():
         "--target-refl",
         type=float,
         default=None,
-        help="Target reflectivity for utility scoring (defaults to --compare-refl if set, else 0.99999)",
+        help="Target reflectivity for utility scoring (defaults to --compare-refl if set, else 0.9999)",
     )
     parser.add_argument(
         "--target-abs",
@@ -971,9 +973,83 @@ def main():
     else:
         color_mode = args.color_mode
 
+    try:
+        generate_3d_rank_dashboard_from_args(args)
+    except Exception as e:
+        print(f"Error: {e}")
+        return 1
+    return 0
+
+
+def generate_3d_rank_dashboard(
+    directory,
+    output=None,
+    light=False,
+    color_by_loss=False,
+    no_open=True,
+    compare_refl=None,
+    compare_abs=None,
+    compare_tn=None,
+    compare_label="Reference Design",
+    compare_thick=None,
+    min_refl=None,
+    max_abs=None,
+    max_tn=None,
+    rank_by_utility=True,
+    top=None,
+    weight_refl=0.10,
+    weight_abs=0.35,
+    weight_tn=0.45,
+    weight_thick=0.10,
+    target_refl=None,
+    target_abs=None,
+    target_tn=None,
+    target_thick=None,
+    precompute_tmm_count=-1,
+    color_mode="reflectivity_log",
+):
+    import argparse
+    args = argparse.Namespace(
+        directory=directory,
+        output=output,
+        light=light,
+        color_by_loss=color_by_loss,
+        no_open=no_open,
+        compare_refl=compare_refl,
+        compare_abs=compare_abs,
+        compare_tn=compare_tn,
+        compare_label=compare_label,
+        compare_thick=compare_thick,
+        min_refl=min_refl,
+        max_abs=max_abs,
+        max_tn=max_tn,
+        rank_by_utility=rank_by_utility,
+        top=top,
+        weight_refl=weight_refl,
+        weight_abs=weight_abs,
+        weight_tn=weight_tn,
+        weight_thick=weight_thick,
+        target_refl=target_refl,
+        target_abs=target_abs,
+        target_tn=target_tn,
+        target_thick=target_thick,
+        precompute_tmm_count=precompute_tmm_count,
+        color_mode=color_mode,
+    )
+    return generate_3d_rank_dashboard_from_args(args)
+
+
+def generate_3d_rank_dashboard_from_args(args):
+
+    # Determine default color mode, supporting backward compatibility with --color-by-loss
+    if args.color_by_loss:
+        color_mode = "loss_linear"
+    else:
+        color_mode = args.color_mode
+
     # Resolve target values, defaulting to comparison design values if they are provided,
     # and falling back to default values otherwise.
-    target_refl = args.target_refl if args.target_refl is not None else (args.compare_refl if args.compare_refl is not None else 0.99999)
+    target_refl = args.target_refl if args.target_refl is not None else (args.compare_refl if args.compare_refl is not None else 0.9999)
     target_abs = args.target_abs if args.target_abs is not None else (args.compare_abs if args.compare_abs is not None else 0.30)
     target_tn = args.target_tn if args.target_tn is not None else (args.compare_tn if args.compare_tn is not None else 4.0e-21)
     target_thick = args.target_thick if args.target_thick is not None else (args.compare_thick if args.compare_thick is not None else 6000.0)
@@ -1112,7 +1188,7 @@ def main():
     import plotly.utils
     plotly_data_json = json.dumps(fig.data, cls=plotly.utils.PlotlyJSONEncoder)
     plotly_layout_json = json.dumps(fig.layout, cls=plotly.utils.PlotlyJSONEncoder)
-    compare_refl_val = args.compare_refl if args.compare_refl is not None else 0.99999
+    compare_refl_val = args.compare_refl if args.compare_refl is not None else 0.9999
     compare_abs_val = args.compare_abs if args.compare_abs is not None else 0.3
     compare_tn_val = args.compare_tn if args.compare_tn is not None else 4e-21
     compare_thick_val = args.compare_thick if args.compare_thick is not None else 0.0
@@ -1213,6 +1289,42 @@ def main():
             color: #555;
             cursor: not-allowed;
         }
+        .btn-icon {
+            padding: 6px 10px;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            height: 29px;
+            box-sizing: border-box;
+        }
+        .btn-icon.active {
+            background-color: #00bcd4;
+            border-color: #00bcd4;
+            color: #121212;
+        }
+        .btn-icon.active:hover {
+            background-color: #00e5ff;
+            border-color: #00e5ff;
+        }
+        .btn-mode {
+            background-color: transparent;
+            color: #888;
+            border: none;
+            border-radius: 4px;
+            padding: 6px 14px;
+            font-size: 12px;
+            font-weight: bold;
+            cursor: pointer;
+            transition: all 0.2s ease;
+        }
+        .btn-mode.active {
+            background-color: #00bcd4;
+            color: #121212;
+        }
+        .btn-mode:hover:not(.active) {
+            color: #ffffff;
+            background-color: #2b2b2b;
+        }
         .right-col {
             width: 42%;
             display: flex;
@@ -1304,6 +1416,14 @@ def main():
     </div>
     <div class="container">
         <div class="left-col">
+            <!-- Mode Toggle Bar -->
+            <div class="mode-toggle-bar" style="display: flex; background: #1a1a1a; padding: 10px; border-bottom: 1px solid #2d2d2d; align-items: center; gap: 15px;">
+                <span style="font-size: 11px; color: #888; font-weight: bold; text-transform: uppercase; letter-spacing: 0.5px;">Plot Mode:</span>
+                <div style="display: flex; gap: 5px; background: #121212; border: 1px solid #333; padding: 2px; border-radius: 6px;">
+                    <button class="btn-mode active" id="btn-mode-rank">Ranked Mode</button>
+                    <button class="btn-mode" id="btn-mode-explore">Exploration Mode</button>
+                </div>
+            </div>
             <div id="plot-3d" class="plot-container-3d"></div>
             
             <div class="card">
@@ -1322,9 +1442,32 @@ def main():
 
             <div class="controls-toolbar">
                 <span style="font-size: 11px; color: #888; font-weight: bold; margin-right: 5px; text-transform: uppercase; letter-spacing: 0.5px;">3D VIEW OPTIONS:</span>
-                <button class="btn" id="btn-reverse-z">Invert Z-Axis View</button>
-                <button class="btn" id="btn-toggle-x-scale">Toggle X-Scale (Log/Linear)</button>
-                <button class="btn" id="btn-toggle-y-scale">Toggle Y-Scale (Log/Linear)</button>
+                <button class="btn btn-icon active" id="btn-reverse-z" title="Invert Z-Axis View">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align: middle;">
+                        <path d="M7 21V3M7 3l-3 3M7 3l3 3M17 3v18M17 21l-3-3M17 21l3-3"/>
+                    </svg>
+                </button>
+                <button class="btn btn-icon active" id="btn-toggle-x-scale" title="Toggle X-Scale (Log/Linear)">
+                    <span style="font-size: 11px; font-weight: bold; margin-right: 2px; vertical-align: middle;">X</span>
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align: middle;">
+                        <path d="M3 3v18h18"/>
+                        <path d="M18.7 8l-5.1 5.2-2.8-2.7L7 14.3"/>
+                    </svg>
+                </button>
+                <button class="btn btn-icon active" id="btn-toggle-y-scale" title="Toggle Y-Scale (Log/Linear)">
+                    <span style="font-size: 11px; font-weight: bold; margin-right: 2px; vertical-align: middle;">Y</span>
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align: middle;">
+                        <path d="M3 3v18h18"/>
+                        <path d="M18.7 8l-5.1 5.2-2.8-2.7L7 14.3"/>
+                    </svg>
+                </button>
+                <button class="btn btn-icon" id="btn-toggle-z-scale" title="Toggle Z-Scale (Log/Linear)">
+                    <span style="font-size: 11px; font-weight: bold; margin-right: 2px; vertical-align: middle;">Z</span>
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align: middle;">
+                        <path d="M3 3v18h18"/>
+                        <path d="M18.7 8l-5.1 5.2-2.8-2.7L7 14.3"/>
+                    </svg>
+                </button>
                 
                 <span style="font-size: 11px; color: #888; font-weight: bold; margin-left: 15px; margin-right: 5px; text-transform: uppercase; letter-spacing: 0.5px;">COLOR BY:</span>
                 <select id="select-color-mode" style="background: #2b2b2b; border: 1px solid #444; color: #e0e0e0; padding: 5px 8px; border-radius: 4px; font-size: 12px; height: 29px; box-sizing: border-box; vertical-align: middle;">
@@ -1376,7 +1519,7 @@ def main():
                 <div class="targets-grid">
                     <div>
                         <label for="input-comp-refl">Reflectivity (R)</label>
-                        <input type="number" id="input-comp-refl" step="any" placeholder="e.g. 0.99999">
+                        <input type="number" id="input-comp-refl" step="any" placeholder="e.g. 0.9999">
                     </div>
                     <div>
                         <label for="input-comp-abs">Absorption (ppm)</label>
@@ -1429,6 +1572,7 @@ def main():
         var compareTN = __COMPARE_TN__;
         var compareThick = __COMPARE_THICK__;
 
+        var rank_by_utility = __RANK_BY_UTILITY__;
         var weightRefl = __WEIGHT_REFL__;
         var weightAbs = __WEIGHT_ABS__;
         var weightTN = __WEIGHT_TN__;
@@ -2231,8 +2375,12 @@ def main():
                 d.utility_score = w_refl * r_score + w_abs * abs_score + w_tn * tn_score + w_thick * thick_score;
             });
 
-            // Sort descending by utility
-            designsList.sort((a, b) => b.utility_score - a.utility_score);
+            // Sort designs depending on rank_by_utility
+            if (rank_by_utility) {
+                designsList.sort((a, b) => b.utility_score - a.utility_score);
+            } else {
+                designsList.sort((a, b) => b.reflectivity - a.reflectivity);
+            }
 
             // Re-assign ranks 1 to M and update info_text
             designsList.forEach(function(d, index) {
@@ -2276,7 +2424,19 @@ def main():
 
             var x_data = displayList.map(d => d.absorption);
             var y_data = displayList.map(d => d.thermal_noise);
-            var z_data = displayList.map(d => d.rank);
+            var z_data;
+            if (plotMode === "rank") {
+                z_data = displayList.map(d => d.rank);
+            } else {
+                if (zLog) {
+                    z_data = displayList.map(d => {
+                        var loss = Math.max(1e-10, 1.0 - d.reflectivity);
+                        return -Math.log10(loss);
+                    });
+                } else {
+                    z_data = displayList.map(d => d.reflectivity);
+                }
+            }
 
             var customdata = displayList.map(d => [
                 d.rank,
@@ -2288,7 +2448,6 @@ def main():
                 d.originalIdx
             ]);
 
-            var colorMode = document.getElementById('select-color-mode').value;
             var color_values = [];
             var colorbar_title = "";
             var tickvals = null;
@@ -2296,96 +2455,117 @@ def main():
             var isReversed = false;
             var colorscale = (layout3d.template === "plotly_dark" || layout3d.paper_bgcolor !== '#ffffff') ? "Plasma" : "Viridis";
 
-            if (colorMode === "reflectivity_linear") {
-                color_values = displayList.map(d => d.reflectivity);
-                colorbar_title = "Reflectivity";
-                isReversed = false;
-            } else if (colorMode === "reflectivity_log") {
-                // -log10(1-R)
-                color_values = displayList.map(d => {
-                    var loss = Math.max(1e-10, 1.0 - d.reflectivity);
-                    return -Math.log10(loss);
-                });
-                colorbar_title = "Reflectivity (Log/Nines)";
-                isReversed = false;
-                
-                var min_val = Math.min(...color_values);
-                var max_val = Math.max(...color_values);
-                var min_int = Math.floor(min_val);
-                var max_int = Math.ceil(max_val);
-                tickvals = [];
-                ticktext = [];
-                for (var v = min_int; v <= max_int; v++) {
-                    tickvals.push(v);
-                    if (v === 2) ticktext.push("0.99");
-                    else if (v === 3) ticktext.push("0.999");
-                    else if (v === 4) ticktext.push("0.9999");
-                    else if (v === 5) ticktext.push("0.99999");
-                    else if (v === 6) ticktext.push("0.999999");
-                    else if (v === 7) ticktext.push("0.9999999");
-                    else ticktext.push("1-10^-" + v);
+            if (plotMode === "rank") {
+                var colorMode = document.getElementById('select-color-mode').value;
+                if (colorMode === "reflectivity_linear") {
+                    color_values = displayList.map(d => d.reflectivity);
+                    colorbar_title = "Reflectivity";
+                    isReversed = false;
+                } else if (colorMode === "reflectivity_log") {
+                    // -log10(1-R)
+                    color_values = displayList.map(d => {
+                        var loss = Math.max(1e-10, 1.0 - d.reflectivity);
+                        return -Math.log10(loss);
+                    });
+                    colorbar_title = "Reflectivity (Log/Nines)";
+                    isReversed = false;
+                    
+                    var min_val = Math.min(...color_values);
+                    var max_val = Math.max(...color_values);
+                    var min_int = Math.floor(min_val);
+                    var max_int = Math.ceil(max_val);
+                    tickvals = [];
+                    ticktext = [];
+                    for (var v = min_int; v <= max_int; v++) {
+                        tickvals.push(v);
+                        if (v === 2) ticktext.push("0.99");
+                        else if (v === 3) ticktext.push("0.999");
+                        else if (v === 4) ticktext.push("0.9999");
+                        else if (v === 5) ticktext.push("0.99999");
+                        else if (v === 6) ticktext.push("0.999999");
+                        else if (v === 7) ticktext.push("0.9999999");
+                        else ticktext.push("1-10^-" + v);
+                    }
+                } else if (colorMode === "absorption_linear") {
+                    color_values = displayList.map(d => d.absorption);
+                    colorbar_title = "Absorption (ppm)";
+                    colorscale = (layout3d.template === "plotly_dark" || layout3d.paper_bgcolor !== '#ffffff') ? "Viridis_r" : "Viridis";
+                    isReversed = true;
+                } else if (colorMode === "absorption_log") {
+                    color_values = displayList.map(d => Math.log10(Math.max(1e-3, d.absorption)));
+                    colorbar_title = "Absorption (Log10 ppm)";
+                    colorscale = (layout3d.template === "plotly_dark" || layout3d.paper_bgcolor !== '#ffffff') ? "Viridis_r" : "Viridis";
+                    isReversed = true;
+                    
+                    var min_val = Math.min(...color_values);
+                    var max_val = Math.max(...color_values);
+                    var ticks_obj = getLogTicks(min_val, max_val, false);
+                    tickvals = ticks_obj.tickvals;
+                    ticktext = ticks_obj.ticktext;
+                } else if (colorMode === "ctn_linear") {
+                    color_values = displayList.map(d => d.thermal_noise);
+                    colorbar_title = "Thermal Noise (m/√Hz)";
+                    colorscale = (layout3d.template === "plotly_dark" || layout3d.paper_bgcolor !== '#ffffff') ? "Viridis_r" : "Viridis";
+                    isReversed = true;
+                } else if (colorMode === "ctn_log") {
+                    color_values = displayList.map(d => Math.log10(Math.max(1e-24, d.thermal_noise)));
+                    colorbar_title = "Thermal Noise (Log10)";
+                    colorscale = (layout3d.template === "plotly_dark" || layout3d.paper_bgcolor !== '#ffffff') ? "Viridis_r" : "Viridis";
+                    isReversed = true;
+                    
+                    var min_val = Math.min(...color_values);
+                    var max_val = Math.max(...color_values);
+                    var ticks_obj = getLogTicks(min_val, max_val, true);
+                    tickvals = ticks_obj.tickvals;
+                    ticktext = ticks_obj.ticktext;
+                } else if (colorMode === "loss_linear") {
+                    color_values = displayList.map(d => 1.0 - d.reflectivity);
+                    colorbar_title = "Reflectivity Loss (1-R)";
+                    colorscale = (layout3d.template === "plotly_dark" || layout3d.paper_bgcolor !== '#ffffff') ? "Magma" : "Reds";
+                    isReversed = !(layout3d.template === "plotly_dark" || layout3d.paper_bgcolor !== '#ffffff');
+                } else if (colorMode === "loss_log") {
+                    // log10(1-R)
+                    color_values = displayList.map(d => {
+                        var loss = Math.max(1e-10, 1.0 - d.reflectivity);
+                        return Math.log10(loss);
+                    });
+                    colorbar_title = "Loss (Log10)";
+                    colorscale = (layout3d.template === "plotly_dark" || layout3d.paper_bgcolor !== '#ffffff') ? "Magma" : "Reds";
+                    isReversed = !(layout3d.template === "plotly_dark" || layout3d.paper_bgcolor !== '#ffffff');
+                    
+                    var min_val = Math.min(...color_values);
+                    var max_val = Math.max(...color_values);
+                    var min_int = Math.floor(min_val);
+                    var max_int = Math.ceil(max_val);
+                    tickvals = [];
+                    ticktext = [];
+                    for (var v = min_int; v <= max_int; v++) {
+                        tickvals.push(v);
+                        ticktext.push("10^" + v);
+                    }
                 }
-            } else if (colorMode === "absorption_linear") {
-                color_values = displayList.map(d => d.absorption);
-                colorbar_title = "Absorption (ppm)";
-                colorscale = (layout3d.template === "plotly_dark" || layout3d.paper_bgcolor !== '#ffffff') ? "Viridis_r" : "Viridis";
-                isReversed = true;
-            } else if (colorMode === "absorption_log") {
-                color_values = displayList.map(d => Math.log10(Math.max(1e-3, d.absorption)));
-                colorbar_title = "Absorption (Log10 ppm)";
-                colorscale = (layout3d.template === "plotly_dark" || layout3d.paper_bgcolor !== '#ffffff') ? "Viridis_r" : "Viridis";
-                isReversed = true;
-                
-                var min_val = Math.min(...color_values);
-                var max_val = Math.max(...color_values);
-                var ticks_obj = getLogTicks(min_val, max_val, false);
-                tickvals = ticks_obj.tickvals;
-                ticktext = ticks_obj.ticktext;
-            } else if (colorMode === "ctn_linear") {
-                color_values = displayList.map(d => d.thermal_noise);
-                colorbar_title = "Thermal Noise (m/√Hz)";
-                colorscale = (layout3d.template === "plotly_dark" || layout3d.paper_bgcolor !== '#ffffff') ? "Viridis_r" : "Viridis";
-                isReversed = true;
-            } else if (colorMode === "ctn_log") {
-                color_values = displayList.map(d => Math.log10(Math.max(1e-24, d.thermal_noise)));
-                colorbar_title = "Thermal Noise (Log10)";
-                colorscale = (layout3d.template === "plotly_dark" || layout3d.paper_bgcolor !== '#ffffff') ? "Viridis_r" : "Viridis";
-                isReversed = true;
-                
-                var min_val = Math.min(...color_values);
-                var max_val = Math.max(...color_values);
-                var ticks_obj = getLogTicks(min_val, max_val, true);
-                tickvals = ticks_obj.tickvals;
-                ticktext = ticks_obj.ticktext;
-            } else if (colorMode === "loss_linear") {
-                color_values = displayList.map(d => 1.0 - d.reflectivity);
-                colorbar_title = "Reflectivity Loss (1-R)";
-                colorscale = (layout3d.template === "plotly_dark" || layout3d.paper_bgcolor !== '#ffffff') ? "Magma" : "Reds";
-                isReversed = !(layout3d.template === "plotly_dark" || layout3d.paper_bgcolor !== '#ffffff');
-            } else if (colorMode === "loss_log") {
-                // log10(1-R)
-                color_values = displayList.map(d => {
-                    var loss = Math.max(1e-10, 1.0 - d.reflectivity);
-                    return Math.log10(loss);
-                });
-                colorbar_title = "Loss (Log10)";
-                colorscale = (layout3d.template === "plotly_dark" || layout3d.paper_bgcolor !== '#ffffff') ? "Magma" : "Reds";
-                isReversed = !(layout3d.template === "plotly_dark" || layout3d.paper_bgcolor !== '#ffffff');
-                
-                var min_val = Math.min(...color_values);
-                var max_val = Math.max(...color_values);
-                var min_int = Math.floor(min_val);
-                var max_int = Math.ceil(max_val);
+            } else {
+                // Exploration Mode: Color points by Rank
+                color_values = displayList.map(d => d.rank);
+                colorbar_title = "Design Rank";
+                colorscale = (layout3d.template === "plotly_dark" || layout3d.paper_bgcolor !== '#ffffff') ? "Plasma_r" : "Viridis_r";
+                isReversed = true; // Reversed so lower rank number (better) is brighter/yellow
+
                 tickvals = [];
                 ticktext = [];
-                for (var v = min_int; v <= max_int; v++) {
-                    tickvals.push(v);
-                    ticktext.push("10^" + v);
+                var step = Math.max(1, Math.ceil(displayList.length / 10));
+                for (var r = 1; r <= displayList.length; r += step) {
+                    tickvals.push(r);
+                    ticktext.push("#" + r);
+                }
+                if (tickvals[tickvals.length - 1] !== displayList.length && displayList.length > 0) {
+                    tickvals.push(displayList.length);
+                    ticktext.push("#" + displayList.length);
                 }
             }
 
-            var cmin = Math.min(...color_values);
-            var cmax = Math.max(...color_values);
+            var cmin = Math.min(...color_values) || 0;
+            var cmax = Math.max(...color_values) || 1;
             var span = cmax > cmin ? (cmax - cmin) : 1.0;
             
             var outline_colors = color_values.map(val => {
@@ -2449,8 +2629,14 @@ def main():
 
                 var virtual_rank = 1;
                 for (var i = 0; i < designsList.length; i++) {
-                    if (compare_utility >= designsList[i].utility_score) {
-                        break;
+                    if (rank_by_utility) {
+                        if (compare_utility >= designsList[i].utility_score) {
+                            break;
+                        }
+                    } else {
+                        if (r_val >= designsList[i].reflectivity) {
+                            break;
+                        }
                     }
                     virtual_rank++;
                 }
@@ -2468,13 +2654,13 @@ def main():
                                      "Absorption: " + comp_abs.toFixed(4) + " ppm<br>" +
                                      "Thermal Noise: " + comp_tn.toExponential(4) + " m/sqrt(Hz)<br>" +
                                      (!isNaN(comp_thick) && comp_thick > 0 ? "Total Thickness: " + comp_thick.toFixed(2) + " nm<br>" : "") +
-                                     "Virtual Utility Rank: " + rank_str + "<br>" +
+                                     "Virtual Rank: " + rank_str + "<br>" +
                                      "Reference Utility: " + compare_utility.toFixed(4) + "<br>" +
                                      "<extra></extra>";
 
                 data3d[1].x = [comp_abs];
                 data3d[1].y = [comp_tn];
-                data3d[1].z = [virtual_rank];
+                data3d[1].z = plotMode === "rank" ? [virtual_rank] : (zLog ? [-Math.log10(Math.max(1e-10, 1.0 - r_val))] : [r_val]);
                 data3d[1].name = legend_name;
                 data3d[1].hovertemplate = hover_comp_str;
                 data3d[1].visible = true;
@@ -2494,12 +2680,67 @@ def main():
                 data3d[1].showlegend = false;
             }
 
-
-            var maxRank = Math.max(...data3d[0].z) || 100;
-            if (reversedZ) {
-                layout3d.scene.zaxis.range = [maxRank + 2.0, 0.5];
+            // Apply Z scale type
+            if (plotMode === "rank") {
+                layout3d.scene.zaxis.type = zLog ? 'log' : 'linear';
             } else {
-                layout3d.scene.zaxis.range = [0.5, maxRank + 2.0];
+                layout3d.scene.zaxis.type = 'linear'; // plot nines using custom linear values
+            }
+
+            if (plotMode === "rank") {
+                var maxRank = Math.max(...data3d[0].z) || 100;
+                if (zLog) {
+                    if (reversedZ) {
+                        layout3d.scene.zaxis.range = [Math.log10(maxRank + 2.0), Math.log10(0.5)];
+                    } else {
+                        layout3d.scene.zaxis.range = [Math.log10(0.5), Math.log10(maxRank + 2.0)];
+                    }
+                } else {
+                    if (reversedZ) {
+                        layout3d.scene.zaxis.range = [maxRank + 2.0, 0.5];
+                    } else {
+                        layout3d.scene.zaxis.range = [0.5, maxRank + 2.0];
+                    }
+                }
+                layout3d.scene.zaxis.title.text = rank_by_utility ? "Design Rank (Utility)" : "Design Rank (Reflectivity)";
+                layout3d.scene.zaxis.tickvals = null;
+                layout3d.scene.zaxis.ticktext = null;
+            } else {
+                var z_vals = data3d[0].z;
+                var zmin = Math.min(...z_vals) || 0.9;
+                var zmax = Math.max(...z_vals) || 1.0;
+                var span = zmax - zmin;
+                
+                if (reversedZ) {
+                    layout3d.scene.zaxis.range = [zmax + 0.05 * span, zmin - 0.05 * span];
+                } else {
+                    layout3d.scene.zaxis.range = null; // auto-range
+                }
+                
+                if (zLog) {
+                    layout3d.scene.zaxis.title.text = "Reflectivity (Log/Nines)";
+                    // Setup custom ticks for nines
+                    var min_int = Math.floor(zmin);
+                    var max_int = Math.ceil(zmax);
+                    var tickvals = [];
+                    var ticktext = [];
+                    for (var v = min_int; v <= max_int; v++) {
+                        tickvals.push(v);
+                        if (v === 2) ticktext.push("0.99");
+                        else if (v === 3) ticktext.push("0.999");
+                        else if (v === 4) ticktext.push("0.9999");
+                        else if (v === 5) ticktext.push("0.99999");
+                        else if (v === 6) ticktext.push("0.999999");
+                        else if (v === 7) ticktext.push("0.9999999");
+                        else ticktext.push("1-10^-" + v);
+                    }
+                    layout3d.scene.zaxis.tickvals = tickvals;
+                    layout3d.scene.zaxis.ticktext = ticktext;
+                } else {
+                    layout3d.scene.zaxis.title.text = "Reflectivity";
+                    layout3d.scene.zaxis.tickvals = null;
+                    layout3d.scene.zaxis.ticktext = null;
+                }
             }
 
             Plotly.react('plot-3d', data3d, layout3d);
@@ -2513,29 +2754,88 @@ def main():
             }
         });
 
+        // Mode toggling event listeners
+        var plotMode = "rank";
+        document.getElementById('btn-mode-rank').addEventListener('click', function() {
+            if (plotMode === "rank") return;
+            plotMode = "rank";
+            this.classList.add('active');
+            this.style.background = '#00bcd4';
+            this.style.color = '#121212';
+            
+            var btnExplore = document.getElementById('btn-mode-explore');
+            btnExplore.classList.remove('active');
+            btnExplore.style.background = 'transparent';
+            btnExplore.style.color = '#888';
+            
+            // Enable color mode dropdown
+            document.getElementById('select-color-mode').disabled = false;
+            
+            recalculateUtilityAndRerank();
+        });
+
+        document.getElementById('btn-mode-explore').addEventListener('click', function() {
+            if (plotMode === "explore") return;
+            plotMode = "explore";
+            this.classList.add('active');
+            this.style.background = '#00bcd4';
+            this.style.color = '#121212';
+            
+            var btnRank = document.getElementById('btn-mode-rank');
+            btnRank.classList.remove('active');
+            btnRank.style.background = 'transparent';
+            btnRank.style.color = '#888';
+            
+            // Disable color mode dropdown
+            document.getElementById('select-color-mode').disabled = true;
+            
+            recalculateUtilityAndRerank();
+        });
+
         // Z-axis view controls
         var reversedZ = true;
         document.getElementById('btn-reverse-z').addEventListener('click', function() {
             reversedZ = !reversedZ;
-            var maxRank = Math.max(...data3d[0].z) || 100;
             if (reversedZ) {
-                Plotly.relayout('plot-3d', {'scene.zaxis.range': [maxRank + 2.0, 0.5]});
+                this.classList.add('active');
             } else {
-                Plotly.relayout('plot-3d', {'scene.zaxis.range': [0.5, maxRank + 2.0]});
+                this.classList.remove('active');
             }
+            recalculateUtilityAndRerank();
         });
 
-        // X & Y scale controls
+        // X, Y & Z scale controls
         var xLog = true;
         document.getElementById('btn-toggle-x-scale').addEventListener('click', function() {
             xLog = !xLog;
+            if (xLog) {
+                this.classList.add('active');
+            } else {
+                this.classList.remove('active');
+            }
             Plotly.relayout('plot-3d', {'scene.xaxis.type': xLog ? 'log' : 'linear'});
         });
 
         var yLog = true;
         document.getElementById('btn-toggle-y-scale').addEventListener('click', function() {
             yLog = !yLog;
+            if (yLog) {
+                this.classList.add('active');
+            } else {
+                this.classList.remove('active');
+            }
             Plotly.relayout('plot-3d', {'scene.yaxis.type': yLog ? 'log' : 'linear'});
+        });
+
+        var zLog = false;
+        document.getElementById('btn-toggle-z-scale').addEventListener('click', function() {
+            zLog = !zLog;
+            if (zLog) {
+                this.classList.add('active');
+            } else {
+                this.classList.remove('active');
+            }
+            recalculateUtilityAndRerank();
         });
     </script>
 </body>
@@ -2565,6 +2865,7 @@ def main():
     compiled_html = compiled_html.replace("__WEIGHT_ABS__", f"{args.weight_abs:.4f}")
     compiled_html = compiled_html.replace("__WEIGHT_TN__", f"{args.weight_tn:.4e}")
     compiled_html = compiled_html.replace("__WEIGHT_THICK__", f"{args.weight_thick:.4f}")
+    compiled_html = compiled_html.replace("__RANK_BY_UTILITY__", "true" if args.rank_by_utility else "false")
 
     print(f"Saving interactive dashboard to {output_path}...")
     with open(output_path, "w") as f:
@@ -2576,7 +2877,7 @@ def main():
         print(f"Opening dashboard in browser: file://{output_path}")
         webbrowser.open(f"file://{output_path}")
 
-    return 0
+    return output_path
 
 
 if __name__ == "__main__":
