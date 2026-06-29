@@ -1047,6 +1047,8 @@ def train(config_path: str, save_dir: str):
     warmup_end_episode = 0  # Track when warmup ended for phase-based annealing reset
     was_warmup = True  # Track warmup state to detect transition
 
+    last_logged_episode = 0
+
     # Resume from checkpoint if one exists
     ckpt = load_checkpoint(save_dir)
     if ckpt:
@@ -1057,6 +1059,7 @@ def train(config_path: str, save_dir: str):
         env.env.pareto_front_episodes = ckpt["pareto"]["episodes"]
         env.env.warmup_best_rewards = ckpt["pareto"]["warmup_best"]
         env.episode_count = ckpt["episode"]
+        last_logged_episode = ckpt["episode"]
         env.is_warmup = ckpt["meta"]["is_warmup"]
         env.env.is_warmup = ckpt["meta"]["is_warmup"]
         warmup_end_episode = ckpt["meta"]["warmup_end_episode"]
@@ -1285,7 +1288,8 @@ def train(config_path: str, save_dir: str):
         if live is not None:
             live.update(generate_dashboard(env.episode_count, total_episodes, phase, target_obj, current_lr_display, current_ent_coef, best_r, best_abs, best_tn, n_pareto, ppo_logs_mean, mean_len, three_mat_ratio), refresh=True)
             
-        if (env.episode_count - 1) % mlflow_log_freq == 0:
+        if env.episode_count - last_logged_episode >= mlflow_log_freq or env.episode_count == 1:
+            last_logged_episode = env.episode_count
             if verbose:
                 air_bias = float(policy.material_head.bias[0].item())
 

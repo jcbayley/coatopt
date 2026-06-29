@@ -106,19 +106,28 @@ def load_dependencies() -> bool:
             if lib_path not in sys.path:
                 sys.path.insert(0, lib_path)
                 
-            from coating_analysis.YAM_CoatingBrownian import getCoatingThermalNoise as temp_gctn
-            from coating_analysis.EFI_tmm import (
-                optical_to_physical as temp_otp,
-                CalculateEFI_tmm as temp_cefi,
-                CalculateTransmission_tmm as temp_ctrans
-            )
-            from coating_analysis.Coatings_development import thin_film_stack as temp_tfs
-            
+            try:
+                from coating_analysis.YAM_CoatingBrownian import getCoatingThermalNoise as temp_gctn
+                from coating_analysis.EFI_tmm import (
+                    optical_to_physical as temp_otp,
+                    CalculateEFI_tmm as temp_cefi,
+                    CalculateTransmission_tmm as temp_ctrans
+                )
+                from coating_analysis.Coatings_development import thin_film_stack as temp_tfs
+                thin_film_stack = temp_tfs
+            except ImportError:
+                from coatopt.environments.utils.YAM_CoatingBrownian import getCoatingThermalNoise as temp_gctn
+                from coatopt.environments.utils.EFI_tmm import (
+                    optical_to_physical as temp_otp,
+                    CalculateEFI_tmm as temp_cefi,
+                    CalculateTransmission_tmm as temp_ctrans
+                )
+                thin_film_stack = None
+                
             getCoatingThermalNoise = temp_gctn
             optical_to_physical = temp_otp
             CalculateEFI_tmm = temp_cefi
             CalculateTransmission_tmm = temp_ctrans
-            thin_film_stack = temp_tfs
             progress.update(t3, completed=100)
             
             # Task 4: Local helpers
@@ -173,18 +182,28 @@ def load_dependencies() -> bool:
         if lib_path not in sys.path:
             sys.path.insert(0, lib_path)
             
-        from coating_analysis.YAM_CoatingBrownian import getCoatingThermalNoise as temp_gctn
-        from coating_analysis.EFI_tmm import (
-            optical_to_physical as temp_otp,
-            CalculateEFI_tmm as temp_cefi,
-            CalculateTransmission_tmm as temp_ctrans
-        )
-        from coating_analysis.Coatings_development import thin_film_stack as temp_tfs
+        try:
+            from coating_analysis.YAM_CoatingBrownian import getCoatingThermalNoise as temp_gctn
+            from coating_analysis.EFI_tmm import (
+                optical_to_physical as temp_otp,
+                CalculateEFI_tmm as temp_cefi,
+                CalculateTransmission_tmm as temp_ctrans
+            )
+            from coating_analysis.Coatings_development import thin_film_stack as temp_tfs
+            thin_film_stack = temp_tfs
+        except ImportError:
+            from coatopt.environments.utils.YAM_CoatingBrownian import getCoatingThermalNoise as temp_gctn
+            from coatopt.environments.utils.EFI_tmm import (
+                optical_to_physical as temp_otp,
+                CalculateEFI_tmm as temp_cefi,
+                CalculateTransmission_tmm as temp_ctrans
+            )
+            thin_film_stack = None
+            
         getCoatingThermalNoise = temp_gctn
         optical_to_physical = temp_otp
         CalculateEFI_tmm = temp_cefi
         CalculateTransmission_tmm = temp_ctrans
-        thin_film_stack = temp_tfs
         
         print("Loading experiment result helpers...")
         from coatopt.utils.plot_interactive_pareto import load_materials as temp_lm, parse_design as temp_pd_func
@@ -908,7 +927,7 @@ def main():
                 dOpt=active_dOpt,
                 materialLayer=mapped_layer,
                 materialParams=materialParams,
-                lambda_=lambda_nm,  # Pass in nanometers
+                lambda_=lambda_nm * 1e-9,  # Convert nm to meters for CalculateEFI_tmm
                 plots=False,
             )
             ax_field.plot(ds, E, color='blue', linewidth=1.8, label='Electric Field Intensity')

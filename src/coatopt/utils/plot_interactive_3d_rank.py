@@ -46,7 +46,7 @@ CalculateTransmission_tmm = None
 thin_film_stack = None
 
 def load_physics_dependencies() -> bool:
-    """Dynamically load physics and TMM libraries from CoatingAnalysis."""
+    """Dynamically load physics and TMM libraries from CoatingAnalysis, or local fallback."""
     global getCoatingThermalNoise, optical_to_physical, CalculateEFI_tmm, CalculateTransmission_tmm, thin_film_stack
     if getCoatingThermalNoise is not None:
         return True
@@ -70,8 +70,26 @@ def load_physics_dependencies() -> bool:
         thin_film_stack = temp_tfs
         return True
     except Exception as e:
-        print(f"Warning: Could not load physical coating solvers: {e}")
-        return False
+        # Fallback to local coatopt modules
+        try:
+            from coatopt.environments.utils.YAM_CoatingBrownian import getCoatingThermalNoise as temp_gctn
+            from coatopt.environments.utils.EFI_tmm import (
+                optical_to_physical as temp_otp,
+                CalculateEFI_tmm as temp_cefi,
+                CalculateTransmission_tmm as temp_ctrans
+            )
+            
+            getCoatingThermalNoise = temp_gctn
+            optical_to_physical = temp_otp
+            CalculateEFI_tmm = temp_cefi
+            CalculateTransmission_tmm = temp_ctrans
+            
+            # Since local thin_film_stack has a different signature, keep it None
+            thin_film_stack = None
+            return True
+        except Exception as local_err:
+            print(f"Warning: Could not load physical coating solvers: {e} (local fallback error: {local_err})")
+            return False
 
 
 def parse_design(row: pd.Series) -> Tuple[np.ndarray, np.ndarray]:
@@ -107,146 +125,166 @@ def precompute_tmm_details(combined_df: pd.DataFrame, materials_dict: dict, max_
     """Precompute EFI profile and spectral transmission response for the top N designs."""
     load_physics_dependencies()
     
+    import io
+    import contextlib
+    import sys
+    from rich.console import Console
+    from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, MofNCompleteColumn, TimeElapsedColumn
+    
     tmm_data = {}
     total_designs = len(combined_df)
     
-    for idx, row in combined_df.iterrows():
-        design_idx = int(idx)
-        rank = int(row["rank"])
+    progress_console = Console(file=sys.stdout)
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        BarColumn(),
+        MofNCompleteColumn(),
+        TimeElapsedColumn(),
+        console=progress_console,
+    ) as progress:
+        task = progress.add_task("[cyan]Precomputing TMM physics data...", total=total_designs)
         
-        if (design_idx + 1) % 50 == 0 or design_idx == 0 or design_idx == total_designs - 1:
-            print(f"  Precomputing design {design_idx + 1}/{total_designs} (Rank {rank})...")
+        for idx, row in combined_df.iterrows():
+            design_idx = int(idx)
+            rank = int(row["rank"])
             
-        # Build layer variables
-        dOpt, material_indices = parse_design(row)
-        active_mask = (material_indices != 0) & (dOpt > 1e-12)
-        active_dOpt = dOpt[active_mask]
-        active_materialLayer = material_indices[active_mask]
-        
-        # Reverse layers so they are in air-to-substrate order for the physical solvers
-        active_dOpt = active_dOpt[::-1]
-        active_materialLayer = active_materialLayer[::-1]
-        
-        mapped_layer = np.array([999 if m == 0 else m for m in active_materialLayer])
-        
-        # Build materialParams structure
-        materialParams = {}
-        for k, v in materials_dict.items():
-            mat_key = int(k)
-            mat_data = v.copy()
-            if mat_data.get("n") is None:
-                mat_data["n"] = 1.0
-            if mat_data.get("k") is None:
-                mat_data["k"] = 0.0
-                
-            if mat_key == 0:
-                materialParams[999] = mat_data
-                materialParams[0] = mat_data
-            else:
-                materialParams[mat_key] = mat_data
-                
-        if 999 not in materialParams:
-            materialParams[999] = {'name': 'air', 'n': 1.0, 'k': 0.0}
-            materialParams[0] = {'name': 'air', 'n': 1.0, 'k': 0.0}
-        if 1 not in materialParams:
-            materialParams[1] = {'name': 'SiO2', 'n': 1.45, 'k': 0.0}
+            progress.update(task, description=f"[cyan]Precomputing TMM data (Rank {rank})")
             
-        n_input = np.array([materialParams[m]['n'] for m in mapped_layer])
-        
-        # Physical thickness calculation
-        d_physical_nm = []
-        if thin_film_stack is not None:
-            try:
-                _, _, d_physical_m = thin_film_stack(
-                    dOpt=active_dOpt,
-                    n_input=n_input,
-                    materialLayer=mapped_layer,
-                    materialParams=materialParams,
-                    lambda_=lambda_nm,
-                    plots=False,
-                    verbose=False
-                )
-                d_physical_nm = list(d_physical_m * 1e9)
-            except Exception:
-                pass
-                
-        if len(d_physical_nm) == 0:
-            for i in range(len(active_dOpt)):
-                mat_idx = mapped_layer[i]
-                n_layer = materialParams.get(mat_idx, {}).get("n", 1.45)
-                d_physical_nm.append(float(active_dOpt[i] * lambda_nm / n_layer))
-                
-        # Generate diagnostic text (verbose printout format)
-        info_lines = []
-        info_lines.append(f"  SELECTED DESIGN SUMMARY")
-        info_lines.append(f"  -------------------------")
-        info_lines.append(f"  Design Rank: #{rank} / {total_designs}")
-        info_lines.append(f"  Reflectivity: {row['reflectivity']:.6f}")
-        info_lines.append(f"  Loss (1 - R): {1.0 - row['reflectivity']:.4e}")
-        info_lines.append(f"  Absorption: {row['absorption']:.3f} ppm")
-        info_lines.append(f"  Thermal Noise: {row['thermal_noise']:.4e} m/sqrt(Hz)")
-        if "utility_score" in row:
-            info_lines.append(f"  Utility Score: {row['utility_score']:.4f}")
-        info_lines.append(f"  Active Layers: {int(row['active_layer_count'])}")
-        info_lines.append(f"  Total Physical Thickness: {sum(d_physical_nm):.2f} nm")
-        info_text = "\\n".join(info_lines)
-        
-        # Structure design's base properties
-        design_data = {
-            "rank": rank,
-            "reflectivity": float(row["reflectivity"]),
-            "absorption": float(row["absorption"]),
-            "thermal_noise": float(row["thermal_noise"]),
-            "utility_score": float(row.get("utility_score", 0.0)),
-            "active_layer_count": int(row["active_layer_count"]),
-            "total_thickness": float(row["total_thickness"]),
-            "dOpt": [float(x) for x in active_dOpt],
-            "materialLayer": [int(x) for x in mapped_layer],
-            "d_physical_nm": [float(x) for x in d_physical_nm],
-            "material_names": [materialParams.get(int(m), {}).get("name", f"Material {m}") for m in mapped_layer],
-            "material_indices": [int(m) for m in mapped_layer],
-            "info_text": info_text,
-            "precomputed": False
-        }
-        
-        # Precompute TMM details only for the top N designs
-        if design_idx < max_count:
-            design_data["precomputed"] = True
+            # Build layer variables
+            dOpt, material_indices = parse_design(row)
+            active_mask = (material_indices != 0) & (dOpt > 1e-12)
+            active_dOpt = dOpt[active_mask]
+            active_materialLayer = material_indices[active_mask]
             
-            # Calculate EFI
-            if CalculateEFI_tmm is not None:
-                try:
-                    _, _, ds, E, _, _, _ = CalculateEFI_tmm(
-                        dOpt=active_dOpt,
-                        materialLayer=mapped_layer,
-                        materialParams=materialParams,
-                        lambda_=lambda_nm,
-                        plots=False,
-                    )
-                    design_data["efi_depths"] = [float(x) for x in ds]
-                    design_data["efi_intensity"] = [float(x) for x in E]
-                except Exception as e:
-                    print(f"Warning: Could not precompute EFI for design {rank}: {e}")
+            # Reverse layers so they are in air-to-substrate order for the physical solvers
+            active_dOpt = active_dOpt[::-1]
+            active_materialLayer = active_materialLayer[::-1]
+            
+            mapped_layer = np.array([999 if m == 0 else m for m in active_materialLayer])
+            
+            # Build materialParams structure
+            materialParams = {}
+            for k, v in materials_dict.items():
+                mat_key = int(k)
+                mat_data = v.copy()
+                if mat_data.get("n") is None:
+                    mat_data["n"] = 1.0
+                if mat_data.get("k") is None:
+                    mat_data["k"] = 0.0
                     
-            # Calculate Transmission Spectrum
-            if CalculateTransmission_tmm is not None:
-                try:
-                    lambda_list = np.linspace(400.0, 1400.0, 200)
-                    wavelengths, transmission, _ = CalculateTransmission_tmm(
-                        dOpt=active_dOpt,
-                        materialLayer=mapped_layer,
-                        materialParams=materialParams,
-                        lambda_list=lambda_list,
-                        lambda_0=lambda_nm,
-                        plots=False,
-                    )
-                    design_data["spec_wavelengths"] = [float(x) for x in wavelengths]
-                    design_data["spec_transmission"] = [float(x * 100) for x in transmission]
-                except Exception as e:
-                    print(f"Warning: Could not precompute spectrum for design {rank}: {e}")
+                if mat_key == 0:
+                    materialParams[999] = mat_data
+                    materialParams[0] = mat_data
+                else:
+                    materialParams[mat_key] = mat_data
                     
-        tmm_data[design_idx] = design_data
-        
+            if 999 not in materialParams:
+                materialParams[999] = {'name': 'air', 'n': 1.0, 'k': 0.0}
+                materialParams[0] = {'name': 'air', 'n': 1.0, 'k': 0.0}
+            if 1 not in materialParams:
+                materialParams[1] = {'name': 'SiO2', 'n': 1.45, 'k': 0.0}
+                
+            n_input = np.array([materialParams[m]['n'] for m in mapped_layer])
+            
+            # Physical thickness calculation
+            d_physical_nm = []
+            
+            with contextlib.redirect_stdout(io.StringIO()):
+                if thin_film_stack is not None:
+                    try:
+                        _, _, d_physical_m = thin_film_stack(
+                            dOpt=active_dOpt,
+                            n_input=n_input,
+                            materialLayer=mapped_layer,
+                            materialParams=materialParams,
+                            lambda_=lambda_nm,
+                            plots=False,
+                            verbose=False
+                        )
+                        d_physical_nm = list(d_physical_m * 1e9)
+                    except Exception:
+                        pass
+                        
+                if len(d_physical_nm) == 0:
+                    for i in range(len(active_dOpt)):
+                        mat_idx = mapped_layer[i]
+                        n_layer = materialParams.get(mat_idx, {}).get("n", 1.45)
+                        d_physical_nm.append(float(active_dOpt[i] * lambda_nm / n_layer))
+                        
+                # Structure design's base properties
+                design_data = {
+                    "rank": rank,
+                    "reflectivity": float(row["reflectivity"]),
+                    "absorption": float(row["absorption"]),
+                    "thermal_noise": float(row["thermal_noise"]),
+                    "utility_score": float(row.get("utility_score", 0.0)),
+                    "active_layer_count": int(row["active_layer_count"]),
+                    "total_thickness": float(row["total_thickness"]),
+                    "dOpt": [float(x) for x in active_dOpt],
+                    "materialLayer": [int(x) for x in mapped_layer],
+                    "d_physical_nm": [float(x) for x in d_physical_nm],
+                    "material_names": [materialParams.get(int(m), {}).get("name", f"Material {m}") for m in mapped_layer],
+                    "material_indices": [int(m) for m in mapped_layer],
+                    "info_text": "",
+                    "precomputed": False
+                }
+                
+                # Generate diagnostic text (verbose printout format)
+                info_lines = []
+                info_lines.append(f"  SELECTED DESIGN SUMMARY")
+                info_lines.append(f"  -------------------------")
+                info_lines.append(f"  Design Rank: #{rank} / {total_designs}")
+                info_lines.append(f"  Reflectivity: {row['reflectivity']:.6f}")
+                info_lines.append(f"  Loss (1 - R): {1.0 - row['reflectivity']:.4e}")
+                info_lines.append(f"  Absorption: {row['absorption']:.3f} ppm")
+                info_lines.append(f"  Thermal Noise: {row['thermal_noise']:.4e} m/sqrt(Hz)")
+                if "utility_score" in row:
+                    info_lines.append(f"  Utility Score: {row['utility_score']:.4f}")
+                info_lines.append(f"  Active Layers: {int(row['active_layer_count'])}")
+                info_lines.append(f"  Total Physical Thickness: {sum(d_physical_nm):.2f} nm")
+                info_text = "\\n".join(info_lines)
+                design_data["info_text"] = info_text
+                
+                # Precompute TMM details only for the top N designs
+                if design_idx < max_count:
+                    design_data["precomputed"] = True
+                    
+                    # Calculate EFI
+                    if CalculateEFI_tmm is not None:
+                        try:
+                            _, _, ds, E, _, _, _ = CalculateEFI_tmm(
+                                dOpt=active_dOpt,
+                                materialLayer=mapped_layer,
+                                materialParams=materialParams,
+                                lambda_=lambda_nm * 1e-9,  # Convert nm to meters for CalculateEFI_tmm
+                                plots=False,
+                            )
+                            design_data["efi_depths"] = [float(x) for x in ds]
+                            design_data["efi_intensity"] = [float(x) for x in E]
+                        except Exception as e:
+                            pass
+                            
+                    # Calculate Transmission Spectrum
+                    if CalculateTransmission_tmm is not None:
+                        try:
+                            lambda_list = np.linspace(400.0, 1400.0, 200)
+                            wavelengths, transmission, _ = CalculateTransmission_tmm(
+                                dOpt=active_dOpt,
+                                materialLayer=mapped_layer,
+                                materialParams=materialParams,
+                                lambda_list=lambda_list,
+                                lambda_0=lambda_nm,
+                                plots=False,
+                            )
+                            design_data["spec_wavelengths"] = [float(x) for x in wavelengths]
+                            design_data["spec_transmission"] = [float(x * 100) for x in transmission]
+                        except Exception as e:
+                            pass
+                            
+            tmm_data[design_idx] = design_data
+            progress.advance(task)
+            
     return tmm_data
 
 
@@ -1112,6 +1150,100 @@ def generate_3d_rank_dashboard_from_args(args):
         except Exception as e:
             print(f"  Warning: Could not resolve materials library path: {e}")
 
+    if "thermal_noise" not in values_df.columns:
+        print("  Warning: 'thermal_noise' not found in Pareto front objectives (2-objective run).")
+        # Try to calculate it dynamically if physics solver is available
+        calculated_noise = []
+        loaded = load_physics_dependencies()
+        if loaded and getCoatingThermalNoise is not None and materials is not None:
+            import io
+            import contextlib
+            import sys
+            from rich.console import Console
+            from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, MofNCompleteColumn, TimeElapsedColumn
+            
+            print("  Calculating coating thermal noise dynamically...")
+            
+            progress_console = Console(file=sys.stdout)
+            with Progress(
+                SpinnerColumn(),
+                TextColumn("[progress.description]{task.description}"),
+                BarColumn(),
+                MofNCompleteColumn(),
+                TimeElapsedColumn(),
+                console=progress_console,
+            ) as progress:
+                task = progress.add_task("[cyan]Calculating thermal noise...", total=len(designs_df))
+                
+                for idx, row in designs_df.iterrows():
+                    try:
+                        dOpt, material_indices = parse_design(row)
+                        active_mask = (material_indices != 0) & (dOpt > 1e-12)
+                        active_dOpt = dOpt[active_mask]
+                        active_materialLayer = material_indices[active_mask]
+                        
+                        # Reverse layers so they are in air-to-substrate order
+                        active_dOpt = active_dOpt[::-1]
+                        active_materialLayer = active_materialLayer[::-1]
+                        
+                        # Map material 0 to 999
+                        mapped_layer = np.array([999 if m == 0 else m for m in active_materialLayer])
+                        
+                        # Build materialParams structure
+                        materialParams = {}
+                        for k, v in materials.items():
+                            mat_key = int(k)
+                            mat_data = v.copy()
+                            if mat_data.get("n") is None:
+                                mat_data["n"] = 1.0
+                            if mat_data.get("k") is None:
+                                mat_data["k"] = 0.0
+                            if mat_key == 0:
+                                materialParams[999] = mat_data
+                                materialParams[0] = mat_data
+                            else:
+                                materialParams[mat_key] = mat_data
+                        
+                        if 999 not in materialParams:
+                            materialParams[999] = {'name': 'air', 'n': 1.0, 'k': 0.0}
+                            materialParams[0] = {'name': 'air', 'n': 1.0, 'k': 0.0}
+                        if 1 not in materialParams:
+                            materialParams[1] = {'name': 'SiO2', 'n': 1.45, 'k': 0.0}
+                            
+                        with contextlib.redirect_stdout(io.StringIO()):
+                            noise_summary, _, _, _, _, _ = getCoatingThermalNoise(
+                                dOpt=active_dOpt,
+                                materialLayer=mapped_layer,
+                                materialParams=materialParams,
+                                materialSub=1,
+                                lambda_=1064e-9,  # getCoatingThermalNoise expects meters!
+                                f=100.0,
+                                wBeam=0.062,
+                                Temp=290.0,
+                                plots=False
+                            )
+                        
+                        if isinstance(noise_summary["Frequency"], (float, np.floating)):
+                            thermal_noise_val = noise_summary["BrownianNoise"]
+                        else:
+                            difference_array = np.absolute(noise_summary["Frequency"] - 100.0)
+                            index = difference_array.argmin()
+                            thermal_noise_val = noise_summary["BrownianNoise"][index]
+                            
+                        calculated_noise.append(thermal_noise_val)
+                    except Exception as e:
+                        calculated_noise.append(0.0)
+                    progress.advance(task)
+            
+            values_df["thermal_noise"] = calculated_noise
+            print(f"  Successfully calculated coating thermal noise for {len(designs_df)} designs.")
+        else:
+            print("  Error: Could not calculate thermal noise dynamically (physics solvers or materials missing).")
+            print("  This Pareto front appears to be from a 2-objective optimization (reflectivity, absorption).")
+            print("  Please use 'plot_interactive_pareto.py' to visualize 2-objective Pareto fronts:")
+            print(f"  uv run python -m coatopt.utils.plot_interactive_pareto {args.directory}")
+            raise KeyError("thermal_noise")
+
     title = f"Pareto Front 3D Rank Plot: {directory.name}"
     fig, combined_df = create_3d_rank_plot(
         designs_df=designs_df,
@@ -1479,6 +1611,7 @@ def generate_3d_rank_dashboard_from_args(args):
                     <option value="ctn_log">CTN (Log)</option>
                     <option value="loss_linear">Loss (Linear)</option>
                     <option value="loss_log">Loss (Log)</option>
+                    <option value="rank">Design Rank</option>
                 </select>
 
                 <span style="font-size: 11px; color: #888; font-weight: bold; margin-left: 15px; margin-right: 5px; text-transform: uppercase; letter-spacing: 0.5px;">SHOW TOP:</span>
@@ -1585,6 +1718,40 @@ def generate_3d_rank_dashboard_from_args(args):
             d.originalIdx = parseInt(key);
             designsList.push(d);
         }
+
+        // Define global materialColors to ensure strict unique color mapping for all designs
+        var materialColors = {
+            "air": "#333333",
+            "SiO2": "#1f77b4",
+            "TiTa": "#c837ab",
+            "Ti:Ta2O5": "#c837ab",
+            "TiGermania": "#e377c2",
+            "Substrate": "#7f7f7f"
+        };
+        
+        // Gather all unique material names across ALL designs in tmmData to assign consistent colors
+        var allUniqueMats = [];
+        for (var key in tmmData) {
+            var d = tmmData[key];
+            if (d && d.material_names) {
+                for (var j = 0; j < d.material_names.length; j++) {
+                    var mat = d.material_names[j];
+                    if (allUniqueMats.indexOf(mat) === -1) {
+                        allUniqueMats.push(mat);
+                    }
+                }
+            }
+        }
+        allUniqueMats.sort();
+        
+        var palette = ["#2ca02c", "#d62728", "#9467bd", "#8c564b", "#bcbd22", "#17becf"];
+        var paletteIdx = 0;
+        allUniqueMats.forEach(function(mat) {
+            if (!materialColors[mat]) {
+                materialColors[mat] = palette[paletteIdx % palette.length];
+                paletteIdx++;
+            }
+        });
 
         // Initialize target fields
         document.getElementById('select-color-mode').value = "__DEFAULT_COLOR_MODE__";
@@ -1721,31 +1888,8 @@ def generate_3d_rank_dashboard_from_args(args):
 
         function drawStackPlot(design) {
             var legendShown = {};
-            var materialColors = {
-                "air": "#333333",
-                "SiO2": "#1f77b4",
-                "TiTa": "#c837ab",
-                "Ti:Ta2O5": "#c837ab",
-                "TiGermania": "#e377c2",
-                "Substrate": "#7f7f7f"
-            };
-            
-            var allMats = [];
-            if (design && design.material_names) {
-                allMats = allMats.concat(design.material_names);
-            }
             var hasComp = (comparisonDesignIdx !== null && comparisonDesignIdx !== -1);
             var compDesign = hasComp ? tmmData[comparisonDesignIdx] : null;
-            if (compDesign && compDesign.material_names) {
-                allMats = allMats.concat(compDesign.material_names);
-            }
-            var uniqueMaterials = [...new Set(allMats)];
-            var palette = ["#2ca02c", "#d62728", "#9467bd", "#8c564b", "#bcbd22", "#17becf"];
-            uniqueMaterials.forEach(function(mat, i) {
-                if (!materialColors[mat]) {
-                    materialColors[mat] = palette[i % palette.length];
-                }
-            });
             
             var traces = [];
             if (compDesign) {
@@ -2455,97 +2599,95 @@ def generate_3d_rank_dashboard_from_args(args):
             var isReversed = false;
             var colorscale = (layout3d.template === "plotly_dark" || layout3d.paper_bgcolor !== '#ffffff') ? "Plasma" : "Viridis";
 
-            if (plotMode === "rank") {
-                var colorMode = document.getElementById('select-color-mode').value;
-                if (colorMode === "reflectivity_linear") {
-                    color_values = displayList.map(d => d.reflectivity);
-                    colorbar_title = "Reflectivity";
-                    isReversed = false;
-                } else if (colorMode === "reflectivity_log") {
-                    // -log10(1-R)
-                    color_values = displayList.map(d => {
-                        var loss = Math.max(1e-10, 1.0 - d.reflectivity);
-                        return -Math.log10(loss);
-                    });
-                    colorbar_title = "Reflectivity (Log/Nines)";
-                    isReversed = false;
-                    
-                    var min_val = Math.min(...color_values);
-                    var max_val = Math.max(...color_values);
-                    var min_int = Math.floor(min_val);
-                    var max_int = Math.ceil(max_val);
-                    tickvals = [];
-                    ticktext = [];
-                    for (var v = min_int; v <= max_int; v++) {
-                        tickvals.push(v);
-                        if (v === 2) ticktext.push("0.99");
-                        else if (v === 3) ticktext.push("0.999");
-                        else if (v === 4) ticktext.push("0.9999");
-                        else if (v === 5) ticktext.push("0.99999");
-                        else if (v === 6) ticktext.push("0.999999");
-                        else if (v === 7) ticktext.push("0.9999999");
-                        else ticktext.push("1-10^-" + v);
-                    }
-                } else if (colorMode === "absorption_linear") {
-                    color_values = displayList.map(d => d.absorption);
-                    colorbar_title = "Absorption (ppm)";
-                    colorscale = (layout3d.template === "plotly_dark" || layout3d.paper_bgcolor !== '#ffffff') ? "Viridis_r" : "Viridis";
-                    isReversed = true;
-                } else if (colorMode === "absorption_log") {
-                    color_values = displayList.map(d => Math.log10(Math.max(1e-3, d.absorption)));
-                    colorbar_title = "Absorption (Log10 ppm)";
-                    colorscale = (layout3d.template === "plotly_dark" || layout3d.paper_bgcolor !== '#ffffff') ? "Viridis_r" : "Viridis";
-                    isReversed = true;
-                    
-                    var min_val = Math.min(...color_values);
-                    var max_val = Math.max(...color_values);
-                    var ticks_obj = getLogTicks(min_val, max_val, false);
-                    tickvals = ticks_obj.tickvals;
-                    ticktext = ticks_obj.ticktext;
-                } else if (colorMode === "ctn_linear") {
-                    color_values = displayList.map(d => d.thermal_noise);
-                    colorbar_title = "Thermal Noise (m/√Hz)";
-                    colorscale = (layout3d.template === "plotly_dark" || layout3d.paper_bgcolor !== '#ffffff') ? "Viridis_r" : "Viridis";
-                    isReversed = true;
-                } else if (colorMode === "ctn_log") {
-                    color_values = displayList.map(d => Math.log10(Math.max(1e-24, d.thermal_noise)));
-                    colorbar_title = "Thermal Noise (Log10)";
-                    colorscale = (layout3d.template === "plotly_dark" || layout3d.paper_bgcolor !== '#ffffff') ? "Viridis_r" : "Viridis";
-                    isReversed = true;
-                    
-                    var min_val = Math.min(...color_values);
-                    var max_val = Math.max(...color_values);
-                    var ticks_obj = getLogTicks(min_val, max_val, true);
-                    tickvals = ticks_obj.tickvals;
-                    ticktext = ticks_obj.ticktext;
-                } else if (colorMode === "loss_linear") {
-                    color_values = displayList.map(d => 1.0 - d.reflectivity);
-                    colorbar_title = "Reflectivity Loss (1-R)";
-                    colorscale = (layout3d.template === "plotly_dark" || layout3d.paper_bgcolor !== '#ffffff') ? "Magma" : "Reds";
-                    isReversed = !(layout3d.template === "plotly_dark" || layout3d.paper_bgcolor !== '#ffffff');
-                } else if (colorMode === "loss_log") {
-                    // log10(1-R)
-                    color_values = displayList.map(d => {
-                        var loss = Math.max(1e-10, 1.0 - d.reflectivity);
-                        return Math.log10(loss);
-                    });
-                    colorbar_title = "Loss (Log10)";
-                    colorscale = (layout3d.template === "plotly_dark" || layout3d.paper_bgcolor !== '#ffffff') ? "Magma" : "Reds";
-                    isReversed = !(layout3d.template === "plotly_dark" || layout3d.paper_bgcolor !== '#ffffff');
-                    
-                    var min_val = Math.min(...color_values);
-                    var max_val = Math.max(...color_values);
-                    var min_int = Math.floor(min_val);
-                    var max_int = Math.ceil(max_val);
-                    tickvals = [];
-                    ticktext = [];
-                    for (var v = min_int; v <= max_int; v++) {
-                        tickvals.push(v);
-                        ticktext.push("10^" + v);
-                    }
+            var colorMode = document.getElementById('select-color-mode').value;
+            if (colorMode === "reflectivity_linear") {
+                color_values = displayList.map(d => d.reflectivity);
+                colorbar_title = "Reflectivity";
+                isReversed = false;
+            } else if (colorMode === "reflectivity_log") {
+                // -log10(1-R)
+                color_values = displayList.map(d => {
+                    var loss = Math.max(1e-10, 1.0 - d.reflectivity);
+                    return -Math.log10(loss);
+                });
+                colorbar_title = "Reflectivity (Log/Nines)";
+                isReversed = false;
+                
+                var min_val = Math.min(...color_values);
+                var max_val = Math.max(...color_values);
+                var min_int = Math.floor(min_val);
+                var max_int = Math.ceil(max_val);
+                tickvals = [];
+                ticktext = [];
+                for (var v = min_int; v <= max_int; v++) {
+                    tickvals.push(v);
+                    if (v === 2) ticktext.push("0.99");
+                    else if (v === 3) ticktext.push("0.999");
+                    else if (v === 4) ticktext.push("0.9999");
+                    else if (v === 5) ticktext.push("0.99999");
+                    else if (v === 6) ticktext.push("0.999999");
+                    else if (v === 7) ticktext.push("0.9999999");
+                    else ticktext.push("1-10^-" + v);
                 }
-            } else {
-                // Exploration Mode: Color points by Rank
+            } else if (colorMode === "absorption_linear") {
+                color_values = displayList.map(d => d.absorption);
+                colorbar_title = "Absorption (ppm)";
+                colorscale = (layout3d.template === "plotly_dark" || layout3d.paper_bgcolor !== '#ffffff') ? "Viridis_r" : "Viridis";
+                isReversed = true;
+            } else if (colorMode === "absorption_log") {
+                color_values = displayList.map(d => Math.log10(Math.max(1e-3, d.absorption)));
+                colorbar_title = "Absorption (Log10 ppm)";
+                colorscale = (layout3d.template === "plotly_dark" || layout3d.paper_bgcolor !== '#ffffff') ? "Viridis_r" : "Viridis";
+                isReversed = true;
+                
+                var min_val = Math.min(...color_values);
+                var max_val = Math.max(...color_values);
+                var ticks_obj = getLogTicks(min_val, max_val, false);
+                tickvals = ticks_obj.tickvals;
+                ticktext = ticks_obj.ticktext;
+            } else if (colorMode === "ctn_linear") {
+                color_values = displayList.map(d => d.thermal_noise);
+                colorbar_title = "Thermal Noise (m/√Hz)";
+                colorscale = (layout3d.template === "plotly_dark" || layout3d.paper_bgcolor !== '#ffffff') ? "Viridis_r" : "Viridis";
+                isReversed = true;
+            } else if (colorMode === "ctn_log") {
+                color_values = displayList.map(d => Math.log10(Math.max(1e-24, d.thermal_noise)));
+                colorbar_title = "Thermal Noise (Log10)";
+                colorscale = (layout3d.template === "plotly_dark" || layout3d.paper_bgcolor !== '#ffffff') ? "Viridis_r" : "Viridis";
+                isReversed = true;
+                
+                var min_val = Math.min(...color_values);
+                var max_val = Math.max(...color_values);
+                var ticks_obj = getLogTicks(min_val, max_val, true);
+                tickvals = ticks_obj.tickvals;
+                ticktext = ticks_obj.ticktext;
+            } else if (colorMode === "loss_linear") {
+                color_values = displayList.map(d => 1.0 - d.reflectivity);
+                colorbar_title = "Reflectivity Loss (1-R)";
+                colorscale = (layout3d.template === "plotly_dark" || layout3d.paper_bgcolor !== '#ffffff') ? "Magma" : "Reds";
+                isReversed = !(layout3d.template === "plotly_dark" || layout3d.paper_bgcolor !== '#ffffff');
+            } else if (colorMode === "loss_log") {
+                // log10(1-R)
+                color_values = displayList.map(d => {
+                    var loss = Math.max(1e-10, 1.0 - d.reflectivity);
+                    return Math.log10(loss);
+                });
+                colorbar_title = "Loss (Log10)";
+                colorscale = (layout3d.template === "plotly_dark" || layout3d.paper_bgcolor !== '#ffffff') ? "Magma" : "Reds";
+                isReversed = !(layout3d.template === "plotly_dark" || layout3d.paper_bgcolor !== '#ffffff');
+                
+                var min_val = Math.min(...color_values);
+                var max_val = Math.max(...color_values);
+                var min_int = Math.floor(min_val);
+                var max_int = Math.ceil(max_val);
+                tickvals = [];
+                ticktext = [];
+                for (var v = min_int; v <= max_int; v++) {
+                    tickvals.push(v);
+                    ticktext.push("10^" + v);
+                }
+            } else if (colorMode === "rank") {
+                // Color points by Rank
                 color_values = displayList.map(d => d.rank);
                 colorbar_title = "Design Rank";
                 colorscale = (layout3d.template === "plotly_dark" || layout3d.paper_bgcolor !== '#ffffff') ? "Plasma_r" : "Viridis_r";
@@ -2786,8 +2928,10 @@ def generate_3d_rank_dashboard_from_args(args):
             btnRank.style.background = 'transparent';
             btnRank.style.color = '#888';
             
-            // Disable color mode dropdown
-            document.getElementById('select-color-mode').disabled = true;
+            // Enable color mode dropdown and default to rank
+            var colorModeSelect = document.getElementById('select-color-mode');
+            colorModeSelect.disabled = false;
+            colorModeSelect.value = "rank";
             
             recalculateUtilityAndRerank();
         });

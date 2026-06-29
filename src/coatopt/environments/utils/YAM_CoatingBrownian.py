@@ -421,6 +421,7 @@ def getCoatingThermalNoise(
     wBeam=1,
     Temp=1,
     plots=True,
+    tphys=None,
 ):
     # Set seaborn style and viridis color palette
     # sns.set_style("whitegrid")

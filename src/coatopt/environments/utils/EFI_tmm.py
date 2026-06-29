@@ -56,6 +56,7 @@ def CalculateEFI_tmm(
     depBreak=None,
     air_index=0,
     substrate_index=1,
+    tphys=None,
 ):
     """
     function calcualtes the normallised electric field intensity inside a thin film coating/coating stack usign tmm. This method
@@ -84,9 +85,12 @@ def CalculateEFI_tmm(
 
     for layer_idx, layer_material in enumerate(materialLayer):
         n_coat[layer_idx] = materialParams[layer_material]["n"]
-        t_coat[layer_idx] = optical_to_physical(
-            dOpt[layer_idx], wavelength, materialParams[layer_material]["n"]
-        )
+        if tphys is not None:
+            t_coat[layer_idx] = tphys[layer_idx]
+        else:
+            t_coat[layer_idx] = optical_to_physical(
+                dOpt[layer_idx], wavelength, materialParams[layer_material]["n"]
+            )
         k_coat[layer_idx] = materialParams[layer_material]["k"]
 
     n_coat_complex = np.asarray([complex(n_i, k_i) for n_i, k_i in zip(n_coat, k_coat)])
@@ -151,8 +155,9 @@ def CalculateEFI_tmm(
     poyn = np.array(poyn)
     absor = np.array(absor)
 
-    # # ... (rest of the code)
-    total_absorption = np.trapz(absor, ds)
+    # Fallback for NumPy 2.0+ where np.trapz is renamed to np.trapezoid
+    trapz_func = getattr(np, "trapezoid", getattr(np, "trapz", None))
+    total_absorption = trapz_func(absor, ds)
 
     # tmm calcualtes for forward and backward propogation of the light in the coating  x2
     # to match with the calcutions of TFCalc : total_absorption*1E5/2}
@@ -353,6 +358,7 @@ def CalculateTransmission_tmm(
     polarisation="p",
     plots=False,
     plot_range=None,
+    angle=0.0,
 ):
     """
     Calculate the transmission as a function of wavelength for a thin film stack using tmm.
@@ -450,8 +456,8 @@ def CalculateTransmission_tmm(
         )
         d_list = [np.inf] + (tphys).tolist() + [np.inf]  # Convert nm to meters
 
-        # Angle of incidence
-        angle = 0  # Normal incidence in degrees
+        # Angle of incidence using passed parameter
+        angle = angle
 
         # Suppress runtime warnings but capture them
         with warnings.catch_warnings(record=True) as w:
@@ -485,7 +491,7 @@ def CalculateTransmission_tmm(
 
     # Convert to arrays
     idx = np.abs(np.array(wavelengths) - lambda_0).argmin()
-    wavelengths = np.array(wavelengths) * 1e9
+    wavelengths = np.array(wavelengths)
 
     transmission = np.array(transmission)
     # Find the index where wavelength is closest to lambda_0

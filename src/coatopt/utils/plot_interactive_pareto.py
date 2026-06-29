@@ -227,7 +227,10 @@ def create_interactive_plot(
     lib_path = "/Users/simon/Library/CloudStorage/GoogleDrive-simon.tait@ligo.org/My Drive/BackupFromDropbox/Python/CoatingAnalysis/src"
     if lib_path not in sys.path:
         sys.path.insert(0, lib_path)
-    from coating_analysis.EFI_tmm import CalculateEFI_tmm, CalculateTransmission_tmm
+    try:
+        from coating_analysis.EFI_tmm import CalculateEFI_tmm, CalculateTransmission_tmm
+    except ImportError:
+        from coatopt.environments.utils.EFI_tmm import CalculateEFI_tmm, CalculateTransmission_tmm
 
     # ── sort & limit ──────────────────────────────────────────────────────────
     combined_df = pd.concat([designs_df, values_df], axis=1)
@@ -538,7 +541,7 @@ def create_interactive_plot(
                 dOpt=active_dOpt,
                 materialLayer=active_materialLayer,
                 materialParams=materialParams,
-                lambda_=1064.0,  # Pass in nanometers
+                lambda_=1064.0 * 1e-9,  # Convert nm to meters for CalculateEFI_tmm
                 plots=False,
             )
             

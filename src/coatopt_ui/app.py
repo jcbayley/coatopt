@@ -13,13 +13,17 @@ lib_path = "/Users/simon/Library/CloudStorage/GoogleDrive-simon.tait@ligo.org/My
 if lib_path not in sys.path:
     sys.path.insert(0, lib_path)
 
-# Try importing from coating_analysis
+# Try importing from coating_analysis with fallback to local modules
 try:
     from coating_analysis.YAM_CoatingBrownian import getCoatingThermalNoise
     from coating_analysis.EFI_tmm import CalculateEFI_tmm, CalculateTransmission_tmm
 except ImportError as e:
-    print(f"Error importing physics libraries: {e}")
-    # We will raise errors during runtime if they are not available, as requested
+    print(f"Error importing physics libraries from Google Drive: {e}. Falling back to local modules...")
+    try:
+        from coatopt.environments.utils.YAM_CoatingBrownian import getCoatingThermalNoise
+        from coatopt.environments.utils.EFI_tmm import CalculateEFI_tmm, CalculateTransmission_tmm
+    except ImportError as local_e:
+        print(f"Error importing local fallback physics libraries: {local_e}")
 
 app = FastAPI(title="Interactive Coating Designer")
 
@@ -106,7 +110,7 @@ async def analyze_stack(req: AnalyzeRequest):
             materialParams=materialParams,
             tphys=tphys,
             materialSub=1,
-            lambda_=req.lambda_,
+            lambda_=req.lambda_ * 1e-9,  # Convert nm to meters for getCoatingThermalNoise
             f=f_arr,
             wBeam=req.wBeam,
             Temp=req.Temp,
@@ -127,7 +131,7 @@ async def analyze_stack(req: AnalyzeRequest):
             dOpt=dOpt,
             materialLayer=materialLayer,
             materialParams=materialParams,
-            lambda_=req.lambda_,
+            lambda_=req.lambda_ * 1e-9,  # Convert nm to meters for CalculateEFI_tmm
             t_air=500,
             polarisation=req.polarisation,
             plots=False,
