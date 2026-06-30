@@ -100,10 +100,33 @@ def parse_design(row: pd.Series) -> Tuple[np.ndarray, np.ndarray]:
     thickness_cols = sorted(thickness_cols, key=lambda x: int(x.split("_")[1]))
     material_cols = sorted(material_cols, key=lambda x: int(x.split("_")[1]))
 
-    thicknesses = np.array([row[col] for col in thickness_cols])
-    materials = np.array([int(row[col]) for col in material_cols])
+    thicknesses = []
+    materials = []
+    for t_col, m_col in zip(thickness_cols, material_cols):
+        t_val = row[t_col]
+        m_val = row[m_col]
+        if pd.isna(t_val) or pd.isna(m_val):
+            thicknesses.append(0.0)
+            materials.append(0)
+        else:
+            thicknesses.append(float(t_val))
+            materials.append(int(m_val))
 
-    return thicknesses, materials
+    return np.array(thicknesses), np.array(materials)
+
+
+def get_design_key(dOpt: np.ndarray, materials: np.ndarray) -> str:
+    """Generate a stable SHA-256 hash for a design based on its layer structure."""
+    import hashlib
+    # Round thicknesses to 6 decimal places to avoid tiny floating point variations
+    rounded_dOpt = np.round(dOpt, 6)
+    # Filter out inactive layers to keep the representation minimal
+    active_mask = (materials != 0) & (rounded_dOpt > 1e-12)
+    active_dOpt = rounded_dOpt[active_mask]
+    active_materials = materials[active_mask]
+    
+    design_str = ",".join(f"{t:.6f}:{m}" for t, m in zip(active_dOpt, active_materials))
+    return hashlib.sha256(design_str.encode('utf-8')).hexdigest()
 
 
 def calculate_physical_thickness(row: pd.Series, materials_dict: dict, lambda_nm: float = 1064.0) -> float:
@@ -121,16 +144,30 @@ def calculate_physical_thickness(row: pd.Series, materials_dict: dict, lambda_nm
         return 0.0
 
 
-def precompute_tmm_details(combined_df: pd.DataFrame, materials_dict: dict, max_count: int = 50, lambda_nm: float = 1064.0) -> dict:
+def precompute_tmm_details(combined_df: pd.DataFrame, materials_dict: dict, max_count: int = 50, lambda_nm: float = 1064.0, cache_dir=None) -> dict:
     """Precompute EFI profile and spectral transmission response for the top N designs."""
     load_physics_dependencies()
     
     import io
+    import json
     import contextlib
     import sys
     from rich.console import Console
     from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, MofNCompleteColumn, TimeElapsedColumn
     
+    # Load cache if available
+    cache_path = None
+    cache = {}
+    if cache_dir is not None:
+        cache_path = Path(cache_dir) / "tmm_cache.json"
+        if cache_path.exists():
+            try:
+                with open(cache_path, "r") as f:
+                    cache = json.load(f)
+                print(f"  Loaded {len(cache)} cached TMM results from {cache_path}")
+            except Exception as e:
+                print(f"  Warning: Failed to load TMM cache: {e}")
+
     tmm_data = {}
     total_designs = len(combined_df)
     
@@ -153,6 +190,72 @@ def precompute_tmm_details(combined_df: pd.DataFrame, materials_dict: dict, max_
             
             # Build layer variables
             dOpt, material_indices = parse_design(row)
+            
+            # Generate design hash key
+            design_key = get_design_key(dOpt, material_indices)
+            
+            # Check cache
+            if design_key in cache:
+                cached_data = cache[design_key]
+                design_data = {
+                    "rank": rank,
+                    "reflectivity": float(row["reflectivity"]),
+                    "absorption": float(row["absorption"]),
+                    "thermal_noise": float(row["thermal_noise"]),
+                    "utility_score": float(row.get("utility_score", 0.0)),
+                    "active_layer_count": int(row["active_layer_count"]),
+                    "total_thickness": float(row["total_thickness"]),
+                    "info_text": "",
+                    "precomputed": cached_data.get("precomputed", False)
+                }
+                if "run_name" in row and not pd.isna(row["run_name"]):
+                    design_data["run_name"] = str(row["run_name"])
+                
+                # Check for stack details (only if design_idx < 1000)
+                if design_idx < 1000:
+                    for field in ["dOpt", "materialLayer", "d_physical_nm", "material_names", "material_indices"]:
+                        if field in cached_data:
+                            design_data[field] = cached_data[field]
+                        elif field == "dOpt":
+                            design_data["dOpt"] = [float(x) for x in dOpt[(material_indices != 0) & (dOpt > 1e-12)]]
+                        elif field == "materialLayer":
+                            design_data["materialLayer"] = [int(x) for x in material_indices[(material_indices != 0) & (dOpt > 1e-12)]]
+                
+                # Check for other cached details
+                # Only copy heavy details (EFI, transmission) if design_idx < max_count to limit RAM & HTML size
+                fields_to_copy = ["precomputed"]
+                if design_idx < max_count:
+                    fields_to_copy += ["efi_depths", "efi_intensity", "spec_wavelengths", "spec_transmission"]
+                for field in fields_to_copy:
+                    if field in cached_data:
+                        design_data[field] = cached_data[field]
+                
+                # If it should be precomputed but lacks cached details, run solvers (fallback)
+                should_compute_efi = (design_idx < max_count) and ("efi_depths" not in design_data or "spec_wavelengths" not in design_data)
+                
+                if not should_compute_efi:
+                    # Re-generate info text (in case rank/total designs changed)
+                    info_lines = []
+                    info_lines.append(f"  SELECTED DESIGN SUMMARY")
+                    info_lines.append(f"  -------------------------")
+                    info_lines.append(f"  Design Rank: #{rank} / {total_designs}")
+                    if "run_name" in design_data:
+                        info_lines.append(f"  Run Directory: {design_data['run_name']}")
+                    info_lines.append(f"  Reflectivity: {row['reflectivity']:.6f}")
+                    info_lines.append(f"  Loss (1 - R): {1.0 - row['reflectivity']:.4e}")
+                    info_lines.append(f"  Absorption: {row['absorption']:.3f} ppm")
+                    info_lines.append(f"  Thermal Noise: {row['thermal_noise']:.4e} m/sqrt(Hz)")
+                    if "utility_score" in row:
+                        info_lines.append(f"  Utility Score: {row['utility_score']:.4f}")
+                    info_lines.append(f"  Active Layers: {int(row['active_layer_count'])}")
+                    thickness_sum = sum(design_data['d_physical_nm']) if 'd_physical_nm' in design_data else row['total_thickness']
+                    info_lines.append(f"  Total Physical Thickness: {thickness_sum:.2f} nm")
+                    design_data["info_text"] = "\\n".join(info_lines)
+                    
+                    tmm_data[design_idx] = design_data
+                    progress.advance(task)
+                    continue
+
             active_mask = (material_indices != 0) & (dOpt > 1e-12)
             active_dOpt = dOpt[active_mask]
             active_materialLayer = material_indices[active_mask]
@@ -221,20 +324,25 @@ def precompute_tmm_details(combined_df: pd.DataFrame, materials_dict: dict, max_
                     "utility_score": float(row.get("utility_score", 0.0)),
                     "active_layer_count": int(row["active_layer_count"]),
                     "total_thickness": float(row["total_thickness"]),
-                    "dOpt": [float(x) for x in active_dOpt],
-                    "materialLayer": [int(x) for x in mapped_layer],
-                    "d_physical_nm": [float(x) for x in d_physical_nm],
-                    "material_names": [materialParams.get(int(m), {}).get("name", f"Material {m}") for m in mapped_layer],
-                    "material_indices": [int(m) for m in mapped_layer],
                     "info_text": "",
                     "precomputed": False
                 }
+                if design_idx < 1000:
+                    design_data["dOpt"] = [float(x) for x in active_dOpt]
+                    design_data["materialLayer"] = [int(x) for x in mapped_layer]
+                    design_data["d_physical_nm"] = [float(x) for x in d_physical_nm]
+                    design_data["material_names"] = [materialParams.get(int(m), {}).get("name", f"Material {m}") for m in mapped_layer]
+                    design_data["material_indices"] = [int(m) for m in mapped_layer]
+                if "run_name" in row and not pd.isna(row["run_name"]):
+                    design_data["run_name"] = str(row["run_name"])
                 
                 # Generate diagnostic text (verbose printout format)
                 info_lines = []
                 info_lines.append(f"  SELECTED DESIGN SUMMARY")
                 info_lines.append(f"  -------------------------")
                 info_lines.append(f"  Design Rank: #{rank} / {total_designs}")
+                if "run_name" in design_data:
+                    info_lines.append(f"  Run Directory: {design_data['run_name']}")
                 info_lines.append(f"  Reflectivity: {row['reflectivity']:.6f}")
                 info_lines.append(f"  Loss (1 - R): {1.0 - row['reflectivity']:.4e}")
                 info_lines.append(f"  Absorption: {row['absorption']:.3f} ppm")
@@ -281,9 +389,37 @@ def precompute_tmm_details(combined_df: pd.DataFrame, materials_dict: dict, max_
                             design_data["spec_transmission"] = [float(x * 100) for x in transmission]
                         except Exception as e:
                             pass
-                            
+
+                # Store in cache (always store full details in cache for future reuse)
+                cache[design_key] = {
+                    "d_physical_nm": design_data.get("d_physical_nm", [float(x) for x in d_physical_nm]),
+                    "material_names": design_data.get("material_names", [materialParams.get(int(m), {}).get("name", f"Material {m}") for m in mapped_layer]),
+                    "material_indices": design_data.get("material_indices", [int(m) for m in mapped_layer]),
+                    "precomputed": design_data["precomputed"]
+                }
+                for field in ["efi_depths", "efi_intensity", "spec_wavelengths", "spec_transmission"]:
+                    if field in design_data:
+                        cache[design_key][field] = design_data[field]
+                
+                # Save cache periodically every 50 designs
+                if cache_path is not None and len(tmm_data) % 50 == 0:
+                    try:
+                        with open(cache_path, "w") as f:
+                            json.dump(cache, f)
+                    except Exception:
+                        pass
+
             tmm_data[design_idx] = design_data
             progress.advance(task)
+            
+    # Final cache save on completion
+    if cache_path is not None:
+        try:
+            with open(cache_path, "w") as f:
+                json.dump(cache, f)
+            print(f"  Saved {len(cache)} TMM results to cache file: {cache_path}")
+        except Exception as e:
+            print(f"  Warning: Failed to save TMM cache: {e}")
             
     return tmm_data
 
@@ -519,18 +655,22 @@ def create_3d_rank_plot(
     combined_df["active_layer_count"] = active_layer_counts
 
     # Compute customdata for hovers (including 0-based design index for HTML interactivity)
-    customdata = np.stack(
-        (
-            combined_df["rank"].values,
-            combined_df["reflectivity"].values,
-            1.0 - combined_df["reflectivity"].values,
-            combined_df["active_layer_count"].values,
-            combined_df["total_thickness"].values,
-            combined_df["utility_score"].values,
-            combined_df.index.values,
-        ),
-        axis=-1,
-    )
+    custom_data_records = []
+    has_run_name = "run_name" in combined_df.columns
+    for idx, row in combined_df.iterrows():
+        record = [
+            int(row["rank"]),
+            float(row["reflectivity"]),
+            float(1.0 - row["reflectivity"]),
+            int(row["active_layer_count"]),
+            float(row["total_thickness"]),
+            float(row["utility_score"]),
+            int(idx),
+        ]
+        if has_run_name:
+            record.append(str(row["run_name"]))
+        custom_data_records.append(record)
+    customdata = custom_data_records
 
     # X, Y, Z data
     x_data = combined_df["absorption"].values
@@ -640,9 +780,9 @@ def create_3d_rank_plot(
     for t in normalized_vals:
         is_light = (t < 0.4) if is_reversed else (t > 0.6)
         if is_light:
-            outline_colors.append("rgba(0, 0, 0, 0.8)")
+            outline_colors.append("rgba(0, 0, 0, 0.2)")
         else:
-            outline_colors.append("rgba(255, 255, 255, 0.8)")
+            outline_colors.append("rgba(255, 255, 255, 0.2)")
 
     fig = go.Figure()
 
@@ -654,7 +794,7 @@ def create_3d_rank_plot(
             z=z_data,
             mode="markers",
             marker=dict(
-                size=8,
+                size=4,
                 color=color_values,
                 colorscale=colorscale,
                 cmin=cmin,
@@ -669,13 +809,15 @@ def create_3d_rank_plot(
                 ),
                 showscale=True,
                 opacity=0.9,
-                line=dict(width=1.0, color=outline_colors),
+                line=dict(width=0.0),
             ),
             customdata=customdata,
             name="Pareto Front Designs",
             showlegend=True,
             hovertemplate=(
-                "<b>Design Rank #%{customdata[0]:d}</b><br><br>"
+                "<b>Design Rank #%{customdata[0]:d}</b><br>"
+                + ("Run: %{customdata[7]}<br>" if has_run_name else "")
+                + "<br>"
                 "Reflectivity: %{customdata[1]:.6f}<br>"
                 "Reflectivity Loss: %{customdata[2]:.3e}<br>"
                 "Absorption: %{x:.4f} ppm<br>"
@@ -861,6 +1003,11 @@ def main():
         help="Directory containing pareto_front.csv",
     )
     parser.add_argument(
+        "--aggregate",
+        action="store_true",
+        help="Recursively aggregate Pareto fronts from all subdirectories inside the target directory",
+    )
+    parser.add_argument(
         "--light",
         action="store_true",
         help="Use light theme layout instead of default premium dark mode",
@@ -993,8 +1140,8 @@ def main():
     parser.add_argument(
         "--precompute-tmm-count",
         type=int,
-        default=-1,
-        help="Number of top designs to precompute full TMM details (EFI and spectrum) for (default: -1, meaning all)",
+        default=100,
+        help="Number of top designs to precompute full TMM details (EFI and spectrum) for (default: 100)",
     )
     parser.add_argument(
         "--color-mode",
@@ -1045,6 +1192,7 @@ def generate_3d_rank_dashboard(
     target_thick=None,
     precompute_tmm_count=-1,
     color_mode="reflectivity_log",
+    aggregate=False,
 ):
     import argparse
     args = argparse.Namespace(
@@ -1073,6 +1221,7 @@ def generate_3d_rank_dashboard(
         target_thick=target_thick,
         precompute_tmm_count=precompute_tmm_count,
         color_mode=color_mode,
+        aggregate=aggregate,
     )
     return generate_3d_rank_dashboard_from_args(args)
 
@@ -1102,58 +1251,162 @@ def generate_3d_rank_dashboard_from_args(args):
         print(f"Error: Directory {directory} does not exist")
         return 1
 
-    print(f"Loading Pareto front from {directory}...")
-    try:
-        designs_df, values_df, _ = load_pareto_front(directory)
-        print(f"  Loaded {len(designs_df)} designs successfully.")
-    except Exception as e:
-        print(f"Error: Failed to load Pareto front from {directory}: {e}")
-        return 1
+    # Scan for subdirectories containing pareto_front.csv if aggregate is enabled
+    subdirs = []
+    if getattr(args, "aggregate", False):
+        for root, dirs, files in os.walk(directory):
+            if "pareto_front.csv" in files:
+                subdirs.append(Path(root))
+        subdirs.sort()
+        if not subdirs:
+            print(f"Error: No subdirectories containing pareto_front.csv found under {directory}")
+            return 1
+        print(f"Found {len(subdirs)} Pareto fronts to aggregate:")
+        for s in subdirs:
+            print(f"  - {s.relative_to(directory) if s != directory else s.name}")
+    else:
+        subdirs = [directory]
 
-    # Load materials from config.ini if possible
-    materials = None
-    config_path = directory / "config.ini"
-    if config_path.exists():
-        config = configparser.ConfigParser()
-        config.read(config_path)
+    # Load Pareto fronts and merge materials
+    all_designs = []
+    all_values = []
+    materials = {}
+
+    for subdir in subdirs:
+        print(f"Loading Pareto front from {subdir}...")
         try:
-            materials_path_str = config.get("general", "materials_path")
-            materials_path = Path(materials_path_str)
-            if not materials_path.is_absolute():
-                candidate1 = (config_path.parent / materials_path).resolve()
-                candidate2 = (config_path.parent.parent / materials_path).resolve()
-                if candidate1.exists():
-                    materials_path = candidate1
-                elif candidate2.exists():
-                    materials_path = candidate2
-            else:
-                # If absolute path does not exist, search local candidates based on filename
-                if not materials_path.exists():
-                    filename = materials_path.name
-                    project_root = Path(__file__).parent.parent.parent.parent
-                    local_candidate1 = (project_root / "experiments" / filename).resolve()
-                    local_candidate2 = (config_path.parent / filename).resolve()
-                    local_candidate3 = (config_path.parent.parent / "experiments" / filename).resolve()
-                    if local_candidate1.exists():
-                        materials_path = local_candidate1
-                    elif local_candidate2.exists():
-                        materials_path = local_candidate2
-                    elif local_candidate3.exists():
-                        materials_path = local_candidate3
+            designs_df, values_df, _ = load_pareto_front(subdir)
+            
+            # Filter out designs with < 10 active layers
+            valid_indices = []
+            for idx, row in designs_df.iterrows():
+                dOpt, mat_idx = parse_design(row)
+                active_mask = (mat_idx != 0) & (dOpt > 1e-12)
+                active_layer_count = int(np.sum(active_mask))
+                if active_layer_count >= 10:
+                    valid_indices.append(idx)
+            
+            initial_count = len(designs_df)
+            designs_df = designs_df.iloc[valid_indices].reset_index(drop=True)
+            values_df = values_df.iloc[valid_indices].reset_index(drop=True)
+            filtered_count = initial_count - len(designs_df)
+            if filtered_count > 0:
+                print(f"  Filtered out {filtered_count} designs with < 10 active layers (kept {len(designs_df)} designs).")
                 
-            if Path(materials_path).exists():
-                from coatopt.utils.utils import load_materials
-                materials = load_materials(str(materials_path))
-                print(f"  Loaded materials library from: {materials_path}")
-            else:
-                print(f"  Warning: Materials file not found at: {materials_path_str}")
+            run_name = str(subdir.relative_to(directory)) if subdir != directory else subdir.name
+            values_df["run_name"] = run_name
+            all_designs.append(designs_df)
+            all_values.append(values_df)
+
+            # Try to load materials from subdir config
+            config_path = subdir / "config.ini"
+            if config_path.exists():
+                config = configparser.ConfigParser()
+                config.read(config_path)
+                try:
+                    materials_path_str = config.get("general", "materials_path")
+                    materials_path = Path(materials_path_str)
+                    if not materials_path.is_absolute():
+                        candidate1 = (config_path.parent / materials_path).resolve()
+                        candidate2 = (config_path.parent.parent / materials_path).resolve()
+                        if candidate1.exists():
+                            materials_path = candidate1
+                        elif candidate2.exists():
+                            materials_path = candidate2
+                    else:
+                        if not materials_path.exists():
+                            filename = materials_path.name
+                            project_root = Path(__file__).parent.parent.parent.parent
+                            local_candidate1 = (project_root / "experiments" / filename).resolve()
+                            local_candidate2 = (config_path.parent / filename).resolve()
+                            local_candidate3 = (config_path.parent.parent / "experiments" / filename).resolve()
+                            if local_candidate1.exists():
+                                materials_path = local_candidate1
+                            elif local_candidate2.exists():
+                                materials_path = local_candidate2
+                            elif local_candidate3.exists():
+                                materials_path = local_candidate3
+                    
+                    if Path(materials_path).exists():
+                        from coatopt.utils.utils import load_materials
+                        sub_materials = load_materials(str(materials_path))
+                        if sub_materials:
+                            for k, v in sub_materials.items():
+                                materials[int(k)] = v
+                except Exception:
+                    pass
         except Exception as e:
-            print(f"  Warning: Could not resolve materials library path: {e}")
+            print(f"Error: Failed to load Pareto front from {subdir}: {e}")
+            return 1
+
+    designs_df = pd.concat(all_designs, axis=0, ignore_index=True)
+    values_df = pd.concat(all_values, axis=0, ignore_index=True)
+    print(f"  Loaded {len(designs_df)} total designs successfully.")
+
+    # Fallback to load materials from parent directory config.ini if still empty
+    if not materials:
+        config_path = directory / "config.ini"
+        if config_path.exists():
+            config = configparser.ConfigParser()
+            config.read(config_path)
+            try:
+                materials_path_str = config.get("general", "materials_path")
+                materials_path = Path(materials_path_str)
+                if not materials_path.is_absolute():
+                    candidate1 = (config_path.parent / materials_path).resolve()
+                    candidate2 = (config_path.parent.parent / materials_path).resolve()
+                    if candidate1.exists():
+                        materials_path = candidate1
+                    elif candidate2.exists():
+                        materials_path = candidate2
+                else:
+                    if not materials_path.exists():
+                        filename = materials_path.name
+                        project_root = Path(__file__).parent.parent.parent.parent
+                        local_candidate1 = (project_root / "experiments" / filename).resolve()
+                        local_candidate2 = (config_path.parent / filename).resolve()
+                        local_candidate3 = (config_path.parent.parent / "experiments" / filename).resolve()
+                        if local_candidate1.exists():
+                            materials_path = local_candidate1
+                        elif local_candidate2.exists():
+                            materials_path = local_candidate2
+                        elif local_candidate3.exists():
+                            materials_path = local_candidate3
+                
+                if Path(materials_path).exists():
+                    from coatopt.utils.utils import load_materials
+                    sub_materials = load_materials(str(materials_path))
+                    if sub_materials:
+                        for k, v in sub_materials.items():
+                            materials[int(k)] = v
+            except Exception:
+                pass
+
+    # Fallback to load default materials.json from experiments folder if still empty
+    if not materials:
+        try:
+            project_root = Path(__file__).parent.parent.parent.parent
+            default_materials_path = project_root / "experiments" / "materials.json"
+            if default_materials_path.exists():
+                from coatopt.utils.utils import load_materials
+                materials = load_materials(str(default_materials_path))
+                print(f"  Loaded default materials library from: {default_materials_path}")
+        except Exception:
+            pass
+
+    # Convert materials keys to integers for robust mapping
+    if materials:
+        materials = {int(k): v for k, v in materials.items()}
+    else:
+        materials = None
 
     if "thermal_noise" not in values_df.columns:
-        print("  Warning: 'thermal_noise' not found in Pareto front objectives (2-objective run).")
+        values_df["thermal_noise"] = np.nan
+
+    nan_mask = values_df["thermal_noise"].isna()
+    if nan_mask.any():
+        print(f"  Warning: 'thermal_noise' not found or missing for {nan_mask.sum()} designs.")
         # Try to calculate it dynamically if physics solver is available
-        calculated_noise = []
         loaded = load_physics_dependencies()
         if loaded and getCoatingThermalNoise is not None and materials is not None:
             import io
@@ -1162,7 +1415,7 @@ def generate_3d_rank_dashboard_from_args(args):
             from rich.console import Console
             from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, MofNCompleteColumn, TimeElapsedColumn
             
-            print("  Calculating coating thermal noise dynamically...")
+            print("  Calculating missing coating thermal noise dynamically...")
             
             progress_console = Console(file=sys.stdout)
             with Progress(
@@ -1173,9 +1426,12 @@ def generate_3d_rank_dashboard_from_args(args):
                 TimeElapsedColumn(),
                 console=progress_console,
             ) as progress:
-                task = progress.add_task("[cyan]Calculating thermal noise...", total=len(designs_df))
+                missing_indices = np.where(nan_mask)[0]
+                task = progress.add_task("[cyan]Calculating thermal noise...", total=len(missing_indices))
                 
-                for idx, row in designs_df.iterrows():
+                calculated_noise = values_df["thermal_noise"].values.copy()
+                for idx in missing_indices:
+                    row = designs_df.iloc[idx]
                     try:
                         dOpt, material_indices = parse_design(row)
                         active_mask = (material_indices != 0) & (dOpt > 1e-12)
@@ -1230,13 +1486,13 @@ def generate_3d_rank_dashboard_from_args(args):
                             index = difference_array.argmin()
                             thermal_noise_val = noise_summary["BrownianNoise"][index]
                             
-                        calculated_noise.append(thermal_noise_val)
+                        calculated_noise[idx] = thermal_noise_val
                     except Exception as e:
-                        calculated_noise.append(0.0)
+                        calculated_noise[idx] = 0.0
                     progress.advance(task)
             
             values_df["thermal_noise"] = calculated_noise
-            print(f"  Successfully calculated coating thermal noise for {len(designs_df)} designs.")
+            print(f"  Successfully calculated coating thermal noise for {len(missing_indices)} designs.")
         else:
             print("  Error: Could not calculate thermal noise dynamically (physics solvers or materials missing).")
             print("  This Pareto front appears to be from a 2-objective optimization (reflectivity, absorption).")
@@ -1287,7 +1543,8 @@ def generate_3d_rank_dashboard_from_args(args):
         combined_df=combined_df,
         materials_dict=materials if materials is not None else {},
         max_count=precompute_count,
-        lambda_nm=1064.0
+        lambda_nm=1064.0,
+        cache_dir=directory
     )
     tmm_data_json = json.dumps(tmm_data)
 
@@ -1887,6 +2144,10 @@ def generate_3d_rank_dashboard_from_args(args):
         }
 
         function drawStackPlot(design) {
+            if (!design || !design.d_physical_nm) {
+                showPlotMessage('plot-stack', 'Detailed stack layout not precomputed for this design');
+                return;
+            }
             var legendShown = {};
             var hasComp = (comparisonDesignIdx !== null && comparisonDesignIdx !== -1);
             var compDesign = hasComp ? tmmData[comparisonDesignIdx] : null;
@@ -2534,13 +2795,17 @@ def generate_3d_rank_dashboard_from_args(args):
                 info_lines.push("  SELECTED DESIGN SUMMARY");
                 info_lines.push("  -------------------------");
                 info_lines.push("  Design Rank: #" + d.rank + " / " + designsList.length);
+                if (d.run_name !== undefined && d.run_name !== null) {
+                    info_lines.push("  Run Directory: " + d.run_name);
+                }
                 info_lines.push("  Reflectivity: " + d.reflectivity.toFixed(6));
                 info_lines.push("  Loss (1 - R): " + loss.toExponential(4));
                 info_lines.push("  Absorption: " + d.absorption.toFixed(3) + " ppm");
                 info_lines.push("  Thermal Noise: " + d.thermal_noise.toExponential(4) + " m/sqrt(Hz)");
                 info_lines.push("  Utility Score: " + d.utility_score.toFixed(4));
                 info_lines.push("  Active Layers: " + d.active_layer_count);
-                info_lines.push("  Total Physical Thickness: " + d.d_physical_nm.reduce((a, b) => a + b, 0).toFixed(2) + " nm");
+                var thicknessText = d.d_physical_nm ? d.d_physical_nm.reduce((a, b) => a + b, 0).toFixed(2) : d.total_thickness.toFixed(2);
+                info_lines.push("  Total Physical Thickness: " + thicknessText + " nm");
                 d.info_text = info_lines.join("\\n");
             });
 
@@ -2713,7 +2978,7 @@ def generate_3d_rank_dashboard_from_args(args):
             var outline_colors = color_values.map(val => {
                 var t = (val - cmin) / span;
                 var isLight = isReversed ? (t < 0.4) : (t > 0.6);
-                return isLight ? "rgba(0, 0, 0, 0.8)" : "rgba(255, 255, 255, 0.8)";
+                return isLight ? "rgba(0, 0, 0, 0.2)" : "rgba(255, 255, 255, 0.2)";
             });
 
             data3d[0].x = x_data;
@@ -2725,7 +2990,7 @@ def generate_3d_rank_dashboard_from_args(args):
             data3d[0].marker.cmax = cmax;
             data3d[0].marker.colorscale = colorscale;
             data3d[0].marker.line.color = outline_colors;
-            data3d[0].marker.line.width = 1.0;
+            data3d[0].marker.line.width = 0.0;
             if (data3d[0].marker.colorbar) {
                 if (typeof data3d[0].marker.colorbar.title === 'object') {
                     data3d[0].marker.colorbar.title.text = colorbar_title;
