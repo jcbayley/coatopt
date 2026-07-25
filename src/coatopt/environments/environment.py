@@ -54,12 +54,27 @@ class CoatingEnvironment:
         if wavelength_val > 1e-3:
             wavelength_val *= 1e-9
         self.light_wavelength = wavelength_val
-        self.frequency = 100.0
-        self.wBeam = 0.062
-        self.Temp = 293.0
+
+        beam_val = getattr(
+            data,
+            "wBeam",
+            getattr(data, "beam_radius", getattr(data, "beam_width", getattr(data, "w0", 0.062))),
+        )
+        if beam_val > 1.0:
+            beam_val *= 1e-3
+        self.wBeam = beam_val
+
+        self.frequency = getattr(data, "frequency", 100.0)
+        self.Temp = getattr(data, "Temp", getattr(data, "temperature", 293.0))
+
         self.use_optical_thickness = getattr(data, "use_optical_thickness", False)
         self.compute_efi = getattr(data, "compute_efi", True)
-        print(f"[CoatingEnvironment] compute_efi = {self.compute_efi}, light_wavelength = {self.light_wavelength:.4e} m")
+        print(
+            f"[CoatingEnvironment] compute_efi = {self.compute_efi}, "
+            f"light_wavelength = {self.light_wavelength:.4e} m, "
+            f"wBeam = {self.wBeam:.4f} m ({self.wBeam * 1000:.1f} mm), "
+            f"Temp = {self.Temp:.1f} K, frequency = {self.frequency:.1f} Hz"
+        )
 
         # Optimization parameters - strip direction suffixes
         raw_params = data.optimise_parameters or ["reflectivity"]

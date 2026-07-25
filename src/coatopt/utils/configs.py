@@ -10,6 +10,10 @@ class DataConfig:
     """Configuration fields that CoatingEnvironment reads from config.data."""
 
     wavelength: float = 1064e-9  # Target light wavelength (meters)
+    wBeam: float = 0.062  # Laser beam radius/width w0 (meters), default 0.062 m (6.2 cm) for aLIGO
+    beam_radius: float = 0.062  # Alias for wBeam
+    frequency: float = 100.0  # Frequency for thermal noise calculation (Hz)
+    temperature: float = 293.0  # Temperature in Kelvin (K)
     n_layers: int = 20
     min_thickness: float = 10e-9
     max_thickness: float = 500e-9
@@ -152,6 +156,13 @@ def load_config(config_path: str) -> Config:
             # Parse float values
             elif key in (
                 "wavelength",
+                "wbeam",
+                "beam_radius",
+                "beam_width",
+                "w0",
+                "frequency",
+                "temperature",
+                "temp",
                 "min_thickness",
                 "max_thickness",
                 "air_penalty_weight",
@@ -164,6 +175,9 @@ def load_config(config_path: str) -> Config:
                 # Convert nm to meters if value > 1e-3 (e.g. 1550 -> 1550e-9)
                 if key == "wavelength" and val > 1e-3:
                     val *= 1e-9
+                # Convert mm to meters if beam radius > 1.0 (e.g. 62 mm -> 0.062 m)
+                if key in ("wbeam", "beam_radius", "beam_width", "w0") and val > 1.0:
+                    val *= 1e-3
                 data_kwargs[key] = val
             # Parse lists and dicts using ast.literal_eval
             elif key in (
@@ -180,15 +194,44 @@ def load_config(config_path: str) -> Config:
             else:
                 data_kwargs[key] = value
 
-    # Fallback: check [general] section for wavelength if not present in [data]
-    if "wavelength" not in data_kwargs and parser.has_section("general") and "wavelength" in parser["general"]:
-        try:
-            val = float(parser["general"]["wavelength"])
-            if val > 1e-3:
-                val *= 1e-9
-            data_kwargs["wavelength"] = val
-        except Exception:
-            pass
+    # Map beam radius / wBeam / w0 aliases to wBeam and beam_radius
+    for alias in ("beam_radius", "beam_width", "w0", "wbeam"):
+        if alias in data_kwargs:
+            b_val = data_kwargs[alias]
+            data_kwargs["wBeam"] = b_val
+            data_kwargs["beam_radius"] = b_val
+            break
+
+    # Map temperature / temp aliases to temperature and Temp
+    for alias in ("temperature", "temp"):
+        if alias in data_kwargs:
+            t_val = data_kwargs[alias]
+            data_kwargs["temperature"] = t_val
+            data_kwargs["Temp"] = t_val
+            break
+
+    # Fallback: check [general] section if not present in [data]
+    if parser.has_section("general"):
+        if "wavelength" not in data_kwargs and "wavelength" in parser["general"]:
+            try:
+                val = float(parser["general"]["wavelength"])
+                if val > 1e-3:
+                    val *= 1e-9
+                data_kwargs["wavelength"] = val
+            except Exception:
+                pass
+
+        for b_key in ("wbeam", "beam_radius", "beam_width", "w0"):
+            if "wBeam" not in data_kwargs and b_key in parser["general"]:
+                try:
+                    val = float(parser["general"][b_key])
+                    if val > 1.0:
+                        val *= 1e-3
+                    data_kwargs["wBeam"] = val
+                    data_kwargs["beam_radius"] = val
+                    break
+                except Exception:
+                    pass
 
     # Parse Training section
     training_kwargs = {}

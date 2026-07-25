@@ -161,10 +161,18 @@ def run_experiment(
     table.add_column("Parameter", style="bold white")
     table.add_column("Value", style="yellow")
     
+    from coatopt.utils.configs import load_config
+    parsed_cfg = load_config(str(config_path))
+    data_cfg = parsed_cfg.data
+
     table.add_row("Experiment Name", str(experiment_name))
     table.add_row("Algorithm", str(algorithm))
     table.add_row("Save Directory", str(save_dir))
     table.add_row("MLflow Run Name", str(run_dir_name))
+    table.add_row("Wavelength", f"{data_cfg.wavelength * 1e9:.1f} nm ({data_cfg.wavelength:.4e} m)")
+    table.add_row("Beam Radius (wBeam)", f"{data_cfg.wBeam * 1e3:.1f} mm ({data_cfg.wBeam:.4f} m)")
+    table.add_row("Frequency", f"{data_cfg.frequency:.1f} Hz")
+    table.add_row("Temperature", f"{data_cfg.temperature:.1f} K")
     table.add_row("Template Layers", str(n_layers))
     table.add_row("Thickness Bounds", f"{min_thickness:.2f} to {max_thickness:.2f}")
     if seed_override is not None:
