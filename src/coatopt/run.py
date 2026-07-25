@@ -66,11 +66,22 @@ def run_experiment(
         )
 
     # Override seed if provided
+    from rich.console import Console
+    from rich.panel import Panel
+    from rich.table import Table
+    console = Console()
+
     if seed_override is not None:
         parser.set(algorithm, "seed", str(seed_override))
-        print(f"Overriding seed to: {seed_override}")
+        console.print(f"[bold yellow]⚠ Overriding seed to: {seed_override}[/bold yellow]")
 
-    print(f"Running algorithm: {algorithm}")
+    console.print(Panel.fit(
+        f"[bold cyan]CoatOpt Reinforcement Learning & Optimization[/bold cyan]\n"
+        f"Algorithm:   [bold yellow]{algorithm}[/bold yellow]\n"
+        f"Config Path: [bold green]{config_path.resolve()}[/bold green]",
+        title="[bold white]Startup[/bold white]",
+        border_style="cyan"
+    ))
 
     # [General] section
     base_save_dir = parser.get("general", "save_dir")
@@ -79,6 +90,12 @@ def run_experiment(
         if run_name_override
         else parser.get("general", "run_name", fallback="")
     )
+
+    # Validate materials before starting the run
+    materials_path = parser.get("general", "materials_path", fallback=None)
+    if materials_path:
+        from coatopt.utils.utils import validate_materials
+        validate_materials(materials_path)
 
     # Get or generate experiment name (problem definition)
     experiment_name = parser.get("general", "experiment_name", fallback=None)
@@ -110,17 +127,19 @@ def run_experiment(
     # Check if directory exists
     if save_dir.exists():
         if not continue_run:
-            warnings.warn(
-                f"\nWARNING: Run directory already exists: {save_dir}\n"
-                f"    Use --continue to resume training from a checkpoint.\n",
-                UserWarning,
-            )
+            console.print(Panel.fit(
+                f"[bold red]❌ WARNING: Save directory already exists:[/bold red]\n"
+                f"[yellow]{save_dir}[/yellow]\n\n"
+                f"[bold white]Use --continue to resume training from a checkpoint.[/bold white]",
+                border_style="red",
+                title="[bold red]Error[/bold red]"
+            ))
             sys.exit()
         checkpoint_path = save_dir / "checkpoint_latest.pt"
         if checkpoint_path.exists():
-            print(f"Continuing training from checkpoint: {checkpoint_path}")
+            console.print(f"[bold green]✓ Continuing training from checkpoint:[/bold green] [cyan]{checkpoint_path.name}[/cyan]")
         else:
-            print(f"No checkpoint found in {save_dir}, starting from scratch.")
+            console.print(f"[bold yellow]⚠ No checkpoint found in {save_dir.name}, starting from scratch.[/bold yellow]")
 
     save_dir.mkdir(parents=True, exist_ok=True)
 
@@ -137,8 +156,22 @@ def run_experiment(
     mlflow.log_param("config_path", str(config_path))
     mlflow.log_param("run_directory", str(save_dir))
 
-    print(f"Save directory: {save_dir}")
-    print(f"MLflow run: {run_dir_name}")
+    # Print Configuration Summary in a premium Table
+    table = Table(title="[bold magenta]Experiment Run Configuration Summary[/bold magenta]", show_header=True, header_style="bold cyan")
+    table.add_column("Parameter", style="bold white")
+    table.add_column("Value", style="yellow")
+    
+    table.add_row("Experiment Name", str(experiment_name))
+    table.add_row("Algorithm", str(algorithm))
+    table.add_row("Save Directory", str(save_dir))
+    table.add_row("MLflow Run Name", str(run_dir_name))
+    table.add_row("Template Layers", str(n_layers))
+    table.add_row("Thickness Bounds", f"{min_thickness:.2f} to {max_thickness:.2f}")
+    if seed_override is not None:
+        table.add_row("Seed Override", str(seed_override))
+    
+    console.print(table)
+    console.print(f"\n[bold green]🚀 Commencing training via {algorithm}...[/bold green]\n")
 
     # Algorithm-specific training
     start_time = time.time()
@@ -234,23 +267,64 @@ def run_experiment(
 
     # Generate interactive Pareto front visualization (only if results are non-empty)
     try:
-        from coatopt.utils.plot_interactive_pareto import (
-            create_interactive_plot,
-            load_materials,
-        )
         from coatopt.utils.utils import load_pareto_front
-
-        materials_path = parser.get("general", "materials_path")
-        materials = load_materials(materials_path)
         designs_df, values_df, _ = load_pareto_front(save_dir)
 
         if not values_df.empty:
-            print("\nGenerating interactive Pareto front visualization...")
-            fig = create_interactive_plot(
-                designs_df, values_df, materials, max_designs=10
+            from coatopt.utils.plot_interactive_3d_rank import generate_3d_rank_dashboard
+
+            # Read comparison targets from [comparison] section if available
+            compare_refl = None
+            compare_abs = None
+            compare_tn = None
+            compare_thick = None
+            compare_label = "Reference Design"
+            color_mode = "reflectivity_log"
+            rank_by_utility = True
+            precompute_tmm_count = -1
+            target_refl = None
+            target_abs = None
+            target_tn = None
+            target_thick = None
+
+            if parser.has_section("comparison"):
+                compare_refl = parser.getfloat("comparison", "compare_refl", fallback=None)
+                compare_abs = parser.getfloat("comparison", "compare_abs", fallback=None)
+                compare_tn = parser.getfloat("comparison", "compare_tn", fallback=None)
+                compare_thick = parser.getfloat("comparison", "compare_thick", fallback=None)
+                compare_label = parser.get("comparison", "compare_label", fallback="Reference Design")
+                color_mode = parser.get("comparison", "color_mode", fallback="reflectivity_log")
+                rank_by_utility = parser.getboolean("comparison", "rank_by_utility", fallback=True)
+                precompute_tmm_count = parser.getint("comparison", "precompute_tmm_count", fallback=-1)
+                target_refl = parser.getfloat("comparison", "target_refl", fallback=None)
+                target_abs = parser.getfloat("comparison", "target_abs", fallback=None)
+                target_tn = parser.getfloat("comparison", "target_tn", fallback=None)
+                target_thick = parser.getfloat("comparison", "target_thick", fallback=None)
+
+            print("\nGenerating interactive Pareto front visualization (3D Rank Dashboard)...")
+            html_path = generate_3d_rank_dashboard(
+                directory=save_dir,
+                output=save_dir / "pareto_3d_rank.html",
+                light=False,
+                color_by_loss=False,
+                no_open=True,
+                compare_refl=compare_refl,
+                compare_abs=compare_abs,
+                compare_tn=compare_tn,
+                compare_label=compare_label,
+                compare_thick=compare_thick,
+                min_refl=None,
+                max_abs=None,
+                max_tn=None,
+                rank_by_utility=rank_by_utility,
+                top=None,
+                target_refl=target_refl,
+                target_abs=target_abs,
+                target_tn=target_tn,
+                target_thick=target_thick,
+                precompute_tmm_count=precompute_tmm_count,
+                color_mode=color_mode,
             )
-            html_path = save_dir / "pareto_interactive.html"
-            fig.write_html(str(html_path))
             print(f"Saved interactive visualization to {html_path}")
 
             if not designs_df.empty:

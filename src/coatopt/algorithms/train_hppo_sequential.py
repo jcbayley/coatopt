@@ -200,6 +200,13 @@ class CoatOptHybridEnv(gym.Env):
                         else max_frac
                     )
                     best = self.env.warmup_best_rewards.get(obj, 0.0)
+                    
+                    # Force constraint limits to target the actual user/LIGO specs if warmup best was poor
+                    target_specs = {"reflectivity": 0.99999, "absorption": 0.5, "thermal_noise": 1.0e-20}
+                    target_rewards = self.env.compute_objective_rewards(target_specs, normalised=True)
+                    if obj in target_rewards:
+                        best = max(best, target_rewards[obj])
+                        
                     constraints[obj] = frac * best
 
             self.env.target_objective = target_obj
@@ -542,7 +549,7 @@ class HybridActorCritic(nn.Module):
         # Value - select head based on target objective
         value = self.value_heads[target_obj_idx](features).squeeze(-1)
 
-        return log_prob, value, entropy
+        return log_prob, value, entropy, entropy_d, entropy_c
 
 
 def compute_bc_loss_from_pareto(
@@ -626,7 +633,7 @@ def compute_bc_loss_from_pareto(
     mask_t = torch.FloatTensor(np.array(mask_list))
 
     # Compute log probs from policy
-    log_probs, _, _ = policy.evaluate_actions(
+    log_probs, _, _, _, _ = policy.evaluate_actions(
         obs_t, mask_t, mat_t, thick_t, target_obj_idx
     )
     bc_loss = -log_probs.mean()  # Negative log likelihood
@@ -714,6 +721,8 @@ class PPOAgent:
             "policy_loss": 0.0,
             "value_loss": 0.0,
             "entropy": 0.0,
+            "entropy_discrete": 0.0,
+            "entropy_continuous": 0.0,
             "clip_frac": 0.0,
             "bc_loss": 0.0,
         }
@@ -748,7 +757,7 @@ class PPOAgent:
                 end = start + batch_size
                 batch_idx = indices[start:end]
 
-                log_probs, values, entropy = self.policy.evaluate_actions(
+                log_probs, values, entropy, entropy_discrete, entropy_continuous = self.policy.evaluate_actions(
                     obs[batch_idx],
                     masks[batch_idx],
                     materials[batch_idx],
@@ -790,6 +799,8 @@ class PPOAgent:
                 logs["policy_loss"] += policy_loss.item()
                 logs["value_loss"] += value_loss.item()
                 logs["entropy"] += entropy.mean().item()
+                logs["entropy_discrete"] += entropy_discrete.mean().item()
+                logs["entropy_continuous"] += entropy_continuous.mean().item()
                 logs["clip_frac"] += (
                     ((ratio - 1.0).abs() > self.clip_range).float().mean().item()
                 )
@@ -815,6 +826,19 @@ def train(config_path: str, save_dir: str):
     config = load_config(config_path)
     materials_path = parser.get("general", "materials_path")
     materials = load_materials(materials_path)
+
+    # Identify high loss material index (excluding air/0)
+    high_loss_mat_idx = None
+    max_k = -1.0
+    for mat_idx_str, mat_info in materials.items():
+        try:
+            mat_idx = int(mat_idx_str)
+            k_val = mat_info.get("k", 0.0)
+            if k_val is not None and k_val > max_k and mat_idx != 0:
+                max_k = k_val
+                high_loss_mat_idx = mat_idx
+        except Exception:
+            pass
 
     # Read hyperparameters
     total_episodes = _get("total_episodes", 10000, int)
@@ -973,7 +997,61 @@ def train(config_path: str, save_dir: str):
     ep_rewards = []
     ep_vals = []
     ep_lengths = []  # Track episode lengths
-    sample_designs = []  # Track sample designs during warmup for debugging
+    sample_designs = []  # Keep track of sample designs generated during warmup
+
+    # Define beautiful rich live dashboard generator
+    def generate_dashboard(episode, total_episodes, phase, target_obj, lr, ent_coef, best_r, best_abs, best_tn, n_pareto, ppo_logs_mean, mean_len, three_mat_ratio):
+        from rich.table import Table
+        from rich.panel import Panel
+        
+        # 1. Table of targets and current bests
+        best_table = Table(show_header=True, header_style="bold cyan", box=None)
+        best_table.add_column("Objective", style="bold white")
+        best_table.add_column("LIGO Target", style="yellow")
+        best_table.add_column("Best Found So Far", style="green")
+        
+        best_table.add_row("Reflectivity", ">= 0.99999", f"{best_r:.6f}" if best_r > 0 else "N/A")
+        best_table.add_row("Absorption", "<= 0.5 ppm", f"{best_abs:.3f} ppm" if best_abs < 9999.0 else "N/A")
+        best_table.add_row("Thermal Noise", "<= 1.0e-20", f"{best_tn:.3e} m/√Hz" if best_tn < 1.0 else "N/A")
+        
+        # 2. Table of training metrics
+        metrics_table = Table(show_header=True, header_style="bold magenta", box=None)
+        metrics_table.add_column("Metric", style="bold white")
+        metrics_table.add_column("Value", style="yellow")
+        
+        metrics_table.add_row("Policy Loss", f"{ppo_logs_mean.get('policy_loss', 0.0):.4f}")
+        metrics_table.add_row("Value Loss", f"{ppo_logs_mean.get('value_loss', 0.0):.4f}")
+        metrics_table.add_row("Entropy Loss", f"{ppo_logs_mean.get('entropy', 0.0):.4f}")
+        metrics_table.add_row("Clip Frac", f"{ppo_logs_mean.get('clip_frac', 0.0):.4f}")
+        metrics_table.add_row("Mean Ep Length", f"{mean_len:.1f}" if mean_len > 0 else "N/A")
+        
+        # 3. Create progress string
+        progress_pct = min(100.0, (episode / total_episodes) * 100)
+        progress_bar = f"[bold green]Progress:[/bold green] [{'█' * int(progress_pct // 5)}{'░' * (20 - int(progress_pct // 5))}] {progress_pct:.1f}% ({episode}/{total_episodes} episodes)"
+        
+        # 4. Status panel
+        status_info = (
+            f"[bold white]Phase:[/bold white] [bold yellow]{phase.upper()}[/bold yellow]\n"
+            f"[bold white]Target Objective:[/bold white] [cyan]{target_obj}[/cyan]\n"
+            f"[bold white]Learning Rate:[/bold white] [cyan]{lr:.2e}[/cyan]\n"
+            f"[bold white]Entropy Coeff:[/bold white] [cyan]{ent_coef:.4f}[/cyan]\n"
+            f"[bold white]Pareto Front Size:[/bold white] [bold green]{n_pareto} designs[/bold green]\n"
+            f"[bold white]3-Mat Ratio (Pareto):[/bold white] [bold green]{three_mat_ratio * 100:.1f}%[/bold green]"
+        )
+        
+        # Assemble main Layout
+        main_table = Table.grid(padding=1)
+        main_table.add_row(
+            Panel(status_info, title="[bold white]Agent Status[/bold white]", border_style="cyan", expand=True),
+            Panel(best_table, title="[bold white]Pareto Best Targets[/bold white]", border_style="green", expand=True)
+        )
+        main_table.add_row(
+            Panel(progress_bar, border_style="green", expand=True),
+            Panel(metrics_table, title="[bold white]Training Metrics[/bold white]", border_style="magenta", expand=True)
+        )
+        
+        return Panel(main_table, title="[bold cyan]CoatOpt Training Monitor[/bold cyan]", border_style="cyan")
+    
     objectives = list(config.data.optimise_parameters)
 
     # Create objective name -> index mapping for value head selection
@@ -986,6 +1064,8 @@ def train(config_path: str, save_dir: str):
     warmup_end_episode = 0  # Track when warmup ended for phase-based annealing reset
     was_warmup = True  # Track warmup state to detect transition
 
+    last_logged_episode = 0
+
     # Resume from checkpoint if one exists
     ckpt = load_checkpoint(save_dir)
     if ckpt:
@@ -996,6 +1076,7 @@ def train(config_path: str, save_dir: str):
         env.env.pareto_front_episodes = ckpt["pareto"]["episodes"]
         env.env.warmup_best_rewards = ckpt["pareto"]["warmup_best"]
         env.episode_count = ckpt["episode"]
+        last_logged_episode = ckpt["episode"]
         env.is_warmup = ckpt["meta"]["is_warmup"]
         env.env.is_warmup = ckpt["meta"]["is_warmup"]
         warmup_end_episode = ckpt["meta"]["warmup_end_episode"]
@@ -1010,6 +1091,35 @@ def train(config_path: str, save_dir: str):
 
     if verbose:
         print(f"Training for {total_episodes} episodes")
+
+    from rich.live import Live
+    from rich.console import Console
+    console = Console()
+    
+    # Running lists for diagnostics
+    ep_unique_materials = []
+    ep_material_fractions = []
+    ep_max_efi_high_loss = []
+    ep_mean_efi_high_loss = []
+    ep_mean_depth_high_loss = []
+
+    # Initialize PPO logs and best values for rich dashboard
+    ppo_logs_mean = {}
+    mean_len = 0.0
+    phase = "warmup" if env.is_warmup else "constrained"
+    target_obj = env.env.target_objective
+    best_r = 0.0
+    best_abs = 9999.0
+    best_tn = 1.0
+    n_pareto = 0
+    three_mat_ratio = 0.0
+    current_lr = lr
+    current_ent_coef = ent_coef
+
+    live = None
+    if console.is_terminal and verbose:
+        live = Live(generate_dashboard(env.episode_count, total_episodes, phase, target_obj, current_lr, current_ent_coef, best_r, best_abs, best_tn, n_pareto, ppo_logs_mean, mean_len, three_mat_ratio), console=console, auto_refresh=False)
+        live.start()
 
     while env.episode_count < total_episodes:
         # Collect episodes for this update
@@ -1064,6 +1174,70 @@ def train(config_path: str, save_dir: str):
                         ep_rewards.append(reward)
                         ep_vals.append(info["vals"])
                         ep_lengths.append(env.current_layer)  # Track episode length
+
+                        # Extract stack state array (shape is (max_layers, 2))
+                        state_array = env.env.current_state._state
+                        active_mats = set()
+                        total_thick = 0.0
+                        thick_per_mat = {m: 0.0 for m in range(env.env.n_materials)}
+                        for thickness, mat_idx in state_array:
+                            if thickness > 1e-12 and int(mat_idx) != env.env.air_material_index:
+                                active_mats.add(int(mat_idx))
+                                thick_per_mat[int(mat_idx)] += thickness
+                                total_thick += thickness
+                        ep_unique_materials.append(len(active_mats))
+                        
+                        # Store fractional thickness of each material
+                        fracs = {}
+                        if total_thick > 0:
+                            for m in range(env.env.n_materials):
+                                fracs[m] = thick_per_mat[m] / total_thick
+                        else:
+                            for m in range(env.env.n_materials):
+                                fracs[m] = 0.0
+                        ep_material_fractions.append(fracs)
+
+                        # EFI calculation inside the highest-loss material
+                        if env.env.compute_efi:
+                            max_efi_val = 0.0
+                            mean_efi_val = 0.0
+                            mean_depth_val = 0.0
+                            try:
+                                _, _, _, _, field_data = env.env.compute_state_value(
+                                    env.env.current_state, return_field_data=True
+                                )
+                                # field_data has keys: E_total, layer_idx, ds, E, poyn, total_thickness
+                                E_vals = field_data["E"]
+                                layer_indices = field_data["layer_idx"]
+                                depths = field_data["ds"]
+                                
+                                from coatopt.environments.utils.state_utils import trim_state
+                                state_array_full = env.env.current_state.get_array()
+                                state_trim = trim_state(state_array_full)
+                                state_trim = state_trim[::-1]
+                                active_layer_mats = [int(np.argmax(layer[1:])) for layer in state_trim]
+                                
+                                high_loss_E = []
+                                high_loss_depths = []
+                                for idx, l_idx in enumerate(layer_indices):
+                                    if 1 <= l_idx <= len(active_layer_mats):
+                                        mat = active_layer_mats[l_idx - 1]
+                                        if mat == high_loss_mat_idx:
+                                            high_loss_E.append(E_vals[idx])
+                                            high_loss_depths.append(depths[idx])
+                                            
+                                if high_loss_E:
+                                    max_efi_val = float(np.max(high_loss_E))
+                                    mean_efi_val = float(np.mean(high_loss_E))
+                                    D = field_data["total_thickness"]
+                                    if D > 0:
+                                        mean_depth_val = float(np.mean(high_loss_depths) / D)
+                            except Exception:
+                                pass
+                            
+                            ep_max_efi_high_loss.append(max_efi_val)
+                            ep_mean_efi_high_loss.append(mean_efi_val)
+                            ep_mean_depth_high_loss.append(mean_depth_val)
 
                         # Sample designs during warmup for debugging (keep last 100)
                         if env.is_warmup:
@@ -1162,11 +1336,49 @@ def train(config_path: str, save_dir: str):
             env_wrapper=env,
         )
         # Logging
-        if env.episode_count % mlflow_log_freq == 0:
+        # Compute mean metrics from ppo_logs
+        ppo_logs_mean = ppo_logs if isinstance(ppo_logs, dict) else {}
+                    
+        # Update metrics for dashboard
+        phase = "warmup" if env.is_warmup else "constrained"
+        target_obj = env.env.target_objective
+        current_lr_display = agent.optimizer.param_groups[0]["lr"]
+        
+        designs_df, values_df, _ = env.env.export_pareto_dataframes()
+        three_mat_ratio = 0.0
+        if not values_df.empty:
+            best_r = values_df['reflectivity'].max() if 'reflectivity' in values_df.columns else 0.0
+            best_abs = values_df['absorption'].min() if 'absorption' in values_df.columns else 9999.0
+            best_tn = values_df['thermal_noise'].min() if 'thermal_noise' in values_df.columns else 1.0
+            n_pareto = len(values_df)
+
+            # Compute 3-material ratio on Pareto front
+            if not designs_df.empty:
+                air_idx = env.env.air_material_index
+                max_layers = env.env.max_layers
+                mat_cols = [f"material_{j}" for j in range(max_layers) if f"material_{j}" in designs_df.columns]
+                thick_cols = [f"thickness_{j}" for j in range(max_layers) if f"thickness_{j}" in designs_df.columns]
+                if mat_cols and thick_cols:
+                    count_3mat = 0
+                    for _, row in designs_df.iterrows():
+                        active_mats = set()
+                        for m_col, t_col in zip(mat_cols, thick_cols):
+                            if row[t_col] > 1e-12 and int(row[m_col]) != air_idx:
+                                active_mats.add(int(row[m_col]))
+                        if len(active_mats) >= 3:
+                            count_3mat += 1
+                    three_mat_ratio = count_3mat / len(designs_df)
+        
+        if ep_lengths:
+            mean_len = np.mean(ep_lengths[-20:])
+            
+        # Update rich Live dashboard
+        if live is not None:
+            live.update(generate_dashboard(env.episode_count, total_episodes, phase, target_obj, current_lr_display, current_ent_coef, best_r, best_abs, best_tn, n_pareto, ppo_logs_mean, mean_len, three_mat_ratio), refresh=True)
+            
+        if env.episode_count - last_logged_episode >= mlflow_log_freq or env.episode_count == 1:
+            last_logged_episode = env.episode_count
             if verbose:
-                n_pareto = len(env.env.pareto_front_rewards)
-                phase = "warmup" if env.is_warmup else "constrained"
-                current_lr_display = agent.optimizer.param_groups[0]["lr"]
                 air_bias = float(policy.material_head.bias[0].item())
 
                 # Episode length stats
@@ -1176,16 +1388,18 @@ def train(config_path: str, save_dir: str):
                     mean_len = np.mean(recent_lengths)
                     ep_len_str = f" | ep_len {mean_len:.1f}"
 
-                print(
-                    f"  [{phase}] episode {env.episode_count}/{total_episodes} | step {step_count} | "
-                    f"pareto {n_pareto} | ent {current_ent_coef:.4f} | lr {current_lr_display:.2e} | "
-                    f"air_bias {air_bias:.2f}{ep_len_str}"
-                )
+                if live is None:
+                    print(
+                        f"  [{phase}] episode {env.episode_count}/{total_episodes} | step {step_count} | "
+                        f"pareto {n_pareto} | ent {current_ent_coef:.4f} | lr {current_lr_display:.2e} | "
+                        f"air_bias {air_bias:.2f}{ep_len_str}"
+                    )
 
             if mlflow.active_run():
                 metrics = {
                     "step": step_count,
                     "pareto.size": len(env.env.pareto_front_rewards),
+                    "three_material_ratio": three_mat_ratio,
                 }
                 # Add pareto episodes count if BC loss enabled
                 if bc_weight > 0 and hasattr(env.env, "pareto_front_episodes"):
@@ -1257,10 +1471,29 @@ def train(config_path: str, save_dir: str):
                     air_logit = float(sample_logits[0].item())
                     metrics["policy.air_logit_init"] = air_logit
 
+                # Rollout diagnostics
+                if ep_unique_materials:
+                    window = ep_unique_materials[-100:]
+                    metrics["diagnostics.rollout_unique_materials"] = float(np.mean(window))
+                    metrics["diagnostics.rollout_three_mat_ratio"] = float(np.mean([w >= 3 for w in window]))
+                
+                if ep_material_fractions:
+                    window_fracs = ep_material_fractions[-100:]
+                    for m in range(env.env.n_materials):
+                        fracs_m = [f.get(m, 0.0) for f in window_fracs]
+                        metrics[f"diagnostics.fraction_mat_{m}"] = float(np.mean(fracs_m))
+
+                if ep_max_efi_high_loss:
+                    metrics["diagnostics.max_efi_high_loss"] = float(np.mean(ep_max_efi_high_loss[-100:]))
+                if ep_mean_efi_high_loss:
+                    metrics["diagnostics.mean_efi_high_loss"] = float(np.mean(ep_mean_efi_high_loss[-100:]))
+                if ep_mean_depth_high_loss:
+                    metrics["diagnostics.mean_depth_high_loss"] = float(np.mean(ep_mean_depth_high_loss[-100:]))
+
                 mlflow.log_metrics(metrics, step=env.episode_count)
 
         # Periodic checkpointing
-        if env.episode_count % plot_freq == 0 and env.episode_count > 0:
+        if (env.episode_count - 1) % plot_freq == 0 and env.episode_count > 1:
             try:
                 designs_df, values_df, rewards_df = env.env.export_pareto_dataframes()
                 if not values_df.empty:
@@ -1279,6 +1512,85 @@ def train(config_path: str, save_dir: str):
                         save_path / "pareto_rewards.csv",
                         index=False,
                     )
+
+                    # Update training progress history log and 4-panel visualizer
+                    try:
+                        from coatopt.utils.plot_progress import update_training_progress_plot
+                        update_training_progress_plot(save_path, env.episode_count, values_df)
+                    except Exception as e:
+                        if verbose:
+                            print(f"  [progress plot] skipped: {e}")
+
+                    # Update training diagnostics history log and 4-panel diagnostic visualizer
+                    try:
+                        from coatopt.utils.plot_progress import update_training_diagnostics_plot
+                        
+                        # Compute current hypervolume on checkpoint
+                        pareto_front_chk = env.env.get_pareto_front(space="reward")
+                        hv_val = 0.0
+                        if len(pareto_front_chk) > 1:
+                            try:
+                                hv_val = env.env.compute_hypervolume(space="reward")
+                            except Exception:
+                                pass
+
+                        diagnostics_data = {
+                            "three_mat_ratio_pareto": three_mat_ratio,
+                            "unique_materials_rollout": np.mean(ep_unique_materials[-plot_freq:]) if ep_unique_materials else 0.0,
+                            "three_mat_ratio_rollout": np.mean([w >= 3 for w in ep_unique_materials[-plot_freq:]]) if ep_unique_materials else 0.0,
+                            "max_efi_high_loss": np.mean(ep_max_efi_high_loss[-plot_freq:]) if ep_max_efi_high_loss else 0.0,
+                            "mean_depth_high_loss": np.mean(ep_mean_depth_high_loss[-plot_freq:]) if ep_mean_depth_high_loss else 0.0,
+                            "entropy_discrete": ppo_logs_mean.get("entropy_discrete", 0.0),
+                            "entropy_continuous": ppo_logs_mean.get("entropy_continuous", 0.0),
+                            "reward_mean": np.mean(ep_rewards[-plot_freq:]) if ep_rewards else 0.0,
+                            "hypervolume": hv_val,
+                        }
+                        for m in range(env.env.n_materials):
+                            fracs_m = [f.get(m, 0.0) for f in ep_material_fractions[-plot_freq:]] if ep_material_fractions else []
+                            diagnostics_data[f"fraction_mat_{m}"] = np.mean(fracs_m) if fracs_m else 0.0
+                            
+                        update_training_diagnostics_plot(save_path, env.episode_count, diagnostics_data)
+                    except Exception as e:
+                        if verbose:
+                            print(f"  [diagnostics plot] skipped: {e}")
+
+                    # Save a snapshot of the best design to create a GIF later
+                    try:
+                        best_idx = 0
+                        if "thermal_noise" in values_df.columns and not values_df["thermal_noise"].isna().all():
+                            best_idx = values_df["thermal_noise"].idxmin()
+                        elif "absorption" in values_df.columns and not values_df["absorption"].isna().all():
+                            best_idx = values_df["absorption"].idxmin()
+                            
+                        best_design = designs_df.iloc[best_idx]
+                        thick_cols = [c for c in designs_df.columns if c.startswith("thickness_")]
+                        mat_cols = [c for c in designs_df.columns if c.startswith("material_")]
+                        thick_cols = sorted(thick_cols, key=lambda x: int(x.split("_")[1]))
+                        mat_cols = sorted(mat_cols, key=lambda x: int(x.split("_")[1]))
+                        
+                        thicknesses = best_design[thick_cols].values
+                        material_indices = best_design[mat_cols].values.astype(int)
+                        
+                        from coatopt.utils.plotting import plot_coating_stack
+                        history_dir = save_path / "design_history"
+                        history_dir.mkdir(parents=True, exist_ok=True)
+                        img_path = history_dir / f"design_ep_{env.episode_count:06d}.png"
+                        
+                        refl = values_df.iloc[best_idx].get("reflectivity", 0.0)
+                        abs_ppm = values_df.iloc[best_idx].get("absorption", 999.0)
+                        tn = values_df.iloc[best_idx].get("thermal_noise", 1e-15)
+                        
+                        plot_coating_stack(
+                            thicknesses=thicknesses,
+                            material_indices=material_indices,
+                            materials=materials,
+                            save_path=img_path,
+                            title=f"Best Pareto Design (Episode {env.episode_count})\nR={refl:.6f}, Abs={abs_ppm:.2f} ppm, TN={tn:.3e}",
+                            convert_to_nm=True,
+                        )
+                    except Exception as e:
+                        if verbose:
+                            print(f"  [design snapshot plot] skipped: {e}")
 
                     # Save model weights + training state
                     save_checkpoint(
@@ -1318,11 +1630,44 @@ def train(config_path: str, save_dir: str):
             )
 
             save_path = Path(save_dir)
+            
+            # Save final training progress plot
+            try:
+                from coatopt.utils.plot_progress import update_training_progress_plot
+                update_training_progress_plot(save_path, env.episode_count, values_df)
+            except Exception as e:
+                if verbose:
+                    print(f"  [final progress plot] skipped: {e}")
+
             plot_design_diversity(designs_df, values_df, save_path)
             plot_cluster_designs(designs_df, values_df, save_path, materials=materials)
+
+            # Compile design evolution GIF from all stored PNG frames
+            try:
+                from PIL import Image
+                history_dir = save_path / "design_history"
+                png_files = sorted(list(history_dir.glob("design_ep_*.png")))
+                if len(png_files) > 1:
+                    frames = [Image.open(f) for f in png_files]
+                    gif_path = save_path / "design_evolution.gif"
+                    frames[0].save(
+                        gif_path,
+                        save_all=True,
+                        append_images=frames[1:],
+                        duration=500, # 500ms per frame
+                        loop=0
+                    )
+                    if verbose:
+                        print(f"  Saved design evolution animation to {gif_path}")
+            except Exception as gif_err:
+                if verbose:
+                    print(f"  [gif generation] skipped: {gif_err}")
         except Exception as e:
             if verbose:
                 print(f"  [diversity plot] skipped: {e}")
+
+    if live is not None:
+        live.stop()
 
     # Return results
     return {

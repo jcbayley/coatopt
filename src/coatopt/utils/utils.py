@@ -42,6 +42,63 @@ def load_materials(path: str) -> dict:
     return {int(k): v for k, v in data.items()}
 
 
+def validate_materials(materials_path: str) -> None:
+    """Validate materials JSON file based on the following rules:
+    1. Keys must be quoted strings of consecutive integers starting from "0" (ascending order, no gaps).
+    2. Air must always be "0" (i.e., key "0" must represent "air").
+    3. Non-air materials must not contain any null (None) values.
+    """
+    path = Path(materials_path)
+    if not path.exists():
+        raise FileNotFoundError(f"Materials file not found: {materials_path}")
+
+    with open(path) as f:
+        try:
+            raw_data = json.load(f)
+        except json.JSONDecodeError as e:
+            raise ValueError(f"Invalid JSON format in materials file: {e}")
+
+    if not isinstance(raw_data, dict):
+        raise ValueError("Materials file must represent a JSON object (dictionary).")
+
+    keys = list(raw_data.keys())
+
+    # Rule 1: Check keys are in ascending consecutive order starting from "0"
+    for i in range(len(keys)):
+        expected_key = str(i)
+        if keys[i] != expected_key:
+            raise ValueError(
+                f"Materials keys must be consecutive, quoted integers starting from '0' in ascending order.\n"
+                f"Expected key at index {i} to be '{expected_key}', but found '{keys[i]}' (or keys are out of order/contain gaps)."
+            )
+
+    # Rule 2: Air must always be "0"
+    air_material = raw_data.get("0")
+    if air_material is None:
+        raise ValueError("Materials file must contain key '0' representing 'air'.")
+
+    name = air_material.get("name", "")
+    if not name or "air" not in name.lower():
+        raise ValueError(
+            f"Material '0' must represent 'air'. Found name: '{name}'"
+        )
+
+    # Rule 3: Check for any null/None values in non-air materials
+    for key, properties in raw_data.items():
+        if key == "0":
+            continue
+
+        if not isinstance(properties, dict):
+            raise ValueError(f"Properties for material '{key}' must be a dictionary.")
+
+        for prop_name, prop_val in properties.items():
+            if prop_val is None:
+                raise ValueError(
+                    f"Validation Error: Null value found in non-air material '{key}' ({properties.get('name', 'unnamed')}):\n"
+                    f"Property '{prop_name}' is null. All properties for non-air materials must be specified and non-null."
+                )
+
+
 def evaluate_model(model, env, n_episodes: int = 10, use_action_masks: bool = False):
     """Evaluate trained model.
 
@@ -108,14 +165,6 @@ def convert_pymoo_to_dataframes(result, env):
         thicknesses = x[: env.max_layers]
         materials_idx = np.floor(x[env.max_layers :]).astype(int)
 
-        # Apply air cascade so saved designs match what was actually evaluated
-        air_found = False
-        for k in range(env.max_layers):
-            if air_found or materials_idx[k] == env.air_material_index:
-                air_found = True
-                materials_idx[k] = env.air_material_index
-                thicknesses[k] = 0.0
-
         design_row = {}
         for j in range(env.max_layers):
             design_row[f"thickness_{j}"] = thicknesses[j]
@@ -130,9 +179,14 @@ def convert_pymoo_to_dataframes(result, env):
             materials=env.materials,
         )
 
-        # Fill state (air cascade already applied above)
+        # Fill state (handle air layer constraint)
+        air_found = False
         for k in range(env.max_layers):
-            state.set_layer(k, thicknesses[k], materials_idx[k])
+            if air_found or materials_idx[k] == env.air_material_index:
+                air_found = True
+                state.set_layer(k, 0.0, env.air_material_index)
+            else:
+                state.set_layer(k, thicknesses[k], materials_idx[k])
 
         # Get rewards and values
         normalised_rewards, vals = env.compute_reward(state, normalised=True)

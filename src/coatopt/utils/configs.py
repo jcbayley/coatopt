@@ -9,6 +9,7 @@ from dataclasses import dataclass, field
 class DataConfig:
     """Configuration fields that CoatingEnvironment reads from config.data."""
 
+    wavelength: float = 1064e-9  # Target light wavelength (meters)
     n_layers: int = 20
     min_thickness: float = 10e-9
     max_thickness: float = 500e-9
@@ -46,6 +47,11 @@ class DataConfig:
     # Air penalty (penalize early termination)
     apply_air_penalty: bool = True
     air_penalty_weight: float = 0.5
+
+    # Reflectivity Gatekeeper (0.0 to disable, or e.g. 0.99 / 0.999)
+    reflectivity_gatekeeper_threshold: float = 0.0
+    reflectivity_gatekeeper_initial_threshold: float = 0.0
+    material_diversity_bonus: float = 0.0
 
     # Preference constraints (disabled by default for SB3)
     apply_preference_constraints: bool = False
@@ -145,12 +151,20 @@ def load_config(config_path: str) -> Config:
                 data_kwargs[key] = int(value)
             # Parse float values
             elif key in (
+                "wavelength",
                 "min_thickness",
                 "max_thickness",
                 "air_penalty_weight",
                 "objective_bounds_penalty_weight",
+                "reflectivity_gatekeeper_threshold",
+                "reflectivity_gatekeeper_initial_threshold",
+                "material_diversity_bonus",
             ):
-                data_kwargs[key] = float(value)
+                val = float(value)
+                # Convert nm to meters if value > 1e-3 (e.g. 1550 -> 1550e-9)
+                if key == "wavelength" and val > 1e-3:
+                    val *= 1e-9
+                data_kwargs[key] = val
             # Parse lists and dicts using ast.literal_eval
             elif key in (
                 "optimise_parameters",
@@ -165,6 +179,16 @@ def load_config(config_path: str) -> Config:
                     data_kwargs[key] = value
             else:
                 data_kwargs[key] = value
+
+    # Fallback: check [general] section for wavelength if not present in [data]
+    if "wavelength" not in data_kwargs and parser.has_section("general") and "wavelength" in parser["general"]:
+        try:
+            val = float(parser["general"]["wavelength"])
+            if val > 1e-3:
+                val *= 1e-9
+            data_kwargs["wavelength"] = val
+        except Exception:
+            pass
 
     # Parse Training section
     training_kwargs = {}

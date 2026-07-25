@@ -49,14 +49,17 @@ class CoatingEnvironment:
         self.air_material_index = 0
         self.substrate_material_index = 1
 
-        # Physics parameters (could add to config if needed)
-        self.light_wavelength = 1064e-9
+        # Physics parameters
+        wavelength_val = getattr(data, "wavelength", 1064e-9)
+        if wavelength_val > 1e-3:
+            wavelength_val *= 1e-9
+        self.light_wavelength = wavelength_val
         self.frequency = 100.0
         self.wBeam = 0.062
         self.Temp = 293.0
         self.use_optical_thickness = getattr(data, "use_optical_thickness", False)
         self.compute_efi = getattr(data, "compute_efi", True)
-        print(f"[CoatingEnvironment] compute_efi = {self.compute_efi}")
+        print(f"[CoatingEnvironment] compute_efi = {self.compute_efi}, light_wavelength = {self.light_wavelength:.4e} m")
 
         # Optimization parameters - strip direction suffixes
         raw_params = data.optimise_parameters or ["reflectivity"]
