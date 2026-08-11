@@ -9,6 +9,11 @@ from dataclasses import dataclass, field
 class DataConfig:
     """Configuration fields that CoatingEnvironment reads from config.data."""
 
+    wavelength: float = 1064e-9  # Target light wavelength (meters)
+    wBeam: float = 0.062  # Laser beam radius/width w0 (meters), default 0.062 m (6.2 cm) for aLIGO
+    beam_radius: float = 0.062  # Alias for wBeam
+    frequency: float = 100.0  # Frequency for thermal noise calculation (Hz)
+    temperature: float = 293.0  # Temperature in Kelvin (K)
     n_layers: int = 20
     min_thickness: float = 10e-9
     max_thickness: float = 500e-9
@@ -145,12 +150,27 @@ def load_config(config_path: str) -> Config:
                 data_kwargs[key] = int(value)
             # Parse float values
             elif key in (
+                "wavelength",
+                "wbeam",
+                "beam_radius",
+                "beam_width",
+                "w0",
+                "frequency",
+                "temperature",
+                "temp",
                 "min_thickness",
                 "max_thickness",
                 "air_penalty_weight",
                 "objective_bounds_penalty_weight",
             ):
-                data_kwargs[key] = float(value)
+                val = float(value)
+                # Convert nm to meters if value > 1e-3 (e.g. 1550 -> 1550e-9)
+                if key == "wavelength" and val > 1e-3:
+                    val *= 1e-9
+                # Convert mm to meters if beam radius > 1.0 (e.g. 62 mm -> 0.062 m)
+                if key in ("wbeam", "beam_radius", "beam_width", "w0") and val > 1.0:
+                    val *= 1e-3
+                data_kwargs[key] = val
             # Parse lists and dicts using ast.literal_eval
             elif key in (
                 "optimise_parameters",
@@ -165,6 +185,46 @@ def load_config(config_path: str) -> Config:
                     data_kwargs[key] = value
             else:
                 data_kwargs[key] = value
+
+    # Map beam radius aliases (INI keys are lowercased by configparser) onto the
+    # wBeam/beam_radius dataclass fields, removing the alias keys so
+    # DataConfig(**data_kwargs) only receives real fields.
+    beam_val = None
+    for alias in ("wbeam", "beam_radius", "beam_width", "w0"):
+        if alias in data_kwargs:
+            if beam_val is None:
+                beam_val = data_kwargs[alias]
+            del data_kwargs[alias]
+    if beam_val is not None:
+        data_kwargs["wBeam"] = beam_val
+        data_kwargs["beam_radius"] = beam_val
+
+    # Map temp alias onto temperature
+    if "temp" in data_kwargs:
+        data_kwargs.setdefault("temperature", data_kwargs.pop("temp"))
+
+    # Fallback: check [general] section if not present in [data]
+    if parser.has_section("general"):
+        if "wavelength" not in data_kwargs and "wavelength" in parser["general"]:
+            try:
+                val = float(parser["general"]["wavelength"])
+                if val > 1e-3:
+                    val *= 1e-9
+                data_kwargs["wavelength"] = val
+            except ValueError:
+                pass
+
+        for b_key in ("wbeam", "beam_radius", "beam_width", "w0"):
+            if "wBeam" not in data_kwargs and b_key in parser["general"]:
+                try:
+                    val = float(parser["general"][b_key])
+                    if val > 1.0:
+                        val *= 1e-3
+                    data_kwargs["wBeam"] = val
+                    data_kwargs["beam_radius"] = val
+                    break
+                except ValueError:
+                    pass
 
     # Parse Training section
     training_kwargs = {}

@@ -98,6 +98,34 @@ class TestCoatingEnvironmentInitialization:
         assert len(env.optimise_parameters) == 1
         assert env.optimise_parameters[0] == "reflectivity"
 
+    def test_wavelength_config(self, basic_config, materials, tmp_path):
+        """Test default and custom wavelength configurations."""
+        # Default wavelength (1064 nm -> 1064e-9 m)
+        env = CoatingEnvironment(basic_config, materials)
+        assert env.light_wavelength == 1064e-9
+
+        # Custom wavelength in meters (1550e-9)
+        basic_config.data.wavelength = 1550e-9
+        env_1550 = CoatingEnvironment(basic_config, materials)
+        assert env_1550.light_wavelength == 1550e-9
+
+        # Custom wavelength in nm (1550) -> automatically converted to meters
+        basic_config.data.wavelength = 1550.0
+        env_1550_nm = CoatingEnvironment(basic_config, materials)
+        assert env_1550_nm.light_wavelength == pytest.approx(1550e-9, rel=1e-12)
+
+        # Test load_config from INI file
+        from coatopt.utils.configs import load_config
+
+        ini_content = """[data]
+wavelength = 1550
+n_layers = 10
+"""
+        config_file = tmp_path / "test_config.ini"
+        config_file.write_text(ini_content)
+        parsed_config = load_config(str(config_file))
+        assert parsed_config.data.wavelength == pytest.approx(1550e-9, rel=1e-12)
+
     def test_objective_directions(self, basic_config, materials):
         """Test objective directions are set correctly."""
         env = CoatingEnvironment(basic_config, materials)
@@ -801,3 +829,54 @@ class TestCoatingEnvironmentObservedBounds:
         # reflectivity bounds should remain at infinity
         assert env.observed_value_bounds["reflectivity"]["min"] == np.inf
         assert env.observed_value_bounds["absorption"]["min"] == 100.0
+
+
+def test_beam_parameters_configuration(materials):
+    """Test beam parameters (wBeam, beam_radius, frequency, temperature) in DataConfig and environment."""
+    data = DataConfig(
+        n_layers=10,
+        wavelength=1550e-9,
+        wBeam=0.045,  # 45 mm beam radius
+        frequency=200.0,
+        temperature=300.0,
+    )
+    env = CoatingEnvironment(Config(data=data, training=TrainingConfig()), materials)
+    assert env.light_wavelength == 1550e-9
+    assert env.wBeam == 0.045
+    assert env.frequency == 200.0
+    assert env.Temp == 300.0
+
+    # Test mm to meters conversion if beam_radius > 1.0 (e.g. 62.0 mm)
+    data_mm = DataConfig(
+        n_layers=10,
+        wBeam=62.0,  # 62 mm -> should convert to 0.062 m
+    )
+    env_mm = CoatingEnvironment(Config(data=data_mm, training=TrainingConfig()), materials)
+    assert abs(env_mm.wBeam - 0.062) < 1e-6
+
+
+def test_load_config_beam_parameters(tmp_path):
+    """Test parsing beam parameters from INI configuration file."""
+    from coatopt.utils.configs import load_config
+
+    config_content = """
+[data]
+n_layers = 10
+wavelength = 1550
+wBeam = 0.05
+frequency = 120.0
+temperature = 295.0
+
+[general]
+save_dir = runs/test
+run_name = test_run
+"""
+    config_file = tmp_path / "config_test.ini"
+    config_file.write_text(config_content)
+
+    cfg = load_config(str(config_file))
+    assert abs(cfg.data.wavelength - 1550e-9) < 1e-12
+    assert abs(cfg.data.wBeam - 0.05) < 1e-6
+    assert abs(cfg.data.beam_radius - 0.05) < 1e-6
+    assert cfg.data.frequency == 120.0
+    assert cfg.data.temperature == 295.0
