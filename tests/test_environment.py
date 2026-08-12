@@ -5,7 +5,6 @@ Tests the core functionality including initialization, state management,
 reward computation, step function, and multi-objective optimization.
 """
 
-import json
 from pathlib import Path
 
 import numpy as np
@@ -14,17 +13,14 @@ import pytest
 from coatopt.environments.environment import CoatingEnvironment
 from coatopt.environments.state import CoatingState
 from coatopt.utils.configs import Config, DataConfig, TrainingConfig
+from coatopt.utils.utils import load_materials
 
 
 @pytest.fixture
 def materials():
-    """Load materials from the default materials.json file."""
+    """Load materials from the default materials.json library."""
     materials_path = Path(__file__).parent.parent / "experiments" / "materials.json"
-    with open(materials_path) as f:
-        materials_dict = json.load(f)
-
-    # Convert string keys to integers
-    return {int(k): v for k, v in materials_dict.items()}
+    return load_materials(str(materials_path))
 
 
 @pytest.fixture

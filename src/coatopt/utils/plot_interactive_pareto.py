@@ -10,7 +10,6 @@ with points coloured by a third objective, plus coating design in the top-right 
 import argparse
 import configparser
 import itertools
-import json
 import os
 from pathlib import Path
 from typing import Dict, List, Tuple
@@ -26,14 +25,11 @@ from coatopt.utils.interactive_plots import (
     _obj_scale,
     _obj_transform,
 )
-from coatopt.utils.utils import load_pareto_front
-
-
-def load_materials(materials_path: str) -> Dict:
-    """Load material properties from JSON file."""
-    with open(materials_path, "r") as f:
-        materials = json.load(f)
-    return {int(k): v for k, v in materials.items()}
+from coatopt.utils.utils import (
+    load_materials,
+    load_materials_from_parser,
+    load_pareto_front,
+)
 
 
 def parse_design(row: pd.Series) -> Tuple[np.ndarray, np.ndarray]:
@@ -496,39 +492,29 @@ Example:
         print(f"Error: config.ini not found in {directory}")
         return 1
 
-    # Load config to get materials path
+    # Load config to get materials
     config = configparser.ConfigParser()
     config.read(config_path)
 
     try:
+        materials = load_materials_from_parser(config, config_path)
+    except FileNotFoundError:
+        # Older run directories reference the library relative to where the
+        # run was launched; walk up from the run directory to find it.
         materials_path = config.get("general", "materials_path")
-        # Resolve relative to config directory or one level above
-        if not Path(materials_path).is_absolute():
-            candidate1 = (config_path.parent / materials_path).resolve()
-            candidate2 = (config_path.parent.parent / materials_path).resolve()
-            candidate3 = (config_path.parent.parent.parent / materials_path).resolve()
-            candidate4 = (
-                config_path.parent.parent.parent.parent / materials_path
-            ).resolve()
-
-            if candidate1.exists():
-                materials_path = candidate1
-            elif candidate2.exists():
-                materials_path = candidate2
-            elif candidate3.exists():
-                materials_path = candidate3
-            elif candidate4.exists():
-                materials_path = candidate4
-            else:
-                print("Error: Could not find materials file at:")
-                print(f"  {candidate1}")
-                print(f"  {candidate2}")
-                print(f"  {candidate3}")
-                return 1
-        else:
-            materials_path = Path(materials_path)
-    except (configparser.NoSectionError, configparser.NoOptionError):
-        print("Error: Could not find 'materials_path' in config.ini")
+        candidates = [
+            (parent / materials_path).resolve()
+            for parent in config_path.resolve().parents[:4]
+        ]
+        found = next((c for c in candidates if c.exists()), None)
+        if found is None:
+            print("Error: Could not find materials file at:")
+            for candidate in candidates:
+                print(f"  {candidate}")
+            return 1
+        materials = load_materials(str(found))
+    except (configparser.NoSectionError, configparser.NoOptionError, ValueError) as e:
+        print(f"Error: {e}")
         return 1
 
     # Output path
@@ -542,10 +528,6 @@ Example:
     except FileNotFoundError as e:
         print(f"Error: {e}")
         return 1
-
-    print(f"Loading materials from {materials_path}...")
-    materials = load_materials(str(materials_path))
-    print(f"  Found {len(materials)} materials")
 
     print("Creating interactive visualization...")
     fig, n_pairs = create_interactive_plot(

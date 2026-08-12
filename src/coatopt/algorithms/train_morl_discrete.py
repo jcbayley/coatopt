@@ -51,7 +51,7 @@ import torch as th
 from coatopt.environments.environment import CoatingEnvironment
 from coatopt.utils.configs import Config, load_config
 from coatopt.utils.plotting import plot_pareto_front
-from coatopt.utils.utils import load_materials, save_run_metadata
+from coatopt.utils.utils import load_materials_from_parser, save_run_metadata
 
 # ============================================================================
 # MO-Gymnasium wrapper — Discrete action space
@@ -728,8 +728,7 @@ def train(config_path: str, algorithm: str = "gpipd", save_dir: str = None) -> t
     section = "morl_discrete" if parser.has_section("morl_discrete") else "morl"
 
     config = load_config(config_path)
-    materials_path = parser.get("general", "materials_path")
-    materials = load_materials(str(materials_path))
+    materials = load_materials_from_parser(parser, config_path)
 
     seed = parser.getint(section, "seed", fallback=42)
     total_timesteps = parser.getint(section, "total_timesteps", fallback=500_000)

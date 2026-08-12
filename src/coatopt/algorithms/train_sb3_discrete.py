@@ -48,7 +48,7 @@ from coatopt.utils.callbacks import (
     PolicyResetCallback,
 )
 from coatopt.utils.configs import Config, load_config
-from coatopt.utils.utils import evaluate_model, load_materials
+from coatopt.utils.utils import evaluate_model, load_materials_from_parser
 
 
 class CoatOptDiscreteGymWrapper(gym.Env):
@@ -510,9 +510,6 @@ def train(config_path: str, save_dir: str = None):
     parser = configparser.ConfigParser()
     parser.read(config_path)
 
-    # [General] section
-    materials_path = parser.get("general", "materials_path")
-
     # If save_dir not provided, create it
     if save_dir is None:
         base_save_dir = parser.get("general", "save_dir")
@@ -568,11 +565,7 @@ def train(config_path: str, save_dir: str = None):
     save_dir = Path(save_dir)
     save_dir.mkdir(parents=True, exist_ok=True)
 
-    if materials_path is None:
-        materials_path = Path(__file__).parent / "config" / "materials.json"
-
-    materials = load_materials(str(materials_path))
-    print(f"Loaded {len(materials)} materials from {materials_path}")
+    materials = load_materials_from_parser(parser, config_path)
 
     # Set random seeds for reproducibility
     random.seed(seed)

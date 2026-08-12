@@ -38,7 +38,7 @@ from coatopt.environments.environment import CoatingEnvironment
 from coatopt.environments.state import CoatingState
 from coatopt.utils.configs import load_config
 from coatopt.utils.plotting import plot_coating_stack, plot_pareto_front
-from coatopt.utils.utils import convert_pymoo_to_dataframes, load_materials
+from coatopt.utils.utils import convert_pymoo_to_dataframes, load_materials_from_parser
 
 
 class CoatingOptimizationProblem(ElementwiseProblem):
@@ -195,7 +195,6 @@ def train_genetic(config_path: str, save_dir: Optional[str] = None):
     # [General] section
     if save_dir is None:
         save_dir = parser.get("general", "save_dir")
-    materials_path = parser.get("general", "materials_path")
 
     # [nsga2] section
     total_generations = parser.getint("nsga2", "n_generations")
@@ -217,7 +216,7 @@ def train_genetic(config_path: str, save_dir: Optional[str] = None):
     save_dir.mkdir(parents=True, exist_ok=True)
 
     # Load materials
-    materials = load_materials(str(materials_path))
+    materials = load_materials_from_parser(parser, config_path)
 
     # Load config from file
     config = load_config(config_path)

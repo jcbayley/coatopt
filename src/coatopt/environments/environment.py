@@ -45,9 +45,17 @@ class CoatingEnvironment:
         self.min_thickness = data.min_thickness
         self.max_thickness = data.max_thickness
 
-        # Material indices (could be in config, using defaults for now)
-        self.air_material_index = 0
-        self.substrate_material_index = 1
+        # Special materials are found by name, so a reordered materials file
+        # cannot silently swap which physical material plays which role.
+        self.air_material_index = self.material_index_by_name("air")
+        non_air_indices = [
+            i for i in self.materials if i != self.air_material_index
+        ]
+        if not non_air_indices:
+            raise ValueError(
+                "Materials must include at least one non-air material"
+            )
+        self.substrate_material_index = min(non_air_indices)
 
         # Physics parameters
         wavelength_val = getattr(data, "wavelength", 1064e-9)
@@ -159,6 +167,18 @@ class CoatingEnvironment:
             len(self.optimise_parameters) if self.use_constrained_training else 0
         )
         self.obs_space_shape = (self.max_layers, features_per_layer, n_constraints)
+
+    def material_index_by_name(self, name: str) -> int:
+        """Return the index of the material with the given name (case-insensitive)."""
+        for index, props in self.materials.items():
+            if str(props.get("name", "")).lower() == name.lower():
+                return index
+        available = [
+            str(props.get("name", index)) for index, props in self.materials.items()
+        ]
+        raise ValueError(
+            f"Material '{name}' not found in materials. Available: {available}"
+        )
 
     def reset(self) -> CoatingState:
         """Reset environment to initial state."""
