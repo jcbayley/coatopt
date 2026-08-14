@@ -48,13 +48,9 @@ class CoatingEnvironment:
         # Special materials are found by name, so a reordered materials file
         # cannot silently swap which physical material plays which role.
         self.air_material_index = self.material_index_by_name("air")
-        non_air_indices = [
-            i for i in self.materials if i != self.air_material_index
-        ]
+        non_air_indices = [i for i in self.materials if i != self.air_material_index]
         if not non_air_indices:
-            raise ValueError(
-                "Materials must include at least one non-air material"
-            )
+            raise ValueError("Materials must include at least one non-air material")
         self.substrate_material_index = min(non_air_indices)
 
         # Physics parameters
@@ -66,7 +62,11 @@ class CoatingEnvironment:
         beam_val = getattr(
             data,
             "wBeam",
-            getattr(data, "beam_radius", getattr(data, "beam_width", getattr(data, "w0", 0.062))),
+            getattr(
+                data,
+                "beam_radius",
+                getattr(data, "beam_width", getattr(data, "w0", 0.062)),
+            ),
         )
         if beam_val > 1.0:
             beam_val *= 1e-3
