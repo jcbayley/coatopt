@@ -417,13 +417,14 @@ class TestCoatingEnvironmentStateValue:
         state.set_layer(0, 100e-9, 2)  # SiO2
         state.set_layer(1, 100e-9, 3)  # aSi
 
-        reflectivity, thermal_noise, absorption, thickness = env.compute_state_value(
-            state
+        reflectivity, thermal_noise, absorption, thickness, transmission = (
+            env.compute_state_value(state)
         )
 
         assert isinstance(reflectivity, (float, np.floating))
         assert isinstance(absorption, (float, np.floating))
         assert isinstance(thickness, (float, np.floating))
+        assert isinstance(transmission, (float, np.floating))
         # thermal_noise can be None if not computed
         assert thermal_noise is None or isinstance(thermal_noise, (float, np.floating))
 
@@ -433,8 +434,8 @@ class TestCoatingEnvironmentStateValue:
         state = env.reset()
 
         # Don't add any layers (all air)
-        reflectivity, thermal_noise, absorption, thickness = env.compute_state_value(
-            state
+        reflectivity, thermal_noise, absorption, thickness, transmission = (
+            env.compute_state_value(state)
         )
 
         # Empty coating returns substrate properties
@@ -452,7 +453,7 @@ class TestCoatingEnvironmentStateValue:
 
         result = env.compute_state_value(state, return_field_data=True)
 
-        assert len(result) == 5  # (r, thermal, absorption, thickness, field_data)
+        assert len(result) == 6  # (r, thermal, absorption, thickness, transmission, field_data)
 
 
 class TestCoatingEnvironmentActionSpace:

@@ -104,8 +104,8 @@ def create_reference_data(
         )
 
         # Use compute_reward to get both values and rewards
-        reflectivity, thermal_noise, absorption, thickness = env.compute_state_value(
-            coating_state
+        reflectivity, thermal_noise, absorption, thickness, transmission = (
+            env.compute_state_value(coating_state)
         )
         rewards, vals = env.compute_reward(coating_state, normalised=True)
 

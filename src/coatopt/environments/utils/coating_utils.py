@@ -459,7 +459,7 @@ def merit_function(
     if compute_efi:
         # Full EFI calculation via 500-point TMM loop (slow but accurate)
         # logging.info(f"Calculating EFI .......")
-        E_total, layer_idx, ds, E, poyn, total_absorption, reflectivity = (
+        E_total, layer_idx, ds, E, poyn, total_absorption, reflectivity, transmission = (
             CalculateEFI_tmm(
                 dOpt=layer_optical_thicknesses,
                 materialLayer=layer_material_inds,
@@ -481,6 +481,8 @@ def merit_function(
             light_wavelength, layer_optical_thicknesses, aLayer, nLayer, rbar, r
         )
         D = float(np.sum(layer_thicknesses))  # Total physical thickness in m
+        # Lossless recursion: energy balance gives T = 1 - R exactly
+        transmission = 1.0 - np.abs(rCoat) ** 2
 
     # logging.info(f"Integrating over the Electric Field Intensity .......")
     # normallised_EFI = integrand(E_total,light_wavelength,layer_material_inds,all_materials,num_points=len(E_total))
@@ -510,9 +512,16 @@ def merit_function(
             "poyn": poyn,
             "total_thickness": D,
         }
-        return np.abs(rCoat) ** 2, ThermalNoise_Total, total_absorption, D, field_data
+        return (
+            np.abs(rCoat) ** 2,
+            ThermalNoise_Total,
+            total_absorption,
+            D,
+            transmission,
+            field_data,
+        )
     else:
-        return np.abs(rCoat) ** 2, ThermalNoise_Total, total_absorption, D
+        return np.abs(rCoat) ** 2, ThermalNoise_Total, total_absorption, D, transmission
     """
     # Reflectivity
     #R, dcdp, rbar, r = getCoatRefl2(nAir, nSub, n_layer, optical_thickness)

@@ -455,11 +455,11 @@ class CoatingEnvironment:
 
         # Check if state is empty (all air layers)
         if len(state_trim) == 0:
-            # Return default values for empty coating
+            # Return default values for empty coating (nothing reflects, all transmits)
             if return_field_data:
-                return (0.0, None, 0.0, 0.0, None)
+                return (0.0, None, 0.0, 0.0, 1.0, None)
             else:
-                return (0.0, None, 0.0, 0.0)
+                return (0.0, None, 0.0, 0.0, 1.0)
 
         # Call existing physics code
         result = coating_utils.merit_function(
@@ -477,9 +477,9 @@ class CoatingEnvironment:
         )
 
         if return_field_data:
-            return result  # (r, thermal, absorption, thickness, field_data)
+            return result  # (r, thermal, absorption, thickness, transmission, field_data)
         else:
-            return result  # (r, thermal, absorption, thickness)
+            return result  # (r, thermal, absorption, thickness, transmission)
 
     def compute_reward(
         self,
@@ -508,7 +508,7 @@ class CoatingEnvironment:
             )
 
         # Get physics values
-        reflectivity, thermal_noise, absorption, total_thickness = (
+        reflectivity, thermal_noise, absorption, total_thickness, transmission = (
             self.compute_state_value(state)
         )
 
@@ -517,6 +517,8 @@ class CoatingEnvironment:
             "thermal_noise": thermal_noise,
             "thickness": total_thickness,
             "absorption": absorption,
+            # Transmitted power fraction converted to ppm (absorption is already ppm)
+            "transmission": transmission * 1e6,
         }
 
         # Compute base rewards for all objectives

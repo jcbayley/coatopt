@@ -122,6 +122,7 @@ def CalculateEFI_tmm(
     # coh_tmm_data_sub = coh_tmm_data  # No need to recalculate the same thing
 
     reflectivity = coh_tmm_data["R"]
+    transmission = coh_tmm_data["T"]
     #####
 
     num_points = 500
@@ -294,7 +295,7 @@ def CalculateEFI_tmm(
         )
         plt.show()
 
-    return E_sub, layer_idx, ds, E, poyn, total_absorption, reflectivity
+    return E_sub, layer_idx, ds, E, poyn, total_absorption, reflectivity, transmission
 
 
 def CalculateAbsorption_tmm(
