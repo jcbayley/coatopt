@@ -10,7 +10,9 @@ class DataConfig:
     """Configuration fields that CoatingEnvironment reads from config.data."""
 
     wavelength: float = 1064e-9  # Target light wavelength (meters)
-    wBeam: float = 0.062  # Laser beam radius/width w0 (meters), default 0.062 m (6.2 cm) for aLIGO
+    wBeam: float = (
+        0.062  # Laser beam radius/width w0 (meters), default 0.062 m (6.2 cm) for aLIGO
+    )
     beam_radius: float = 0.062  # Alias for wBeam
     frequency: float = 100.0  # Frequency for thermal noise calculation (Hz)
     temperature: float = 293.0  # Temperature in Kelvin (K)

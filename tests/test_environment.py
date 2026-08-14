@@ -848,7 +848,9 @@ def test_beam_parameters_configuration(materials):
         n_layers=10,
         wBeam=62.0,  # 62 mm -> should convert to 0.062 m
     )
-    env_mm = CoatingEnvironment(Config(data=data_mm, training=TrainingConfig()), materials)
+    env_mm = CoatingEnvironment(
+        Config(data=data_mm, training=TrainingConfig()), materials
+    )
     assert abs(env_mm.wBeam - 0.062) < 1e-6
 
 
