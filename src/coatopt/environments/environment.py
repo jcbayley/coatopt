@@ -477,7 +477,9 @@ class CoatingEnvironment:
         )
 
         if return_field_data:
-            return result  # (r, thermal, absorption, thickness, transmission, field_data)
+            return (
+                result  # (r, thermal, absorption, thickness, transmission, field_data)
+            )
         else:
             return result  # (r, thermal, absorption, thickness, transmission)
 

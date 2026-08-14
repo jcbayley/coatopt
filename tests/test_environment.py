@@ -453,7 +453,9 @@ class TestCoatingEnvironmentStateValue:
 
         result = env.compute_state_value(state, return_field_data=True)
 
-        assert len(result) == 6  # (r, thermal, absorption, thickness, transmission, field_data)
+        assert (
+            len(result) == 6
+        )  # (r, thermal, absorption, thickness, transmission, field_data)
 
 
 class TestCoatingEnvironmentActionSpace:

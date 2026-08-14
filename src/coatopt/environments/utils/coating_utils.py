@@ -459,18 +459,25 @@ def merit_function(
     if compute_efi:
         # Full EFI calculation via 500-point TMM loop (slow but accurate)
         # logging.info(f"Calculating EFI .......")
-        E_total, layer_idx, ds, E, poyn, total_absorption, reflectivity, transmission = (
-            CalculateEFI_tmm(
-                dOpt=layer_optical_thicknesses,
-                materialLayer=layer_material_inds,
-                materialParams=new_all_materials,
-                lambda_=light_wavelength,
-                t_air=500,
-                polarisation="p",
-                plots=False,
-                air_index=air_index,
-                substrate_index=substrate_index,
-            )
+        (
+            E_total,
+            layer_idx,
+            ds,
+            E,
+            poyn,
+            total_absorption,
+            reflectivity,
+            transmission,
+        ) = CalculateEFI_tmm(
+            dOpt=layer_optical_thicknesses,
+            materialLayer=layer_material_inds,
+            materialParams=new_all_materials,
+            lambda_=light_wavelength,
+            t_air=500,
+            polarisation="p",
+            plots=False,
+            air_index=air_index,
+            substrate_index=substrate_index,
         )
         D = ds[-1]  # Total physical thickness from EFI position array
     else:
