@@ -545,6 +545,12 @@ class CoatingEnvironment:
         for objective in self.optimise_parameters:
             val = vals.get(objective)
 
+            # Physics undefined for this state (e.g. empty coating): worst reward
+            if val is None or not np.isfinite(val):
+                bounds = self.reward_bounds.get(objective, [-100, 0])
+                rewards[objective] = 0.0 if normalised else bounds[0]
+                continue
+
             # Compute raw log-based reward
             target = self.optimise_targets.get(objective, 0.0)
             raw_reward = -np.log(np.abs(val - target) + 1e-30)
