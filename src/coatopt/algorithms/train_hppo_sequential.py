@@ -285,15 +285,26 @@ class RolloutBuffer:
             self.returns[t] = gae + self.values[t]
 
     def get(self):
-        """Return all data as tensors."""
+        """Return all data as tensors, with episode grouping recovered from dones."""
+        dones = np.asarray(self.dones)
+        ends = np.flatnonzero(dones)
+        episode_idx = np.zeros(len(dones), dtype=np.int64)
+        episode_idx[ends[:-1] + 1] = 1
+        episode_idx = np.cumsum(episode_idx)
+        starts = np.concatenate(([0], ends[:-1] + 1))
+        step_idx = np.arange(len(dones)) - starts[episode_idx]
+        observations = np.array(self.observations)
         return {
-            "observations": torch.FloatTensor(np.array(self.observations)),
+            "observations": torch.FloatTensor(observations),
             "materials": torch.LongTensor(self.materials),
             "thicknesses": torch.FloatTensor(self.thicknesses),
             "log_probs": torch.FloatTensor(self.log_probs),
             "returns": torch.FloatTensor(self.returns),
             "advantages": torch.FloatTensor(self.advantages),
             "masks": torch.FloatTensor(np.array(self.masks)),
+            "episode_last_obs": torch.FloatTensor(observations[ends]),
+            "episode_idx": torch.LongTensor(episode_idx),
+            "step_idx": torch.LongTensor(step_idx),
         }
 
 
@@ -381,6 +392,26 @@ class HybridActorCritic(nn.Module):
             [nn.Linear(prev_dim, 1) for _ in range(self.n_objectives)]
         )
 
+    def _lstm_features(self, obs, episode_idx=None, step_idx=None):
+        """LSTM feature of the layer stack at each step.
+
+        The LSTM is causal, so output position t of one pass depends only on
+        the first t layers. With episode_idx/step_idx, obs holds one final
+        observation per episode and each step's feature is gathered from a
+        single shared pass; otherwise obs is per-step and the output is read
+        at each observation's own layer count.
+        """
+        tail = self.n_objectives + self.n_constraints
+        layers = obs[:, :-tail].view(-1, self.max_layers, self.n_features_per_layer)
+        # Prepend a padding row (row -1 is always padding) so position t
+        # means "t layers placed", including t=0.
+        seqs = torch.cat([layers[:, -1:], layers[:, :-1]], dim=1)
+        lstm_out, _ = self.lstm(seqs)
+        if episode_idx is None:
+            step_idx = (layers[:, :, 0] > 0).sum(dim=1)
+            episode_idx = torch.arange(len(obs))
+        return lstm_out[episode_idx, step_idx]
+
     def forward(self, obs, mask, target_obj_idx, deterministic=False):
         """Forward pass returning actions, log_probs, and value.
 
@@ -397,29 +428,9 @@ class HybridActorCritic(nn.Module):
             value: state value V(s) for target objective
         """
         if self.use_lstm:
-            # Extract components from observation
-            # obs = [layer_sequence (flattened), objective_weights, constraints]
-            batch_size = obs.shape[0]
-
-            # Extract objective weights and constraints from the end
-            layer_seq_flat = obs[:, : -(self.n_objectives + self.n_constraints)]
-            objective_weights = obs[
-                :, -(self.n_objectives + self.n_constraints) : -self.n_constraints
-            ]
-            constraints = obs[:, -self.n_constraints :]
-
-            # Reshape layer sequence for LSTM: (batch, max_layers, features)
-            layer_seq = layer_seq_flat.view(
-                batch_size, self.max_layers, self.n_features_per_layer
-            )
-
-            # LSTM: use last layer's hidden state
-            lstm_out, (h_n, c_n) = self.lstm(layer_seq)
-            lstm_features = h_n[-1]  # Take last layer: (batch, lstm_hidden)
-
-            # Concatenate LSTM features with objective weights and constraints
-            combined = torch.cat([lstm_features, objective_weights, constraints], dim=1)
-            features = self.trunk(combined)
+            lstm_features = self._lstm_features(obs)
+            tail = obs[:, -(self.n_objectives + self.n_constraints) :]
+            features = self.trunk(torch.cat([lstm_features, tail], dim=1))
         else:
             features = self.trunk(obs)
 
@@ -469,7 +480,17 @@ class HybridActorCritic(nn.Module):
 
         return material, thickness, log_prob, value
 
-    def evaluate_actions(self, obs, mask, materials, thicknesses, target_obj_idx):
+    def evaluate_actions(
+        self,
+        obs,
+        mask,
+        materials,
+        thicknesses,
+        target_obj_idx,
+        episode_last_obs=None,
+        episode_idx=None,
+        step_idx=None,
+    ):
         """Evaluate log_probs and values for given actions.
 
         Args:
@@ -478,28 +499,21 @@ class HybridActorCritic(nn.Module):
             materials: material actions
             thicknesses: thickness actions
             target_obj_idx: index of target objective (selects which value head to use)
+            episode_last_obs: final observation per episode; if given with
+                episode_idx/step_idx, the LSTM runs once per episode
+                instead of once per step
+            episode_idx: episode index (into episode_last_obs) of each step
+            step_idx: position of each step within its episode
         """
         if self.use_lstm:
-            # Extract components from observation (same as forward)
-            batch_size = obs.shape[0]
-
-            # Extract objective weights and constraints from the end
-            layer_seq_flat = obs[:, : -(self.n_objectives + self.n_constraints)]
-            objective_weights = obs[
-                :, -(self.n_objectives + self.n_constraints) : -self.n_constraints
-            ]
-            constraints = obs[:, -self.n_constraints :]
-
-            # Reshape and process with LSTM
-            layer_seq = layer_seq_flat.view(
-                batch_size, self.max_layers, self.n_features_per_layer
-            )
-            lstm_out, (h_n, c_n) = self.lstm(layer_seq)
-            lstm_features = h_n[-1]  # Take last layer: (batch, lstm_hidden)
-
-            # Concatenate and process with objective weights and constraints
-            combined = torch.cat([lstm_features, objective_weights, constraints], dim=1)
-            features = self.trunk(combined)
+            if episode_last_obs is not None:
+                lstm_features = self._lstm_features(
+                    episode_last_obs, episode_idx, step_idx
+                )
+            else:
+                lstm_features = self._lstm_features(obs)
+            tail = obs[:, -(self.n_objectives + self.n_constraints) :]
+            features = self.trunk(torch.cat([lstm_features, tail], dim=1))
         else:
             features = self.trunk(obs)
 
@@ -719,6 +733,21 @@ class PPOAgent:
         }
         n_updates = 0
 
+        # With an LSTM, minibatch whole episodes: one LSTM pass over the
+        # episode's final observation covers all of its steps.
+        episode_last_obs = rollout_data.get("episode_last_obs")
+        episode_idx = rollout_data.get("episode_idx")
+        step_idx = rollout_data.get("step_idx")
+        use_episode_batches = self.policy.use_lstm and episode_last_obs is not None
+        if use_episode_batches:
+            n_episodes = len(episode_last_obs)
+            episode_steps = [
+                torch.nonzero(episode_idx == e, as_tuple=True)[0]
+                for e in range(n_episodes)
+            ]
+            # keep roughly batch_size steps per minibatch
+            episodes_per_batch = max(1, round(batch_size * n_episodes / n_samples))
+
         for epoch in range(n_epochs):
             # BC loss: one dedicated gradient step per epoch
             if (
@@ -743,10 +772,37 @@ class PPOAgent:
                     )
                     self.optimizer.step()
 
-            indices = torch.randperm(n_samples)
-            for start in range(0, n_samples, batch_size):
-                end = start + batch_size
-                batch_idx = indices[start:end]
+            if use_episode_batches:
+                ep_order = torch.randperm(n_episodes)
+                batches = [
+                    ep_order[start : start + episodes_per_batch]
+                    for start in range(0, n_episodes, episodes_per_batch)
+                ]
+            else:
+                order = torch.randperm(n_samples)
+                batches = [
+                    order[start : start + batch_size]
+                    for start in range(0, n_samples, batch_size)
+                ]
+
+            for batch in batches:
+                if use_episode_batches:
+                    batch_idx = torch.cat([episode_steps[int(e)] for e in batch])
+                    episode_kwargs = {
+                        "episode_last_obs": episode_last_obs[batch],
+                        "episode_idx": torch.cat(
+                            [
+                                torch.full(
+                                    (len(episode_steps[int(e)]),), i, dtype=torch.long
+                                )
+                                for i, e in enumerate(batch)
+                            ]
+                        ),
+                        "step_idx": step_idx[batch_idx],
+                    }
+                else:
+                    batch_idx = batch
+                    episode_kwargs = {}
 
                 log_probs, values, entropy = self.policy.evaluate_actions(
                     obs[batch_idx],
@@ -754,6 +810,7 @@ class PPOAgent:
                     materials[batch_idx],
                     thicknesses[batch_idx],
                     target_obj_idx,
+                    **episode_kwargs,
                 )
 
                 # Policy loss (clipped surrogate)
