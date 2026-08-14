@@ -66,7 +66,7 @@ from coatopt.environments.environment import CoatingEnvironment
 from coatopt.utils.configs import Config, load_config
 from coatopt.utils.math_utils import TruncatedNormalDist
 from coatopt.utils.plotting import plot_pareto_front
-from coatopt.utils.utils import load_materials
+from coatopt.utils.utils import load_materials_from_parser
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Environment
@@ -1354,8 +1354,7 @@ def train(config_path: str, save_dir: str = None) -> dict:
     def _get(key, fallback, cast=str):
         return cast(parser.get(section, key, fallback=str(fallback)))
 
-    materials_path = parser.get("general", "materials_path")
-    materials = load_materials(str(materials_path))
+    materials = load_materials_from_parser(parser, config_path)
     config = load_config(config_path)
 
     seed = _get("seed", 42, int)

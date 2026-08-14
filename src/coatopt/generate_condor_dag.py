@@ -6,7 +6,6 @@ Usage:
 
 Your experiment config file should include a [condor] section:
     [condor]
-    materials_file = materials.json
     num_runs = 10
     project_path = /path/to/coatopt_simple  # Must have .venv/ with coatopt installed
     results_dir = runs/  # directory to transfer back (where results are saved)
@@ -16,10 +15,15 @@ Your experiment config file should include a [condor] section:
     request_cpus = 1
     request_memory = 4GB
     request_disk = 1GB
+
+The materials library is taken from materials_path in the [general] section
+(the same key coatopt.run uses) and frozen alongside the config copy.
 """
 
 import argparse
 import configparser
+import re
+import shutil
 from pathlib import Path
 
 
@@ -165,18 +169,41 @@ def main():
     logs_dir.mkdir(exist_ok=True)
 
     # Copy config and materials files to output directory to freeze them for this DAG
-    import shutil
-
     config_source = Path(args.config).resolve()
     config_copy = output_dir / config_source.name
     shutil.copy(config_source, config_copy)
     print(f"Copied config to: {config_copy}")
 
-    materials_file = config.get("condor", "materials_file")
-    materials_source = Path(materials_file).resolve()
+    # Materials library: [general] materials_path (as used by coatopt.run),
+    # with the legacy [condor] materials_file key as a fallback. Relative
+    # paths resolve against the config file's directory, then the cwd.
+    materials_file = config.get(
+        "general",
+        "materials_path",
+        fallback=config.get("condor", "materials_file", fallback=None),
+    )
+    if materials_file is None:
+        raise ValueError("Config must set materials_path in the [general] section")
+    materials_source = Path(materials_file).expanduser()
+    if not materials_source.is_absolute():
+        for base in (config_source.parent, Path.cwd()):
+            if (base / materials_source).exists():
+                materials_source = base / materials_source
+                break
+    materials_source = materials_source.resolve()
     materials_copy = output_dir / materials_source.name
     shutil.copy(materials_source, materials_copy)
     print(f"Copied materials to: {materials_copy}")
+
+    # Point the frozen config at the frozen materials so jobs are unaffected
+    # by later edits to the original library file.
+    frozen_text, n_replaced = re.subn(
+        r"(?m)^(\s*materials_path\s*[=:]\s*).*$",
+        rf"\g<1>{materials_copy.name}",
+        config_copy.read_text(),
+    )
+    if n_replaced:
+        config_copy.write_text(frozen_text)
 
     # Generate files
     submit_file = generate_submit_file(

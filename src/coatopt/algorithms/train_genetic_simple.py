@@ -38,7 +38,7 @@ from coatopt.environments.environment import CoatingEnvironment
 from coatopt.environments.state import CoatingState
 from coatopt.utils.configs import load_config
 from coatopt.utils.plotting import plot_coating_stack, plot_pareto_front
-from coatopt.utils.utils import convert_pymoo_to_dataframes, load_materials
+from coatopt.utils.utils import convert_pymoo_to_dataframes, load_materials_from_parser
 
 
 class CoatingOptimizationProblem(ElementwiseProblem):
@@ -171,17 +171,6 @@ class CoatingRepair(Repair):
                     if available:
                         materials_idx[j] = np.random.choice(available)
 
-        # Enforce air cascade: once air appears all subsequent layers must be air.
-        # This makes result.X consistent with what _evaluate actually computes.
-        air_found = False
-        for j in range(len(materials_idx)):
-            if air_found:
-                materials_idx[j] = self.env.air_material_index
-                thicknesses[j] = self.env.min_thickness
-            elif materials_idx[j] == self.env.air_material_index:
-                air_found = True
-                thicknesses[j] = self.env.min_thickness
-
         x[: self.env.max_layers] = thicknesses
         x[self.env.max_layers :] = materials_idx + 0.5
 
@@ -206,7 +195,6 @@ def train_genetic(config_path: str, save_dir: Optional[str] = None):
     # [General] section
     if save_dir is None:
         save_dir = parser.get("general", "save_dir")
-    materials_path = parser.get("general", "materials_path")
 
     # [nsga2] section
     total_generations = parser.getint("nsga2", "n_generations")
@@ -228,7 +216,7 @@ def train_genetic(config_path: str, save_dir: Optional[str] = None):
     save_dir.mkdir(parents=True, exist_ok=True)
 
     # Load materials
-    materials = load_materials(str(materials_path))
+    materials = load_materials_from_parser(parser, config_path)
 
     # Load config from file
     config = load_config(config_path)

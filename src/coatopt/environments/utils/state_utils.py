@@ -22,6 +22,7 @@ def get_optimal_state(
     use_optical_thickness=True,
     reverse=False,
     inds_alternate=[1, 2],
+    wavelength=1064e-9,
 ):
     """
     Generate optimal alternating coating state.
@@ -32,15 +33,18 @@ def get_optimal_state(
         use_optical_thickness: Whether to use optical thickness
         reverse: Whether to reverse the alternating pattern
         inds_alternate: Indices of materials to alternate between
+        wavelength: Target wavelength in meters (or nm if > 1e-3)
 
     Returns:
         Optimal state array
     """
+    if wavelength > 1e-3:
+        wavelength *= 1e-9
+
     if use_optical_thickness:
         thickness1 = 1 / 4
         thickness2 = 1 / 4
     else:
-        wavelength = 1064e-9  # LIGO wavelength
         thickness1 = wavelength / (4 * materials[inds_alternate[0]]["n"])
         thickness2 = wavelength / (4 * materials[inds_alternate[1]]["n"])
 
@@ -69,6 +73,7 @@ def get_optimal_state_2mat(
     use_optical_thickness=True,
     reverse=False,
     inds_alternate=[1, 2, 3],
+    wavelength=1064e-9,
 ):
     """
     Generate optimal state with 2 material types alternating.
@@ -79,16 +84,19 @@ def get_optimal_state_2mat(
         use_optical_thickness: Whether to use optical thickness
         reverse: Whether to reverse pattern
         inds_alternate: Material indices to use
+        wavelength: Target wavelength in meters (or nm if > 1e-3)
 
     Returns:
         Optimal state array with 2 material types
     """
+    if wavelength > 1e-3:
+        wavelength *= 1e-9
+
     if use_optical_thickness:
         thickness1 = 1 / 4
         thickness2 = 1 / 4
         thickness3 = 1 / 4
     else:
-        wavelength = 1064e-9
         thickness1 = wavelength / (4 * materials[inds_alternate[0]]["n"])
         thickness2 = wavelength / (4 * materials[inds_alternate[1]]["n"])
         thickness3 = wavelength / (4 * materials[inds_alternate[2]]["n"])

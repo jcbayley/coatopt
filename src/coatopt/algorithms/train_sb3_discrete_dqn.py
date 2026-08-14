@@ -42,7 +42,7 @@ from coatopt.environments.environment import CoatingEnvironment
 from coatopt.utils.callbacks import PlottingCallback
 from coatopt.utils.configs import load_config
 from coatopt.utils.metrics import save_pareto_to_csv
-from coatopt.utils.utils import load_materials, save_run_metadata
+from coatopt.utils.utils import load_materials_from_parser, save_run_metadata
 
 
 class CoatOptDQNGymWrapper(gym.Env):
@@ -366,9 +366,6 @@ def train(config_path: str, save_dir: str):
     parser = configparser.ConfigParser()
     parser.read(config_path)
 
-    # [General] section
-    materials_path = parser.get("general", "materials_path")
-
     # [sb3_dqn] section
     section = "sb3_dqn"
     total_timesteps = parser.getint(section, "total_timesteps")
@@ -428,11 +425,7 @@ def train(config_path: str, save_dir: str):
     save_dir = Path(save_dir)
     save_dir.mkdir(parents=True, exist_ok=True)
 
-    if materials_path is None:
-        materials_path = Path(__file__).parent / "config" / "materials.json"
-
-    materials = load_materials(str(materials_path))
-    print(f"Loaded {len(materials)} materials from {materials_path}")
+    materials = load_materials_from_parser(parser, config_path)
 
     # Load config
     config = load_config(config_path)

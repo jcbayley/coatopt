@@ -23,7 +23,11 @@ from stable_baselines3 import PPO
 from coatopt.environments.environment import CoatingEnvironment
 from coatopt.utils.callbacks import PlottingCallback
 from coatopt.utils.configs import Config, DataConfig, TrainingConfig
-from coatopt.utils.utils import EntropyAnnealingCallback, evaluate_model, load_materials
+from coatopt.utils.utils import (
+    EntropyAnnealingCallback,
+    evaluate_model,
+    load_materials_from_parser,
+)
 
 
 # ============================================================================
@@ -316,7 +320,6 @@ def train(config_path: str):
 
     # [General] section
     save_dir = parser.get("general", "save_dir")
-    materials_path = parser.get("general", "materials_path")
 
     # [sb3_simple] section
     total_timesteps = parser.getint("sb3_simple", "total_timesteps")
@@ -333,12 +336,7 @@ def train(config_path: str):
     save_dir.mkdir(parents=True, exist_ok=True)
 
     # Load materials
-    if materials_path is None:
-        # Default path relative to this file (src/coatopt/train_sb3_simple.py)
-        materials_path = Path(__file__).parent / "config" / "materials.json"
-
-    materials = load_materials(str(materials_path))
-    print(f"Loaded {len(materials)} materials from {materials_path}")
+    materials = load_materials_from_parser(parser, config_path)
 
     # Create config
     config = Config(

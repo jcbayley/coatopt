@@ -37,7 +37,7 @@ from gymnasium.spaces import Box
 from coatopt.environments.environment import CoatingEnvironment
 from coatopt.utils.configs import Config, load_config
 from coatopt.utils.plotting import plot_pareto_front
-from coatopt.utils.utils import load_materials
+from coatopt.utils.utils import load_materials_from_parser
 
 
 # ============================================================================
@@ -249,10 +249,7 @@ def setup_morl_training(config_path: str, algorithm: str = "morld"):
     (save_dir / "plots").mkdir(exist_ok=True)
 
     # Materials
-    materials_path = parser.get("general", "materials_path")
-    if materials_path is None:
-        materials_path = Path(__file__).parent / "config" / "materials.json"
-    materials = load_materials(str(materials_path))
+    materials = load_materials_from_parser(parser, config_path)
 
     # Action masking/correction parameters
     consecutive_penalty = parser.getfloat(section, "consecutive_penalty", fallback=0.2)

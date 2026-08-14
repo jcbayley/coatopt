@@ -56,7 +56,7 @@ from coatopt.environments.environment import CoatingEnvironment
 from coatopt.utils.checkpoint import load_checkpoint, save_checkpoint
 from coatopt.utils.configs import Config, load_config
 from coatopt.utils.math_utils import TruncatedNormalDist
-from coatopt.utils.utils import load_materials
+from coatopt.utils.utils import load_materials_from_parser
 
 
 class CoatOptHybridEnv(gym.Env):
@@ -813,8 +813,7 @@ def train(config_path: str, save_dir: str):
 
     # Load config and materials
     config = load_config(config_path)
-    materials_path = parser.get("general", "materials_path")
-    materials = load_materials(materials_path)
+    materials = load_materials_from_parser(parser, config_path)
 
     # Read hyperparameters
     total_episodes = _get("total_episodes", 10000, int)

@@ -1095,7 +1095,7 @@ Examples:
 
         from coatopt.environments.environment import CoatingEnvironment
         from coatopt.utils.configs import load_config
-        from coatopt.utils.utils import load_materials
+        from coatopt.utils.utils import load_materials_from_parser
 
         # Try to find config file
         if args.config:
@@ -1107,8 +1107,7 @@ Examples:
         if config_path and config_path.exists():
             parser = configparser.ConfigParser()
             parser.read(config_path)
-            materials_path = parser.get("general", "materials_path")
-            materials = load_materials(materials_path)
+            materials = load_materials_from_parser(parser, config_path)
             config = load_config(str(config_path))
             env = CoatingEnvironment(config, materials)
             reference_values, reference_rewards = create_reference_data(
@@ -1276,12 +1275,11 @@ Examples:
         if config_path.exists():
             import configparser
 
-            from coatopt.utils.utils import load_materials
+            from coatopt.utils.utils import load_materials_from_parser
 
             parser_cfg = configparser.ConfigParser()
             parser_cfg.read(config_path)
-            materials_path = parser_cfg.get("general", "materials_path")
-            materials = load_materials(materials_path)
+            materials = load_materials_from_parser(parser_cfg, config_path)
 
             designs_path = output_path.parent / (
                 output_path.stem + "_designs" + output_path.suffix

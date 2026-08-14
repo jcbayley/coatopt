@@ -10,7 +10,11 @@ from pathlib import Path
 
 import mlflow
 
-from coatopt.utils.utils import save_training_results
+from coatopt.utils.utils import (
+    load_materials_from_parser,
+    save_materials_snapshot,
+    save_training_results,
+)
 
 
 def run_experiment(
@@ -124,6 +128,13 @@ def run_experiment(
 
     save_dir.mkdir(parents=True, exist_ok=True)
 
+    # Freeze the resolved materials next to the config backup and point the
+    # backup at the snapshot, so the run directory is self-contained even if
+    # the materials library changes later.
+    materials = load_materials_from_parser(parser, config_path)
+    save_materials_snapshot(materials, save_dir)
+    parser.set("general", "materials_path", "materials.json")
+
     # Write modified config to run directory (includes any overrides)
     config_backup = save_dir / "config.ini"
     with open(config_backup, "w") as f:
@@ -234,14 +245,9 @@ def run_experiment(
 
     # Generate interactive Pareto front visualization (only if results are non-empty)
     try:
-        from coatopt.utils.plot_interactive_pareto import (
-            create_interactive_plot,
-            load_materials,
-        )
+        from coatopt.utils.plot_interactive_pareto import create_interactive_plot
         from coatopt.utils.utils import load_pareto_front
 
-        materials_path = parser.get("general", "materials_path")
-        materials = load_materials(materials_path)
         designs_df, values_df, _ = load_pareto_front(save_dir)
 
         if not values_df.empty:
