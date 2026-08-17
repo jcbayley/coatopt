@@ -131,6 +131,69 @@ def create_reference_data(
     return values_df, rewards_df
 
 
+def load_run_evaluation_params(directory: Path, fallback_config: Optional[str] = None):
+    """Load (materials, data_config) for a run directory (or config file path).
+
+    Tries the run's own config.ini (then fallback_config); materials via the
+    configured path, falling back to a materials.json in the run dir or any
+    parent directory (older runs reference cluster paths).
+
+    Returns (materials, data_config) or None if either cannot be loaded.
+    """
+    import configparser
+
+    from coatopt.utils.configs import load_config
+    from coatopt.utils.utils import load_materials, load_materials_from_parser
+
+    directory = Path(directory)
+    if directory.is_file():
+        config_path = directory
+        directory = directory.parent
+    else:
+        config_path = directory / "config.ini"
+    if not config_path.exists() and fallback_config:
+        config_path = Path(fallback_config)
+    if not config_path.exists():
+        return None
+
+    try:
+        config = load_config(str(config_path))
+    except Exception as e:
+        print(f"Warning: could not parse config for {directory}: {e}")
+        return None
+
+    parser = configparser.ConfigParser()
+    parser.read(config_path)
+
+    materials = None
+    try:
+        materials = load_materials_from_parser(parser, config_path)
+    except Exception:
+        try:
+            materials_path = parser.get(
+                "general", "materials_path", fallback="materials.json"
+            )
+            candidates = [Path(directory) / "materials.json"]
+            candidates += [
+                (parent / Path(materials_path).name).resolve()
+                for parent in config_path.resolve().parents[:4]
+            ]
+            candidates += [
+                (parent / "materials.json").resolve()
+                for parent in config_path.resolve().parents[:4]
+            ]
+            found = next((c for c in candidates if c.exists()), None)
+            if found is not None:
+                materials = load_materials(str(found))
+        except Exception:
+            materials = None
+
+    if materials is None:
+        print(f"Warning: could not load materials for {directory}")
+        return None
+    return materials, config.data
+
+
 def plot_both_spaces_comparison(
     pareto_fronts: List[Tuple[Optional[pd.DataFrame], Optional[pd.DataFrame], str]],
     save_path: Optional[Path] = None,
@@ -1063,6 +1126,7 @@ Examples:
     # Load Pareto fronts (both value and reward space)
     pareto_fronts = []
     pareto_fronts_values_only = []  # For legacy single-space plots
+    run_designs = []  # (directory, designs_df, label) for RTA recomputation
 
     for i, dir_path in enumerate(directories):
         directory = Path(dir_path)
@@ -1072,8 +1136,9 @@ Examples:
 
         lbl = args.labels[i] if args.labels else directory.name
         try:
-            _, values_df, rewards_df = load_pareto_front(directory)
+            designs_df, values_df, rewards_df = load_pareto_front(directory)
             pareto_fronts.append((values_df, rewards_df, lbl))
+            run_designs.append((directory, designs_df, lbl))
             print(f"Loaded Pareto front from {directory} with label '{lbl}'")
             if values_df is not None:
                 pareto_fronts_values_only.append((values_df, lbl))
@@ -1088,6 +1153,7 @@ Examples:
     # Create reference designs if requested
     reference_values = None
     reference_rewards = None
+    reference_rta = None
     if args.add_reference:
         print(f"\nCreating reference designs with {args.reference_layers} layers...")
 
@@ -1104,10 +1170,13 @@ Examples:
             # Try to find in first directory
             config_path = Path(args.dirs[0]) / "config.ini" if args.dirs else None
 
-        if config_path and config_path.exists():
-            parser = configparser.ConfigParser()
-            parser.read(config_path)
-            materials = load_materials_from_parser(parser, config_path)
+        params = (
+            load_run_evaluation_params(config_path)
+            if config_path and config_path.exists()
+            else None
+        )
+        if params is not None:
+            materials, _ = params
             config = load_config(str(config_path))
             env = CoatingEnvironment(config, materials)
             reference_values, reference_rewards = create_reference_data(
@@ -1115,6 +1184,17 @@ Examples:
             )
             print(f"Created {len(reference_values)} reference designs")
             print(reference_values)
+
+            from coatopt.utils.rta_plots import evaluate_reference_rta
+
+            reference_rta = evaluate_reference_rta(
+                reference_values,
+                materials,
+                wavelength_m=config.data.wavelength,
+                frequency=config.data.frequency,
+                wBeam=config.data.wBeam,
+                temperature=config.data.temperature,
+            )
         else:
             print("Warning: Config file not found. Skipping reference designs.")
 
@@ -1160,6 +1240,54 @@ Examples:
             compute_hv_fn=compute_hypervolume_from_df,
             pareto_only=True,
         )
+        # RTA + thermal-noise physical-space plot (recomputed from designs so
+        # R/T/A/CTN are always shown regardless of the optimised objectives)
+        print("\nGenerating RTA + thermal-noise comparison plot...")
+        from coatopt.utils.rta_plots import (
+            evaluate_designs_rta,
+            plot_rta_comparison_interactive,
+            plot_reward_comparison_interactive,
+        )
+
+        rta_runs = []
+        for run_dir, designs_df, lbl in run_designs:
+            if designs_df is None or designs_df.empty:
+                continue
+            params = load_run_evaluation_params(run_dir, args.config)
+            if params is None:
+                print(f"  Skipping {lbl} (no config/materials for evaluation)")
+                continue
+            run_materials, data_cfg = params
+            print(f"  Evaluating R/T/A/CTN for {lbl} ({len(designs_df)} designs)...")
+            rta_df = evaluate_designs_rta(
+                designs_df,
+                run_materials,
+                wavelength_m=data_cfg.wavelength,
+                frequency=data_cfg.frequency,
+                wBeam=data_cfg.wBeam,
+                temperature=data_cfg.temperature,
+                use_optical_thickness=data_cfg.use_optical_thickness,
+            )
+            rta_runs.append((rta_df, lbl))
+
+        if rta_runs:
+            plot_rta_comparison_interactive(
+                rta_runs,
+                reference_rta=reference_rta,
+                save_path=output_path,
+                title=args.title + " — R/T/A + thermal noise",
+                group_runs=args.group_runs,
+            )
+
+        print("\nGenerating reward-space comparison plot...")
+        plot_reward_comparison_interactive(
+            pareto_fronts,
+            reference_rewards=reference_rewards,
+            save_path=output_path,
+            title=args.title + " — reward space",
+            group_runs=args.group_runs,
+        )
+
         print("\nGenerating 3D Pareto front plot...")
         plot_pareto_3d_interactive(
             pareto_fronts,
