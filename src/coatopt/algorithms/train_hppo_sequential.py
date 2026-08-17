@@ -1030,7 +1030,9 @@ def train(config_path: str, save_dir: str):
     ep_vals = []
     ep_lengths = []  # Track episode lengths
     sample_designs = []  # Track sample designs during warmup for debugging
+    training_history = []  # periodic metrics rows for training_curves.png
     objectives = list(config.data.optimise_parameters)
+    objective_targets = dict(getattr(config.data, "optimise_targets", {}) or {})
 
     # Create objective name -> index mapping for value head selection
     objective_to_idx = {obj: idx for idx, obj in enumerate(objectives)}
@@ -1238,82 +1240,90 @@ def train(config_path: str, save_dir: str):
                     f"air_bias {air_bias:.2f}{ep_len_str}"
                 )
 
-            if mlflow.active_run():
-                metrics = {
-                    "step": step_count,
-                    "pareto.size": len(env.env.pareto_front_rewards),
-                }
-                # Add pareto episodes count if BC loss enabled
-                if bc_weight > 0 and hasattr(env.env, "pareto_front_episodes"):
-                    n_episodes_stored = sum(
-                        1 for ep in env.env.pareto_front_episodes if ep is not None
-                    )
-                    metrics["pareto.episodes_stored"] = n_episodes_stored
+            metrics = {
+                "step": step_count,
+                "pareto.size": len(env.env.pareto_front_rewards),
+                "schedule.lr": float(current_lr),
+                "schedule.ent_coef": float(current_ent_coef),
+            }
+            # Add pareto episodes count if BC loss enabled
+            if bc_weight > 0 and hasattr(env.env, "pareto_front_episodes"):
+                n_episodes_stored = sum(
+                    1 for ep in env.env.pareto_front_episodes if ep is not None
+                )
+                metrics["pareto.episodes_stored"] = n_episodes_stored
 
-                metrics.update({f"ppo.{k}": v for k, v in ppo_logs.items()})
+            metrics.update({f"ppo.{k}": v for k, v in ppo_logs.items()})
 
-                # Episode rewards
-                if ep_rewards:
-                    window = ep_rewards[-100:]
-                    metrics["episode.reward_mean"] = float(np.mean(window))
-                    metrics["episode.reward_std"] = float(np.std(window))
+            # Episode rewards
+            if ep_rewards:
+                window = ep_rewards[-100:]
+                metrics["episode.reward_mean"] = float(np.mean(window))
+                metrics["episode.reward_std"] = float(np.std(window))
 
-                # Episode lengths
-                if ep_lengths:
-                    length_window = ep_lengths[-100:]
-                    metrics["episode.length_mean"] = float(np.mean(length_window))
-                    metrics["episode.length_std"] = float(np.std(length_window))
-                    metrics["episode.length_min"] = float(np.min(length_window))
-                    metrics["episode.length_max"] = float(np.max(length_window))
+            # Episode lengths
+            if ep_lengths:
+                length_window = ep_lengths[-100:]
+                metrics["episode.length_mean"] = float(np.mean(length_window))
+                metrics["episode.length_std"] = float(np.std(length_window))
+                metrics["episode.length_min"] = float(np.min(length_window))
+                metrics["episode.length_max"] = float(np.max(length_window))
 
-                # Objective values
-                if ep_vals:
-                    window = ep_vals[-100:]
-                    for obj in objectives:
-                        vals = [v.get(obj, float("nan")) for v in window]
-                        vals = [v for v in vals if not np.isnan(v)]
-                        if vals:
-                            metrics[f"vals.{obj}_mean"] = float(np.mean(vals))
-                            metrics[f"vals.{obj}_best"] = float(
-                                np.min(vals) if obj == "absorption" else np.max(vals)
-                            )
-
-                # Hypervolume
-                pareto = env.env.get_pareto_front(space="reward")
-                if len(pareto) > 1:
-                    try:
-                        hv = env.env.compute_hypervolume(space="reward")
-                        metrics["pareto.hypervolume"] = hv
-                    except Exception:
-                        pass
-
-                # Warmup best
-                for obj, best in env.env.warmup_best_rewards.items():
-                    metrics[f"warmup_best.{obj}"] = best
-
-                # Current constraint thresholds (0.0 during warmup)
+            # Objective values
+            if ep_vals:
+                window = ep_vals[-100:]
                 for obj in objectives:
-                    metrics[f"constraint.{obj}"] = float(
-                        env.env.constraints.get(obj, 0.0)
-                    )
-
-                # Monitor air material bias (check if it's shooting up)
-                air_bias = float(policy.material_head.bias[0].item())
-                metrics["policy.air_bias"] = air_bias
-
-                # Also get air logit/probability from a sample observation
-                with torch.no_grad():
-                    sample_logits = (
-                        policy.material_head.weight
-                        @ policy.material_head.weight.new_zeros(
-                            policy.material_head.weight.shape[1]
+                    vals = [v.get(obj, float("nan")) for v in window]
+                    vals = [v for v in vals if not np.isnan(v)]
+                    if vals:
+                        metrics[f"vals.{obj}_mean"] = float(np.mean(vals))
+                        # Best = closest to the objective's target
+                        target = float(objective_targets.get(obj, 0.0))
+                        metrics[f"vals.{obj}_best"] = float(
+                            min(vals, key=lambda v: abs(v - target))
                         )
-                        + policy.material_head.bias
-                    )
-                    air_logit = float(sample_logits[0].item())
-                    metrics["policy.air_logit_init"] = air_logit
 
-                mlflow.log_metrics(metrics, step=env.episode_count)
+            # Hypervolume
+            pareto = env.env.get_pareto_front(space="reward")
+            if len(pareto) > 1:
+                try:
+                    hv = env.env.compute_hypervolume(space="reward")
+                    metrics["pareto.hypervolume"] = hv
+                except Exception:
+                    pass
+
+            # Warmup best
+            for obj, best in env.env.warmup_best_rewards.items():
+                metrics[f"warmup_best.{obj}"] = best
+
+            # Current constraint thresholds (0.0 during warmup)
+            for obj in objectives:
+                metrics[f"constraint.{obj}"] = float(env.env.constraints.get(obj, 0.0))
+
+            # Monitor air material bias (check if it's shooting up)
+            air_bias = float(policy.material_head.bias[0].item())
+            metrics["policy.air_bias"] = air_bias
+
+            # Also get air logit/probability from a sample observation
+            with torch.no_grad():
+                sample_logits = (
+                    policy.material_head.weight
+                    @ policy.material_head.weight.new_zeros(
+                        policy.material_head.weight.shape[1]
+                    )
+                    + policy.material_head.bias
+                )
+                air_logit = float(sample_logits[0].item())
+                metrics["policy.air_logit_init"] = air_logit
+
+            metrics["episode"] = env.episode_count
+            training_history.append(metrics)
+
+            if mlflow.active_run():
+                mlflow.log_metrics(
+                    {k: v for k, v in metrics.items() if k != "episode"},
+                    step=env.episode_count,
+                )
 
         # Periodic checkpointing
         if env.episode_count % plot_freq == 0 and env.episode_count > 0:
@@ -1364,7 +1374,23 @@ def train(config_path: str, save_dir: str):
                 if verbose:
                     print(f"  [checkpoint] skipped: {e}")
 
+            try:
+                from coatopt.utils.training_plots import save_training_curves
+
+                save_training_curves(training_history, save_dir, objectives)
+            except Exception as e:
+                if verbose:
+                    print(f"  [training curves] skipped: {e}")
+
     # Final Pareto export and plots
+    try:
+        from coatopt.utils.training_plots import save_training_curves
+
+        save_training_curves(training_history, save_dir, objectives)
+    except Exception as e:
+        if verbose:
+            print(f"  [training curves] skipped: {e}")
+
     designs_df, values_df, rewards_df = env.env.export_pareto_dataframes()
     if not designs_df.empty:
         try:

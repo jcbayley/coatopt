@@ -252,11 +252,11 @@ def run_experiment(
 
         if not values_df.empty:
             print("\nGenerating interactive Pareto front visualization...")
-            fig = create_interactive_plot(
+            fig, _ = create_interactive_plot(
                 designs_df, values_df, materials, max_designs=10
             )
             html_path = save_dir / "pareto_interactive.html"
-            fig.write_html(str(html_path))
+            fig.write_html(str(html_path), include_plotlyjs="cdn")
             print(f"Saved interactive visualization to {html_path}")
 
             if not designs_df.empty:
