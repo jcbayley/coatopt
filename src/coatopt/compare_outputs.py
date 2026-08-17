@@ -1179,9 +1179,15 @@ Examples:
             materials, _ = params
             config = load_config(str(config_path))
             env = CoatingEnvironment(config, materials)
-            reference_values, reference_rewards = create_reference_data(
-                env, materials, args.reference_layers
-            )
+            try:
+                reference_values, reference_rewards = create_reference_data(
+                    env, materials, args.reference_layers
+                )
+            except Exception as e:
+                # e.g. the reference transition needs aSi, which 2-material
+                # runs don't carry in their materials selection
+                print(f"Warning: could not create reference designs: {e}")
+                reference_values, reference_rewards = None, None
             print(f"Created {len(reference_values)} reference designs")
             print(reference_values)
 
@@ -1270,6 +1276,11 @@ Examples:
             )
             rta_runs.append((rta_df, lbl))
 
+        if reference_rta is None:
+            print(
+                "  Note: no quarter-wave reference points on the RTA plot "
+                "(pass --add-reference and --config to include them)"
+            )
         if rta_runs:
             plot_rta_comparison_interactive(
                 rta_runs,

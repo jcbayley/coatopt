@@ -9,7 +9,7 @@ shows the full R/T/A/CTN picture regardless of which objectives were optimised.
 Provides:
     evaluate_designs_rta            - designs_df -> RTA/CTN DataFrame
     evaluate_reference_rta          - reference values_df -> RTA/CTN DataFrame
-    plot_rta_comparison_interactive - physical space, 4 log-log panels
+    plot_rta_comparison_interactive - physical space, all pairs of 1-R/T/A/CTN
     plot_reward_comparison_interactive - reward space, one panel per pair
 """
 
@@ -37,14 +37,14 @@ _RTA_COLUMNS = [
     "reflectivity",
     "transmission_ppm",
     "absorption_ppm",
-    "total_loss_ppm",
+    "total_loss",
     "thermal_noise",
 ]
 
 _RTA_LABELS = {
     "transmission_ppm": "Transmission (ppm)",
     "absorption_ppm": "Absorption 1−R−T (ppm)",
-    "total_loss_ppm": "Total loss 1−R (ppm)",
+    "total_loss": "1 − R",
     "thermal_noise": "Thermal noise",
 }
 
@@ -124,7 +124,7 @@ def _evaluate_layers(
         "reflectivity": reflectivity,
         "transmission_ppm": transmission * 1e6,
         "absorption_ppm": absorption * 1e6,
-        "total_loss_ppm": (1.0 - reflectivity) * 1e6,
+        "total_loss": 1.0 - reflectivity,
         "thermal_noise": thermal_noise,
     }
 
@@ -240,19 +240,30 @@ def evaluate_reference_rta(
 
 # ── Physical-space plot ───────────────────────────────────────────────────────
 
-# Panel layout: (x, y) per panel, 2x2 grid
+# All pairwise combinations of {1-R, T, A, CTN}: (x, y) per panel, 3x2 grid
 _RTA_PANELS = [
-    ("transmission_ppm", "absorption_ppm"),  # the RTA budget plane
-    ("total_loss_ppm", "thermal_noise"),  # classic 1-R vs CTN view
-    ("transmission_ppm", "thermal_noise"),
+    ("absorption_ppm", "total_loss"),  # the classic absorption vs 1-R view
+    ("total_loss", "thermal_noise"),
+    ("transmission_ppm", "total_loss"),
+    ("transmission_ppm", "absorption_ppm"),  # RTA budget plane (iso-1-R guides)
     ("absorption_ppm", "thermal_noise"),
+    ("transmission_ppm", "thermal_noise"),
+]
+
+_RTA_PANEL_TITLES = [
+    "<b>Absorption vs 1−R</b>",
+    "<b>1−R vs thermal noise</b>",
+    "<b>Transmission vs 1−R</b>",
+    "<b>RTA budget: T vs A</b> (diagonals: constant 1−R)",
+    "<b>Absorption vs thermal noise</b>",
+    "<b>Transmission vs thermal noise</b>",
 ]
 
 
 def _hover_customdata(df: pd.DataFrame) -> np.ndarray:
     return np.stack(
         [
-            df["total_loss_ppm"].values,
+            df["total_loss"].values,
             df["transmission_ppm"].values,
             df["absorption_ppm"].values,
             df["thermal_noise"].values,
@@ -262,7 +273,7 @@ def _hover_customdata(df: pd.DataFrame) -> np.ndarray:
 
 
 _HOVER_SUFFIX = (
-    "1−R: %{customdata[0]:.3g} ppm<br>"
+    "1−R: %{customdata[0]:.3g}<br>"
     "T: %{customdata[1]:.3g} ppm<br>"
     "A: %{customdata[2]:.3g} ppm<br>"
     "CTN: %{customdata[3]:.3e}<extra></extra>"
@@ -270,19 +281,24 @@ _HOVER_SUFFIX = (
 
 
 def _add_iso_loss_guides(fig, runs, reference_rta, row, col):
-    """Faint diagonal T + A = const guides on the T-A panel (iso-reflectivity)."""
+    """Faint diagonal T + A = const guides on the T-A panel (iso-reflectivity).
+
+    Guide coordinates are in ppm (the panel's axes); labels quote 1-R as a
+    fraction.
+    """
     losses = []
     for df, _ in runs:
-        v = df["total_loss_ppm"].values
+        v = df["total_loss"].values
         losses.extend(v[np.isfinite(v) & (v > 0)].tolist())
     if reference_rta is not None:
-        v = reference_rta["total_loss_ppm"].values
+        v = reference_rta["total_loss"].values
         losses.extend(v[np.isfinite(v) & (v > 0)].tolist())
     if not losses:
         return
     lo, hi = np.log10(min(losses)), np.log10(max(losses))
     decades = [10.0**e for e in range(int(np.floor(lo)), int(np.ceil(hi)) + 1)]
-    for c in decades[:7]:
+    for c_frac in decades[:7]:
+        c = c_frac * 1e6  # panel axes are in ppm
         x = np.logspace(np.log10(c) - 4, np.log10(c) - 1e-3, 120)
         y = c - x
         keep = y > 0
@@ -298,11 +314,10 @@ def _add_iso_loss_guides(fig, runs, reference_rta, row, col):
             row=row,
             col=col,
         )
-        label = f"1−R={c:g}ppm" if c < 1e4 else f"1−R={c:.0e}ppm"
         fig.add_annotation(
             x=np.log10(c) - 4,
             y=np.log10(c * 0.9999),
-            text=label,
+            text=f"1−R={c_frac:g}",
             showarrow=False,
             font=dict(size=8, color="gray"),
             xanchor="left",
@@ -319,8 +334,8 @@ def plot_rta_comparison_interactive(
     group_runs: bool = True,
     pareto_only: bool = True,
 ) -> go.Figure:
-    """4-panel physical-space comparison: T vs A (with iso-1−R guides),
-    1−R vs CTN, T vs CTN, A vs CTN. All log-log, recomputed values.
+    """Physical-space comparison: all pairwise combinations of 1−R, T, A and
+    thermal noise (6 log-log panels), recomputed values.
 
     Args:
         runs: List of (rta_df, label); rta_df from evaluate_designs_rta.
@@ -330,23 +345,21 @@ def plot_rta_comparison_interactive(
     """
     color_map = _build_color_map([(df, None, lbl) for df, lbl in runs], group_runs)
 
-    subplot_titles = [
-        "<b>RTA budget: T vs A</b> (diagonals: constant 1−R)",
-        "<b>Total loss (1−R) vs thermal noise</b>",
-        "<b>Transmission vs thermal noise</b>",
-        "<b>Absorption vs thermal noise</b>",
-    ]
     fig = make_subplots(
-        rows=2,
+        rows=3,
         cols=2,
-        subplot_titles=subplot_titles,
+        subplot_titles=_RTA_PANEL_TITLES,
         horizontal_spacing=0.09,
-        vertical_spacing=0.12,
+        vertical_spacing=0.09,
     )
 
-    panel_pos = [(1, 1), (1, 2), (2, 1), (2, 2)]
+    panel_pos = [(1, 1), (1, 2), (2, 1), (2, 2), (3, 1), (3, 2)]
 
-    _add_iso_loss_guides(fig, runs, reference_rta, row=1, col=1)
+    # Iso-1-R diagonals on the T vs A budget panel
+    ta_panel = _RTA_PANELS.index(("transmission_ppm", "absorption_ppm"))
+    _add_iso_loss_guides(
+        fig, runs, reference_rta, row=panel_pos[ta_panel][0], col=panel_pos[ta_panel][1]
+    )
 
     for panel_idx, (obj_x, obj_y) in enumerate(_RTA_PANELS):
         r, c = panel_pos[panel_idx]
@@ -442,7 +455,7 @@ def plot_rta_comparison_interactive(
 
     fig.update_layout(
         title=dict(text=title, x=0.5, xanchor="center", font=dict(size=16)),
-        height=1000,
+        height=1450,
         autosize=True,
         showlegend=True,
         legend=dict(
@@ -464,7 +477,7 @@ def plot_rta_comparison_interactive(
 
     if save_path:
         html_path = Path(save_path).parent / (Path(save_path).stem + "_rta_2d.html")
-        fig.write_html(str(html_path))
+        fig.write_html(str(html_path), include_plotlyjs="cdn")
         print(f"Saved RTA comparison plot to {html_path}")
     return fig
 
@@ -649,6 +662,6 @@ def plot_reward_comparison_interactive(
 
     if save_path:
         html_path = Path(save_path).parent / (Path(save_path).stem + "_rewards_2d.html")
-        fig.write_html(str(html_path))
+        fig.write_html(str(html_path), include_plotlyjs="cdn")
         print(f"Saved reward-space comparison plot to {html_path}")
     return fig
