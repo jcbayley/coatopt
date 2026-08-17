@@ -9,6 +9,7 @@ warmup, then applies gradually tightening constraints.
 Config section: [hppo_sequential]
   total_episodes           = 10000
   warmup_episodes          = 500            # Per objective
+  warmup_block_episodes    = 0              # 0 = one block per objective; smaller = interleave targets every N episodes
   episodes_per_step          = 200            # Episodes per phase
   steps_per_objective      = 10             # Constraint levels per objective
   episodes_per_update      = 10             # Episodes before PPO update
@@ -17,6 +18,7 @@ Config section: [hppo_sequential]
   constraint_penalty       = 3.0
   pareto_bonus             = 0.0            # Hypervolume improvement bonus
   bc_weight                = 0.1            # Behavior cloning weight from Pareto episodes (0.0 = disabled)
+  bc_selection             = target         # "target": imitate archive best for current target+constraints; "all": whole front
   lr                       = 3e-4
   lr_final                 = 3e-5           # Final LR (annealing target)
   lr_decay_episodes        = 10000          # Anneal over this many episodes per phase
@@ -77,6 +79,7 @@ class CoatOptHybridEnv(gym.Env):
         mask_consecutive_materials: bool = True,
         min_layers_before_air: int = 4,
         randomise_constraints: bool = False,
+        warmup_block_episodes: int = None,
     ):
         super().__init__()
         self.env = CoatingEnvironment(config, materials)
@@ -88,6 +91,10 @@ class CoatOptHybridEnv(gym.Env):
         self.warmup_episodes_per_objective = (
             warmup_episodes  # Episodes per objective during warmup
         )
+        # Warmup interleaving: cycle the target objective every
+        # warmup_block_episodes instead of one long block per objective.
+        # Default (None) = one block per objective, the original behaviour.
+        self.warmup_block_episodes = warmup_block_episodes or warmup_episodes
         self.total_warmup_episodes = warmup_episodes * len(
             self.objectives
         )  # Total warmup
@@ -164,10 +171,11 @@ class CoatOptHybridEnv(gym.Env):
         # Warmup phase
         if self.episode_count <= self.total_warmup_episodes:
             self.is_warmup = True
-            # Alternate objectives during warmup (spend warmup_episodes_per_objective on each)
-            obj_idx = (
-                (self.episode_count - 1) // self.warmup_episodes_per_objective
-            ) % len(self.objectives)
+            # Alternate objectives during warmup, cycling every
+            # warmup_block_episodes (defaults to one block per objective)
+            obj_idx = ((self.episode_count - 1) // self.warmup_block_episodes) % len(
+                self.objectives
+            )
             self.env.target_objective = self.objectives[obj_idx]
             self.env.constraints = {}
             self.env.is_warmup = True
@@ -559,6 +567,45 @@ class HybridActorCritic(nn.Module):
         return log_prob, value, entropy
 
 
+def select_bc_episodes(
+    front_rewards,
+    front_episodes,
+    objectives,
+    target_objective,
+    constraints,
+    top_k: int = 8,
+):
+    """Pick archive episodes matching the current constrained subproblem.
+
+    Ranks Pareto-archive designs by (violation of the current constraint
+    thresholds, then target-objective reward) and returns the episodes of the
+    top_k: the archive's best feasible answers to the phase the policy is
+    currently solving. Falls back to the least-violating designs when nothing
+    on the front satisfies the thresholds yet. This keeps the BC conditioning
+    consistent with the demonstrated behaviour (imitating the whole front
+    under the current target teaches the policy to ignore the conditioning).
+    """
+    if target_objective not in objectives:
+        return front_episodes
+    t_idx = objectives.index(target_objective)
+    scored = []
+    for (reward_vec, _), episode in zip(front_rewards, front_episodes):
+        if episode is None:
+            continue
+        r = np.asarray(reward_vec, dtype=float)
+        violation = 0.0
+        for j, obj in enumerate(objectives):
+            if j == t_idx:
+                continue
+            thr = float(constraints.get(obj, 0.0))
+            violation = max(violation, thr - float(r[j]))
+        scored.append((max(0.0, violation), -float(r[t_idx]), episode))
+    if not scored:
+        return None
+    scored.sort(key=lambda s: (s[0], s[1]))
+    return [s[2] for s in scored[:top_k]]
+
+
 def compute_bc_loss_from_pareto(
     policy, pareto_episodes, env_wrapper, target_obj_idx, bc_weight=0.1, batch_size=32
 ):
@@ -875,6 +922,9 @@ def train(config_path: str, save_dir: str):
     # Read hyperparameters
     total_episodes = _get("total_episodes", 10000, int)
     warmup_episodes = _get("warmup_episodes", 500, int)
+    # 0 / unset = one warmup block per objective; smaller value = interleaved
+    warmup_block_episodes = _get("warmup_block_episodes", 0, int) or None
+    bc_selection = _get("bc_selection", "target", str)
     episodes_per_step = _get("episodes_per_step", 200, int)
     steps_per_objective = _get("steps_per_objective", 10, int)
     episodes_per_update = _get("episodes_per_update", 10, int)
@@ -959,6 +1009,7 @@ def train(config_path: str, save_dir: str):
         mask_consecutive_materials=mask_consecutive,
         min_layers_before_air=min_layers_before_air,
         randomise_constraints=randomise_constraints,
+        warmup_block_episodes=warmup_block_episodes,
     )
 
     # Enable Pareto bonus (hypervolume improvement reward)
@@ -1165,12 +1216,17 @@ def train(config_path: str, save_dir: str):
 
         # Update LR and entropy with cosine annealing (separate for warmup/constrained phases)
         if env.is_warmup:
-            # Warmup phase: reset decay for EACH objective
-            # Calculate progress within current objective's warmup phase
-            episode_in_current_objective = (
-                (env.episode_count - 1) % warmup_episodes
-            ) + 1
-            progress = min(1.0, episode_in_current_objective / warmup_episodes)
+            if warmup_block_episodes and warmup_block_episodes != warmup_episodes:
+                # Interleaved warmup: single decay across the whole warmup
+                progress = min(
+                    1.0, env.episode_count / (warmup_episodes * len(objectives))
+                )
+            else:
+                # Block warmup: reset decay for EACH objective
+                episode_in_current_objective = (
+                    (env.episode_count - 1) % warmup_episodes
+                ) + 1
+                progress = min(1.0, episode_in_current_objective / warmup_episodes)
         else:
             # Constrained phase: decay over remaining episodes
             constrained_episodes = env.episode_count - warmup_end_episode
@@ -1204,11 +1260,20 @@ def train(config_path: str, save_dir: str):
         # Update policy with BC loss from Pareto episodes (disabled during warmup)
         rollout_data = buffer.get()
         # Only use BC loss during constrained phase when exploring tradeoff region
-        pareto_episodes = (
-            env.env.pareto_front_episodes
-            if (bc_weight > 0 and not env.is_warmup)
-            else None
-        )
+        pareto_episodes = None
+        if bc_weight > 0 and not env.is_warmup:
+            if bc_selection == "target":
+                # Imitate the archive's best designs for the CURRENT target
+                # objective that satisfy the CURRENT constraint thresholds
+                pareto_episodes = select_bc_episodes(
+                    env.env.pareto_front_rewards,
+                    env.env.pareto_front_episodes,
+                    objectives,
+                    env.env.target_objective,
+                    env.env.constraints,
+                )
+            else:  # "all": original behaviour, whole front
+                pareto_episodes = env.env.pareto_front_episodes
         target_obj_idx = objective_to_idx[env.env.target_objective]
         ppo_logs = agent.update(
             rollout_data,
