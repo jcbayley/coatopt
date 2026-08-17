@@ -434,6 +434,38 @@ def plot_rta_comparison_interactive(
                 col=c,
             )
 
+        # Gold star at the best corner (everything minimised -> bottom left)
+        bx, by = [], []
+        for df, _ in runs:
+            vx, vy = df[obj_x].values, df[obj_y].values
+            ok = np.isfinite(vx) & np.isfinite(vy) & (vx > 0) & (vy > 0)
+            bx.extend(vx[ok].tolist())
+            by.extend(vy[ok].tolist())
+        if bx and by:
+            fig.add_trace(
+                go.Scatter(
+                    x=[min(bx)],
+                    y=[min(by)],
+                    mode="markers",
+                    marker=dict(
+                        symbol="star",
+                        size=14,
+                        color="#FFD700",
+                        line=dict(width=1.5, color="black"),
+                    ),
+                    name="Best solution",
+                    legendgroup="best_solution",
+                    showlegend=first_panel,
+                    hovertemplate=(
+                        "<b>Best solution corner</b><br>"
+                        f"{_RTA_LABELS[obj_x]}: %{{x:.3g}}<br>"
+                        f"{_RTA_LABELS[obj_y]}: %{{y:.3g}}<extra></extra>"
+                    ),
+                ),
+                row=r,
+                col=c,
+            )
+
         fig.update_xaxes(
             title_text=_RTA_LABELS[obj_x],
             type="log",
@@ -613,6 +645,40 @@ def plot_reward_comparison_interactive(
                     showlegend=first_panel,
                     hovertemplate=(
                         f"<b>{short}</b><br>"
+                        f"{obj_x} reward: %{{x:.4f}}<br>"
+                        f"{obj_y} reward: %{{y:.4f}}<extra></extra>"
+                    ),
+                ),
+                row=r,
+                col=c,
+            )
+
+        # Gold star at the best corner (rewards maximised -> top right)
+        bx, by = [], []
+        for _, rdf, _ in pareto_fronts:
+            if rdf is None or obj_x not in rdf.columns or obj_y not in rdf.columns:
+                continue
+            vx, vy = rdf[obj_x].values, rdf[obj_y].values
+            ok = np.isfinite(vx) & np.isfinite(vy)
+            bx.extend(vx[ok].tolist())
+            by.extend(vy[ok].tolist())
+        if bx and by:
+            fig.add_trace(
+                go.Scatter(
+                    x=[max(bx)],
+                    y=[max(by)],
+                    mode="markers",
+                    marker=dict(
+                        symbol="star",
+                        size=14,
+                        color="#FFD700",
+                        line=dict(width=1.5, color="black"),
+                    ),
+                    name="Best solution",
+                    legendgroup="best_solution",
+                    showlegend=first_panel,
+                    hovertemplate=(
+                        "<b>Best solution corner</b><br>"
                         f"{obj_x} reward: %{{x:.4f}}<br>"
                         f"{obj_y} reward: %{{y:.4f}}<extra></extra>"
                     ),
