@@ -3,7 +3,12 @@ import logging
 import numpy as np
 
 from ..state import CoatingState
-from .EFI_tmm import CalculateEFI_tmm, physical_to_optical
+from .EFI_tmm import (
+    ABSORPTION_PPM_SCALE,
+    CalculateEFI_tmm,
+    CalculateRTA_tmm,
+    physical_to_optical,
+)
 from .YAM_CoatingBrownian import getCoatingThermalNoise
 
 # functions used to Calculate Coating Thermal Noise
@@ -480,16 +485,24 @@ def merit_function(
             substrate_index=substrate_index,
         )
         D = ds[-1]  # Total physical thickness from EFI position array
+        # Objective reflectivity stays the lossless recursion value here, so
+        # existing EFI runs are unchanged (tmm's lossy R is in `reflectivity`)
+        reflectivity_out = np.abs(rCoat) ** 2
     else:
-        # Fast analytic absorption using rbar/r already computed by getCoatingThermalNoise
-        aLayer = np.array([new_all_materials[m]["a"] for m in layer_material_inds])
-        nLayer = np.array([new_all_materials[m]["n"] for m in layer_material_inds])
-        total_absorption, _, _, _ = getCoatAbsorption(
-            light_wavelength, layer_optical_thicknesses, aLayer, nLayer, rbar, r
+        # Exact R/T/A from one complex-index tmm call: absorption is the
+        # energy-balance absorptance (matches the EFI integral to <1% without
+        # its 500-point discretisation), and reflectivity includes absorption.
+        reflectivity_out, transmission, absorption_fraction = CalculateRTA_tmm(
+            dOpt=layer_optical_thicknesses,
+            materialLayer=layer_material_inds,
+            materialParams=new_all_materials,
+            lambda_=light_wavelength,
+            polarisation="p",
+            air_index=air_index,
+            substrate_index=substrate_index,
         )
+        total_absorption = absorption_fraction * ABSORPTION_PPM_SCALE
         D = float(np.sum(layer_thicknesses))  # Total physical thickness in m
-        # Lossless recursion: energy balance gives T = 1 - R exactly
-        transmission = 1.0 - np.abs(rCoat) ** 2
 
     # logging.info(f"Integrating over the Electric Field Intensity .......")
     # normallised_EFI = integrand(E_total,light_wavelength,layer_material_inds,all_materials,num_points=len(E_total))
@@ -520,7 +533,7 @@ def merit_function(
             "total_thickness": D,
         }
         return (
-            np.abs(rCoat) ** 2,
+            reflectivity_out,
             ThermalNoise_Total,
             total_absorption,
             D,
@@ -528,7 +541,7 @@ def merit_function(
             field_data,
         )
     else:
-        return np.abs(rCoat) ** 2, ThermalNoise_Total, total_absorption, D, transmission
+        return reflectivity_out, ThermalNoise_Total, total_absorption, D, transmission
     """
     # Reflectivity
     #R, dcdp, rbar, r = getCoatRefl2(nAir, nSub, n_layer, optical_thickness)

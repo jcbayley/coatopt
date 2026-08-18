@@ -31,9 +31,10 @@ class DataConfig:
     ignore_air_option: bool = False
     ignore_substrate_option: bool = False
     use_intermediate_reward: bool = False
-    compute_efi: bool = (
-        True  # If False, skip EFI loop and use analytic absorption (much faster)
-    )
+    # True: 500-point EFI field loop, absorption by integration, lossless
+    # reflectivity. False: exact R/T/A from one complex-index tmm call
+    # (absorption = 1-R-T, reflectivity includes absorption) — faster.
+    compute_efi: bool = True
     combine: str = "sum"
 
     # Reward normalization settings
