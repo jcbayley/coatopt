@@ -422,9 +422,9 @@ def getCoatingThermalNoise(
     Temp=1,
     plots=True,
 ):
-    # Set seaborn style and viridis color palette
-    # sns.set_style("whitegrid")
-    # sns.set_palette("tab10")
+    # Check wavelength units (convert nm to meters if needed)
+    if lambda_ > 1.0:
+        lambda_ *= 1e-9
 
     # Extract substrate properties
     nSub = materialParams[materialSub]["n"]

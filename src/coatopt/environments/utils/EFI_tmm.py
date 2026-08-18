@@ -404,18 +404,14 @@ def CalculateTransmission_tmm(
     #     print('Using Physical Thickness... ')
 
     if tphys is None:
-        print("tmm - Calculating physical thickness... ")
         tphys = []
         for layer_material in materialLayer:
             n_i = materialParams[layer_material]["n"]
             physical_thickness = optical_to_physical(
                 dOpt[layer_material], lambda_0, n_i
             )
-            # print(f"Layer {layer_material}: Optical Thickness: {dOpt[layer_material]}, Physical Thickness: {physical_thickness}, Refractive Index: {n_i}")
             tphys.append(physical_thickness)
         tphys = np.array(tphys)
-    else:
-        print("Using Physical Thickness... ")
 
     for lambda_ in lambda_list:
         wavelength = lambda_
@@ -562,16 +558,12 @@ def CalculateTransmission_tmm2(
     logger = logging.getLogger(__name__)
 
     if tphys is None:
-        print("Calculating physical thickness... ")
         tphys = []
         for layer_material in materialLayer:
             n_i = materialParams[layer_material]["n"]
             physical_thickness = dOpt[layer_material] * lambda_0 / n_i  # in nm
-            # print(f"Layer {layer_material}: Optical Thickness: {dOpt[layer_material]}, Physical Thickness: {physical_thickness}, Refractive Index: {n_i}")
             tphys.append(physical_thickness)
         tphys = np.array(tphys)
-    else:
-        print("Using Physical Thickness... ")
 
     # Convert everything to arrays
     transmission = []
@@ -628,9 +620,6 @@ def CalculateTransmission_tmm2(
     # Identify index closest to lambda_0 (in nm)
     idx = np.abs(wavelengths - lambda_0).argmin()
     transmission_lambda_0 = transmission[idx]
-    print("CalculateTransmission_tmm2")
-    print("Wavelengths (first 10):", wavelengths[:10])
-    print("Transmission (first 10):", transmission[:10])
 
     # Optionally plot
     if plots:
@@ -760,7 +749,6 @@ def stack_RT_fast(
 
     # calculate physical thicknesses if not provided
     if tphys is None:
-        print("tmm-fast : Calculating physical thickness... ")
         tphys = []
         for layer_material in materialLayer:
             n_i = materialParams[layer_material]["n"]
@@ -771,8 +759,6 @@ def stack_RT_fast(
                 )
             tphys.append(physical_thickness)
         tphys = np.array(tphys)
-    else:
-        print("tmm-fast : Using Physical Thickness... ")
 
     ns = n_list
     Ls = tphys

@@ -29,7 +29,7 @@ def get_git_hash() -> str:
 
 
 def load_materials(path: str) -> dict:
-    """Load materials from JSON, converting string keys to int.
+    """Load materials from JSON, converting string integer keys or named keys to int.
 
     Args:
         path: Path to materials JSON file
@@ -39,7 +39,18 @@ def load_materials(path: str) -> dict:
     """
     with open(path) as f:
         data = json.load(f)
-    return {int(k): v for k, v in data.items()}
+    
+    result = {}
+    for idx, (k, v) in enumerate(data.items()):
+        try:
+            key_int = int(k)
+        except ValueError:
+            key_int = idx
+        result[key_int] = v
+        result[str(key_int)] = v
+        if isinstance(k, str) and not k.isdigit():
+            result[k] = v
+    return result
 
 
 def validate_materials(materials_path: str) -> None:

@@ -44,7 +44,17 @@ def load_materials(materials_path: str) -> Dict:
     """Load material properties from JSON file."""
     with open(materials_path, "r") as f:
         materials = json.load(f)
-    return {int(k): v for k, v in materials.items()}
+    result = {}
+    for idx, (k, v) in enumerate(materials.items()):
+        try:
+            key_int = int(k)
+        except ValueError:
+            key_int = idx
+        result[key_int] = v
+        result[str(key_int)] = v
+        if isinstance(k, str) and not k.isdigit():
+            result[k] = v
+    return result
 
 
 def parse_design(row: pd.Series) -> Tuple[np.ndarray, np.ndarray]:
