@@ -59,7 +59,8 @@ def save_training_curves(
     ep = df["episode"].values
     n_obj_panels = len(objectives)
     n_cols = 3
-    n_rows = 2 + int(np.ceil(n_obj_panels / n_cols))
+    # 6 fixed panels + constraint thresholds + one per objective
+    n_rows = 2 + int(np.ceil((1 + n_obj_panels) / n_cols))
     fig, axes = plt.subplots(
         n_rows, n_cols, figsize=(14, 3.1 * n_rows), facecolor="white"
     )
@@ -81,16 +82,25 @@ def save_training_curves(
         ax.plot(ep, df["pareto.hypervolume"].values, color=_SERIES[1], lw=1.5)
     _style(ax, "Reward-space hypervolume")
 
-    # 3: constraint thresholds (with episode length as context)
+    # 3: episode length — short stacks signal early air termination
     ax = axes[2]
-    for i, obj in enumerate(objectives):
-        col = f"constraint.{obj}"
-        if col in df:
+    if "episode.length_mean" in df:
+        m = df["episode.length_mean"].values
+        ax.plot(ep, m, color=_SERIES[2], lw=1.5)
+        if "episode.length_std" in df:
+            s = df["episode.length_std"].values
+            ax.fill_between(ep, m - s, m + s, color=_SERIES[2], alpha=0.15, lw=0)
+        if "episode.length_max" in df:
             ax.plot(
-                ep, df[col].values, color=_SERIES[i % len(_SERIES)], lw=1.0, label=obj
+                ep,
+                df["episode.length_max"].values,
+                color=_MUTED,
+                lw=0.8,
+                ls="--",
+                label="max",
             )
-    ax.legend(fontsize=7, frameon=False)
-    _style(ax, "Constraint thresholds (0 = warmup)")
+            ax.legend(fontsize=7, frameon=False)
+    _style(ax, "Episode length (layers placed)")
 
     # 4: policy-side losses
     ax = axes[3]
@@ -129,9 +139,20 @@ def save_training_curves(
     ax.legend(fontsize=7, frameon=False)
     _style(ax, "LR / entropy schedule", logy=True)
 
-    # 7+: per-objective best values (rolling window best)
+    # 7: constraint thresholds
+    ax = axes[6]
     for i, obj in enumerate(objectives):
-        ax = axes[6 + i]
+        col = f"constraint.{obj}"
+        if col in df:
+            ax.plot(
+                ep, df[col].values, color=_SERIES[i % len(_SERIES)], lw=1.0, label=obj
+            )
+    ax.legend(fontsize=7, frameon=False)
+    _style(ax, "Constraint thresholds (0 = warmup)")
+
+    # 8+: per-objective best values (rolling window best)
+    for i, obj in enumerate(objectives):
+        ax = axes[7 + i]
         col = f"vals.{obj}_best"
         if col in df:
             v = df[col].values
@@ -143,7 +164,7 @@ def save_training_curves(
         ax.set_xlabel("episode", fontsize=8, color=_MUTED)
 
     # Hide unused axes
-    for j in range(6 + n_obj_panels, len(axes)):
+    for j in range(7 + n_obj_panels, len(axes)):
         axes[j].set_visible(False)
 
     fig.suptitle("Training curves", fontsize=13, color=_INK)
