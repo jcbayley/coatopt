@@ -140,16 +140,20 @@ def run_experiment(
     with open(config_backup, "w") as f:
         parser.write(f)
 
-    # Setup MLflow
-    mlflow.set_experiment(experiment_name)
-    mlflow.start_run(run_name=run_dir_name)
-    mlflow.log_param("experiment_name", experiment_name)
-    mlflow.log_param("algorithm", algorithm)
-    mlflow.log_param("config_path", str(config_path))
-    mlflow.log_param("run_directory", str(save_dir))
+    # Setup MLflow. Everything downstream guards on mlflow.active_run(), so
+    # not starting a run is enough to switch the logging off; the training
+    # curves and CSVs are built from the trainer's own history either way.
+    disable_mlflow = parser.getboolean("general", "disable_mlflow", fallback=False)
+    if not disable_mlflow:
+        mlflow.set_experiment(experiment_name)
+        mlflow.start_run(run_name=run_dir_name)
+        mlflow.log_param("experiment_name", experiment_name)
+        mlflow.log_param("algorithm", algorithm)
+        mlflow.log_param("config_path", str(config_path))
+        mlflow.log_param("run_directory", str(save_dir))
 
     print(f"Save directory: {save_dir}")
-    print(f"MLflow run: {run_dir_name}")
+    print(f"MLflow run: {'disabled' if disable_mlflow else run_dir_name}")
 
     # Algorithm-specific training
     start_time = time.time()
@@ -298,7 +302,8 @@ def run_experiment(
             # Restore original sys.argv
             sys.argv = original_argv
 
-    mlflow.end_run()
+    if not disable_mlflow:
+        mlflow.end_run()
 
 
 if __name__ == "__main__":

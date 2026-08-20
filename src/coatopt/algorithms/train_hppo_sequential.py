@@ -41,6 +41,7 @@ Config section: [hppo_sequential]
   seed                     = 42
   verbose                  = 1
   plot_freq                = 500
+  hypervolume_freq         = 500            # archive hypervolume cadence (defaults to plot_freq; it is O(N^2) in front size)
 """
 
 import ast
@@ -1073,6 +1074,8 @@ def train(config_path: str, save_dir: str):
     # Read logging frequencies
     mlflow_log_freq = parser.getint("general", "mlflow_log_freq", fallback=50)
     plot_freq = _get("plot_freq", 500, int)
+    # Hypervolume is quadratic in archive size; keep it off the per-log path
+    hypervolume_freq = _get("hypervolume_freq", plot_freq, int)
     randomise_constraints = _get(
         "randomise_constraints", False, lambda x: x.lower() == "true"
     )
@@ -1098,30 +1101,32 @@ def train(config_path: str, save_dir: str):
         torch.cuda.manual_seed_all(seed)
 
     # Log hyperparameters
-    mlflow.log_params(
-        {
-            "total_episodes": total_episodes,
-            "warmup_episodes": warmup_episodes,
-            "episodes_per_step": episodes_per_step,
-            "steps_per_objective": steps_per_objective,
-            "episodes_per_update": episodes_per_update,
-            "n_epochs": n_epochs,
-            "batch_size": batch_size,
-            "constraint_penalty": constraint_penalty,
-            "pareto_bonus": pareto_bonus,
-            "bc_weight": bc_weight,
-            "lr": lr,
-            "gamma": gamma,
-            "gae_lambda": gae_lambda,
-            "clip_range": clip_range,
-            "ent_coef": ent_coef,
-            "vf_coef": vf_coef,
-            "hidden": str(hidden),
-            "pre_model_type": pre_model_type,
-            "pre_model_params": str(pre_model_params),
-            "seed": seed,
-        }
-    )
+    # guarded: mlflow.log_params starts a run of its own if none is active
+    if mlflow.active_run():
+        mlflow.log_params(
+            {
+                "total_episodes": total_episodes,
+                "warmup_episodes": warmup_episodes,
+                "episodes_per_step": episodes_per_step,
+                "steps_per_objective": steps_per_objective,
+                "episodes_per_update": episodes_per_update,
+                "n_epochs": n_epochs,
+                "batch_size": batch_size,
+                "constraint_penalty": constraint_penalty,
+                "pareto_bonus": pareto_bonus,
+                "bc_weight": bc_weight,
+                "lr": lr,
+                "gamma": gamma,
+                "gae_lambda": gae_lambda,
+                "clip_range": clip_range,
+                "ent_coef": ent_coef,
+                "vf_coef": vf_coef,
+                "hidden": str(hidden),
+                "pre_model_type": pre_model_type,
+                "pre_model_params": str(pre_model_params),
+                "seed": seed,
+            }
+        )
 
     # Create environment with scheduling (like train_sb3_discrete)
     env = CoatOptHybridEnv(
@@ -1215,6 +1220,8 @@ def train(config_path: str, save_dir: str):
     # instead, so any interval is honoured at the first update past it.
     last_log_episode = 0
     last_plot_episode = 0
+    last_hv_episode = 0
+    last_hypervolume = None
     objectives = list(config.data.optimise_parameters)
     objective_targets = dict(getattr(config.data, "optimise_targets", {}) or {})
 
@@ -1508,14 +1515,21 @@ def train(config_path: str, save_dir: str):
                             min(vals, key=lambda v: abs(v - target))
                         )
 
-            # Hypervolume
-            pareto = env.env.get_pareto_front(space="reward")
-            if len(pareto) > 1:
-                try:
-                    hv = env.env.compute_hypervolume(space="reward")
-                    metrics["pareto.hypervolume"] = hv
-                except Exception:
-                    pass
+            # Hypervolume. This is by far the most expensive metric here and
+            # it scales roughly quadratically with the archive: measured at 3
+            # objectives it costs 0.27 s at 2k points and 5.1 s at 8k, so at
+            # mlflow_log_freq it would add hours to a run whose front grows
+            # that far. Recompute on its own slower schedule and carry the
+            # last value forward so the column stays continuous.
+            if len(env.env.pareto_front_rewards) > 1:
+                if env.episode_count - last_hv_episode >= hypervolume_freq:
+                    last_hv_episode = env.episode_count
+                    try:
+                        last_hypervolume = env.env.compute_hypervolume(space="reward")
+                    except Exception:
+                        pass
+                if last_hypervolume is not None:
+                    metrics["pareto.hypervolume"] = last_hypervolume
 
             # Warmup best
             for obj, best in env.env.warmup_best_rewards.items():
