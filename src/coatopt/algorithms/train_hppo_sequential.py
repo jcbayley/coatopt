@@ -37,6 +37,7 @@ Config section: [hppo_sequential]
   pre_model_params         = {"hidden": 32, "layers": 2}   # encoder kwargs; attention also takes heads, ff_mult
                                             # (legacy use_lstm/lstm_hidden/lstm_layers still work)
   hidden                   = [256, 256]     # MLP layers after the encoder/before policy heads
+  torch_threads            = 1              # intra-op threads; match request_cpus (0 = leave torch's default)
   seed                     = 42
   verbose                  = 1
   plot_freq                = 500
@@ -46,6 +47,7 @@ import ast
 import configparser
 import math
 import random
+import time
 from pathlib import Path
 from typing import List
 
@@ -1079,6 +1081,15 @@ def train(config_path: str, save_dir: str):
     hidden_str = _get("hidden", "[256, 256]")
     hidden = eval(hidden_str)
 
+    # These tensors are far too small to gain from intra-op threading, and on a
+    # request_cpus=1 Condor slot torch would otherwise start one thread per host
+    # core and thrash against the single allocated CPU. Attention pays for this
+    # much more than the LSTM does: measured on a 6-core box, going from 1 to 8
+    # threads cost attention 55% and the LSTM 7%. 0 leaves torch's default alone.
+    torch_threads = _get("torch_threads", 1, int)
+    if torch_threads > 0:
+        torch.set_num_threads(torch_threads)
+
     # Set seeds for reproducibility
     np.random.seed(seed)
     torch.manual_seed(seed)
@@ -1260,6 +1271,13 @@ def train(config_path: str, save_dir: str):
 
     if verbose:
         print(f"Training for {total_episodes} episodes")
+
+    # algorithm_runtime is the optimisation alone: the periodic checkpoint,
+    # CSV and plot writes below are timed separately and subtracted, and the
+    # final plots fall outside the loop, so the figure stays comparable
+    # between runs that end with very differently sized Pareto fronts.
+    loop_start = time.perf_counter()
+    plot_io_seconds = 0.0
 
     while env.episode_count < total_episodes:
         # Collect episodes for this update
@@ -1535,6 +1553,7 @@ def train(config_path: str, save_dir: str):
         # Periodic checkpointing
         if env.episode_count - last_plot_episode >= plot_freq:
             last_plot_episode = env.episode_count
+            io_start = time.perf_counter()
             try:
                 designs_df, values_df, rewards_df = env.env.export_pareto_dataframes()
                 if not values_df.empty:
@@ -1590,6 +1609,10 @@ def train(config_path: str, save_dir: str):
                 if verbose:
                     print(f"  [training curves] skipped: {e}")
 
+            plot_io_seconds += time.perf_counter() - io_start
+
+    algorithm_runtime = time.perf_counter() - loop_start - plot_io_seconds
+
     # Final Pareto export and plots
     try:
         from coatopt.utils.training_plots import save_training_curves
@@ -1623,5 +1646,6 @@ def train(config_path: str, save_dir: str):
         "metadata": {
             "algorithm": "ppo_sequential",
             "total_episodes": total_episodes,
+            "algorithm_runtime": round(algorithm_runtime, 2),
         },
     }

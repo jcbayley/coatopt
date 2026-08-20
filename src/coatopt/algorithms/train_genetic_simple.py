@@ -19,6 +19,7 @@ Config section: [nsga2]
   min_layers_before_air    = 0              # Min layers before air allowed
 """
 
+import time
 from pathlib import Path
 from typing import Optional
 
@@ -288,7 +289,9 @@ def train_genetic(config_path: str, save_dir: Optional[str] = None):
         print(f"  Crossover prob: {crossover_prob}")
         print(f"  Mutation prob: {mutation_prob}")
 
-    # Run optimization
+    # Run optimization. algorithm_runtime covers this alone; the Pareto and
+    # stack plots below are excluded so the figure is comparable across runs.
+    opt_start = time.perf_counter()
     result = minimize(
         problem,
         algo,
@@ -296,6 +299,7 @@ def train_genetic(config_path: str, save_dir: Optional[str] = None):
         seed=seed,
         verbose=verbose,
     )
+    algorithm_runtime = time.perf_counter() - opt_start
 
     if verbose:
         print("\nOptimization complete!")
@@ -350,6 +354,7 @@ def train_genetic(config_path: str, save_dir: Optional[str] = None):
             "crossover_prob": crossover_prob,
             "mutation_prob": mutation_prob,
             "seed": seed,
+            "algorithm_runtime": round(algorithm_runtime, 2),
         },
     }
 
