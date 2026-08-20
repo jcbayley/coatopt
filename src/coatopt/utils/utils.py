@@ -2,8 +2,10 @@
 
 import ast
 import json
+import os
 import platform
 import subprocess
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -419,6 +421,70 @@ def load_pareto_front(run_dir: Path):
     return designs_df, values_df, rewards_df
 
 
+def get_cpu_info() -> dict:
+    """Describe the machine a run actually landed on.
+
+    Condor schedules across heterogeneous nodes, so an otherwise identical run
+    can be several times slower purely because of where it ran. Recording the
+    host, the CPU model and a fixed timing probe makes that visible instead of
+    leaving it to be guessed at.
+
+    cpu_count is what the machine advertises; cpu_affinity is how many of those
+    this process may actually use, which is what request_cpus restricts. When
+    affinity is far below cpu_count, any library defaulting its thread pool to
+    cpu_count will oversubscribe the allocation.
+    """
+    info = {
+        "node": platform.node(),
+        "system": platform.system(),
+        "release": platform.release(),
+        "python_version": platform.python_version(),
+        "machine": platform.machine(),
+        "cpu_model": platform.processor() or None,
+        "cpu_count": os.cpu_count(),
+        "cpu_affinity": None,
+        "torch_threads": None,
+        "matmul_probe_ms": None,
+    }
+
+    try:
+        if platform.system() == "Linux":
+            with open("/proc/cpuinfo") as f:
+                for line in f:
+                    if line.startswith("model name"):
+                        info["cpu_model"] = line.split(":", 1)[1].strip()
+                        break
+        elif platform.system() == "Darwin":
+            info["cpu_model"] = subprocess.check_output(
+                ["sysctl", "-n", "machdep.cpu.brand_string"], text=True
+            ).strip()
+    except Exception:
+        pass
+
+    try:  # Linux only; this is the count request_cpus actually grants
+        info["cpu_affinity"] = len(os.sched_getaffinity(0))
+    except (AttributeError, OSError):
+        pass
+
+    # Fixed probe so two runs can be compared directly. Read it together with
+    # torch_threads, which is what it was measured under.
+    try:
+        import torch
+
+        info["torch_threads"] = torch.get_num_threads()
+        a = torch.ones(256, 256)
+        for _ in range(3):
+            a @ a
+        start = time.perf_counter()
+        for _ in range(50):
+            a @ a
+        info["matmul_probe_ms"] = round((time.perf_counter() - start) / 50 * 1e3, 3)
+    except Exception:
+        pass
+
+    return info
+
+
 def save_run_metadata(
     save_dir: str,
     algorithm_name: str,
@@ -467,11 +533,7 @@ def save_run_metadata(
         "total_generations": total_generations,
         "config_path": str(config_path) if config_path else None,
         "git_hash": get_git_hash(),
-        "platform": {
-            "system": platform.system(),
-            "python_version": platform.python_version(),
-            "machine": platform.machine(),
-        },
+        "platform": get_cpu_info(),
     }
 
     # Add any additional info
