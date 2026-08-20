@@ -33,15 +33,16 @@ Config section: [hppo_sequential]
   max_grad_norm            = 0.5
   min_layers_before_air    = 4
   mask_consecutive_materials = true
-  use_lstm                 = false          # Use LSTM to process layer sequence
-  lstm_hidden              = 128            # LSTM hidden size (if use_lstm=true)
-  lstm_layers              = 1              # Number of LSTM layers (if use_lstm=true)
-  hidden                   = [256, 256]     # MLP layers after LSTM/before policy heads
+  pre_model_type           = linear         # Layer-stack encoder: linear | lstm | attention
+  pre_model_params         = {"hidden": 32, "layers": 2}   # encoder kwargs; attention also takes heads, ff_mult
+                                            # (legacy use_lstm/lstm_hidden/lstm_layers still work)
+  hidden                   = [256, 256]     # MLP layers after the encoder/before policy heads
   seed                     = 42
   verbose                  = 1
   plot_freq                = 500
 """
 
+import ast
 import configparser
 import math
 import random
@@ -316,6 +317,87 @@ class RolloutBuffer:
         }
 
 
+class LSTMEncoder(nn.Module):
+    """Recurrent encoder of the layer stack.
+
+    encode_step carries (h, c) so a rollout step feeds only the layer just
+    placed instead of re-reading the whole stack.
+    """
+
+    def __init__(self, in_dim, hidden=32, layers=1, **_):
+        super().__init__()
+        self.net = nn.LSTM(in_dim, hidden, layers, batch_first=True)
+        self.out_dim = hidden
+
+    def encode_all(self, seq):
+        return self.net(seq)[0]
+
+    def encode_step(self, prefix, new_row, state):
+        out, state = self.net(prefix if state is None else new_row, state)
+        return out[:, -1], state
+
+
+class _AttentionBlock(nn.Module):
+    """Pre-norm causal self-attention + feedforward."""
+
+    def __init__(self, dim, heads, ff_mult):
+        super().__init__()
+        self.heads = heads
+        self.norm1 = nn.LayerNorm(dim)
+        self.norm2 = nn.LayerNorm(dim)
+        self.qkv = nn.Linear(dim, 3 * dim)
+        self.proj = nn.Linear(dim, dim)
+        self.ff = nn.Sequential(
+            nn.Linear(dim, ff_mult * dim), nn.ReLU(), nn.Linear(ff_mult * dim, dim)
+        )
+
+    def forward(self, x):
+        b, t, d = x.shape
+        q, k, v = self.qkv(self.norm1(x)).chunk(3, dim=-1)
+        split = lambda z: z.view(b, t, self.heads, d // self.heads).transpose(1, 2)
+        attended = torch.nn.functional.scaled_dot_product_attention(
+            split(q), split(k), split(v), is_causal=True
+        )
+        x = x + self.proj(attended.transpose(1, 2).reshape(b, t, d))
+        return x + self.ff(self.norm2(x))
+
+
+class AttentionEncoder(nn.Module):
+    """Causal self-attention encoder of the layer stack.
+
+    Causal is not optional: the update reads position t from one pass over
+    the episode's final observation, so if position t could see later layers
+    it would use layers the policy had not placed yet and the PPO ratio would
+    compare two different functions. No dropout, for the same reason - the
+    rollout and the update must agree on the same state.
+
+    On CPU this is much cheaper than the LSTM despite being O(T^2): 50 layers
+    is one small matmul, where the LSTM is 50 dependent tiny ones. Rollout
+    keeps no state and simply re-encodes the prefix placed so far.
+    """
+
+    def __init__(self, in_dim, hidden=32, layers=2, heads=2, ff_mult=2, max_len=50):
+        super().__init__()
+        self.embed = nn.Linear(in_dim, hidden)
+        self.pos = nn.Parameter(torch.randn(1, max_len, hidden) * 0.02)
+        self.blocks = nn.ModuleList(
+            [_AttentionBlock(hidden, heads, ff_mult) for _ in range(layers)]
+        )
+        self.out_dim = hidden
+
+    def encode_all(self, seq):
+        x = self.embed(seq) + self.pos[:, : seq.shape[1]]
+        for block in self.blocks:
+            x = block(x)
+        return x
+
+    def encode_step(self, prefix, new_row, state):
+        return self.encode_all(prefix)[:, -1], None
+
+
+PRE_MODELS = {"lstm": LSTMEncoder, "attention": AttentionEncoder}
+
+
 class HybridActorCritic(nn.Module):
     """Actor-Critic with hybrid discrete+continuous actions.
 
@@ -323,7 +405,9 @@ class HybridActorCritic(nn.Module):
     Continuous head: thickness (TruncatedNormal with bounds [min_t, max_t])
     Value head: state value V(s)
 
-    Optional LSTM: processes layer sequence before MLP trunk.
+    pre_model_type selects how the layer stack is read before the MLP trunk:
+    "linear" feeds the flattened observation straight in, "lstm" and
+    "attention" encode the sequence first.
     """
 
     def __init__(
@@ -333,9 +417,8 @@ class HybridActorCritic(nn.Module):
         min_thickness: float,
         max_thickness: float,
         hidden_dims: List[int] = [256, 256],
-        use_lstm: bool = False,
-        lstm_hidden: int = 128,
-        lstm_layers: int = 1,
+        pre_model_type: str = "linear",
+        pre_model_params: dict = None,
         max_layers: int = None,
         n_constraints: int = None,
     ):
@@ -343,12 +426,18 @@ class HybridActorCritic(nn.Module):
         self.n_materials = n_materials
         self.min_t = min_thickness
         self.max_t = max_thickness
-        self.use_lstm = use_lstm
+        self.pre_model_type = pre_model_type
+        self.use_sequence = pre_model_type in PRE_MODELS
+        if pre_model_type != "linear" and not self.use_sequence:
+            raise ValueError(
+                f"Unknown pre_model_type {pre_model_type!r}; "
+                f"expected 'linear' or one of {sorted(PRE_MODELS)}"
+            )
 
-        if use_lstm:
+        if self.use_sequence:
             assert (
                 max_layers is not None and n_constraints is not None
-            ), "max_layers and n_constraints required for LSTM"
+            ), f"max_layers and n_constraints required for {pre_model_type}"
 
             # Observation structure: [layer_sequence (flattened), current_layer, constraints]
             n_features_per_layer = 1 + n_materials + 2  # thickness + one-hot + 2
@@ -356,34 +445,25 @@ class HybridActorCritic(nn.Module):
             self.n_features_per_layer = n_features_per_layer
             self.n_constraints = n_constraints
 
-            # LSTM processes layer sequence
-            self.lstm = nn.LSTM(
-                input_size=n_features_per_layer,
-                hidden_size=lstm_hidden,
-                num_layers=lstm_layers,
-                batch_first=True,
+            self.encoder = PRE_MODELS[pre_model_type](
+                n_features_per_layer, max_len=max_layers, **(pre_model_params or {})
             )
 
-            # After LSTM: concat [lstm_output, objective_weights, constraints]
+            # After the encoder: concat [encoded stack, objective weights, constraints]
             combined_dim = (
-                lstm_hidden + n_constraints + n_constraints
+                self.encoder.out_dim + n_constraints + n_constraints
             )  # n_objectives = n_constraints
-
-            # Trunk MLP
-            layers = []
             prev_dim = combined_dim
-            for h in hidden_dims:
-                layers.extend([nn.Linear(prev_dim, h), nn.ReLU()])
-                prev_dim = h
-            self.trunk = nn.Sequential(*layers)
         else:
-            # Standard MLP trunk (no LSTM)
-            layers = []
+            # Standard MLP trunk, straight off the flattened observation
             prev_dim = obs_dim
-            for h in hidden_dims:
-                layers.extend([nn.Linear(prev_dim, h), nn.ReLU()])
-                prev_dim = h
-            self.trunk = nn.Sequential(*layers)
+
+        # Trunk MLP
+        layers = []
+        for h in hidden_dims:
+            layers.extend([nn.Linear(prev_dim, h), nn.ReLU()])
+            prev_dim = h
+        self.trunk = nn.Sequential(*layers)
 
         # Discrete head (material)
         self.material_head = nn.Linear(prev_dim, n_materials)
@@ -400,27 +480,49 @@ class HybridActorCritic(nn.Module):
             [nn.Linear(prev_dim, 1) for _ in range(self.n_objectives)]
         )
 
-    def _lstm_features(self, obs, episode_idx=None, step_idx=None):
-        """LSTM feature of the layer stack at each step.
+    def _obs_layers(self, obs):
+        """Layer-stack rows of an observation, without the objective tail."""
+        tail = self.n_objectives + self.n_constraints
+        return obs[:, :-tail].view(-1, self.max_layers, self.n_features_per_layer)
 
-        The LSTM is causal, so output position t of one pass depends only on
-        the first t layers. With episode_idx/step_idx, obs holds one final
+    def _seq_features(self, obs, episode_idx=None, step_idx=None):
+        """Encoded layer stack at each step.
+
+        Every encoder is causal, so output position t of one pass depends only
+        on the first t layers. With episode_idx/step_idx, obs holds one final
         observation per episode and each step's feature is gathered from a
         single shared pass; otherwise obs is per-step and the output is read
         at each observation's own layer count.
         """
-        tail = self.n_objectives + self.n_constraints
-        layers = obs[:, :-tail].view(-1, self.max_layers, self.n_features_per_layer)
+        layers = self._obs_layers(obs)
         # Prepend a padding row (row -1 is always padding) so position t
         # means "t layers placed", including t=0.
         seqs = torch.cat([layers[:, -1:], layers[:, :-1]], dim=1)
-        lstm_out, _ = self.lstm(seqs)
+        encoded = self.encoder.encode_all(seqs)
         if episode_idx is None:
             step_idx = (layers[:, :, 0] > 0).sum(dim=1)
             episode_idx = torch.arange(len(obs))
-        return lstm_out[episode_idx, step_idx]
+        return encoded[episode_idx, step_idx]
 
-    def forward(self, obs, mask, target_obj_idx, deterministic=False):
+    def _seq_step(self, obs, state=None):
+        """Encoded layer stack during rollout, advancing by the new layer.
+
+        Same causality as _seq_features: position t depends only on the first
+        t layers, so a recurrent encoder can carry its state between steps and
+        read one new layer instead of a max_layers-long pass. A first step (no
+        layers placed) restarts the state, and a missing state mid-episode
+        rebuilds from the layers placed so far, so the caller cannot
+        desynchronise it. Stateless encoders just re-encode that prefix.
+        """
+        layers = self._obs_layers(obs)
+        n_placed = int((layers[0, :, 0] > 0).sum())
+        if state is None or n_placed == 0:
+            # Padding row (row -1 is always padding) then the layers so far.
+            prefix = torch.cat([layers[:, -1:], layers[:, :n_placed]], dim=1)
+            return self.encoder.encode_step(prefix, None, None)
+        return self.encoder.encode_step(None, layers[:, n_placed - 1 : n_placed], state)
+
+    def forward(self, obs, mask, target_obj_idx, deterministic=False, lstm_state=None):
         """Forward pass returning actions, log_probs, and value.
 
         Args:
@@ -428,17 +530,20 @@ class HybridActorCritic(nn.Module):
             mask: action mask
             target_obj_idx: index of target objective (selects which value head to use)
             deterministic: whether to sample or take argmax
+            lstm_state: (h, c) carried from this episode's previous step, or
+                None at its first step
 
         Returns:
             material: sampled material index
             thickness: sampled thickness value
             log_prob: total log probability (discrete + continuous)
             value: state value V(s) for target objective
+            lstm_state: updated (h, c) to pass to the next step (None without LSTM)
         """
-        if self.use_lstm:
-            lstm_features = self._lstm_features(obs)
+        if self.use_sequence:
+            seq_features, lstm_state = self._seq_step(obs, lstm_state)
             tail = obs[:, -(self.n_objectives + self.n_constraints) :]
-            features = self.trunk(torch.cat([lstm_features, tail], dim=1))
+            features = self.trunk(torch.cat([seq_features, tail], dim=1))
         else:
             features = self.trunk(obs)
 
@@ -486,7 +591,7 @@ class HybridActorCritic(nn.Module):
         # Value - select head based on target objective
         value = self.value_heads[target_obj_idx](features).squeeze(-1)
 
-        return material, thickness, log_prob, value
+        return material, thickness, log_prob, value, lstm_state
 
     def evaluate_actions(
         self,
@@ -513,15 +618,15 @@ class HybridActorCritic(nn.Module):
             episode_idx: episode index (into episode_last_obs) of each step
             step_idx: position of each step within its episode
         """
-        if self.use_lstm:
+        if self.use_sequence:
             if episode_last_obs is not None:
-                lstm_features = self._lstm_features(
+                seq_features = self._seq_features(
                     episode_last_obs, episode_idx, step_idx
                 )
             else:
-                lstm_features = self._lstm_features(obs)
+                seq_features = self._seq_features(obs)
             tail = obs[:, -(self.n_objectives + self.n_constraints) :]
-            features = self.trunk(torch.cat([lstm_features, tail], dim=1))
+            features = self.trunk(torch.cat([seq_features, tail], dim=1))
         else:
             features = self.trunk(obs)
 
@@ -632,21 +737,16 @@ def compute_bc_loss_from_pareto(
     max_episodes = min(batch_size, len(valid_episodes))
     sampled_episodes = random.sample(valid_episodes, max_episodes)
 
-    transitions = []
-    for episode in sampled_episodes:
-        if (
-            episode.get("states")
-            and episode.get("discrete_actions")
-            and episode.get("continuous_actions")
-        ):
-            for i in range(len(episode["states"])):
-                transitions.append(
-                    {
-                        "state": episode["states"][i],
-                        "material": episode["discrete_actions"][i],
-                        "thickness": episode["continuous_actions"][i],
-                    }
-                )
+    # Index the pool rather than materialising every transition: the dicts for
+    # thousands of steps were built and thrown away on every call.
+    transitions = [
+        (episode, i)
+        for episode in sampled_episodes
+        if episode.get("states")
+        and episode.get("discrete_actions")
+        and episode.get("continuous_actions")
+        for i in range(len(episode["states"]))
+    ]
 
     if not transitions:
         return 0.0
@@ -662,8 +762,8 @@ def compute_bc_loss_from_pareto(
     thick_list = []
     mask_list = []
 
-    for trans in sampled:
-        state = trans["state"]
+    for episode, step in sampled:
+        state = episode["states"][step]
         # Get observation using wrapper's method (includes constraints)
         if hasattr(env_wrapper, "_get_obs"):
             obs = env_wrapper._get_obs(state)
@@ -674,8 +774,8 @@ def compute_bc_loss_from_pareto(
         obs_list.append(obs)
 
         # Actions
-        mat = trans["material"]
-        thick = trans["thickness"]
+        mat = episode["discrete_actions"][step]
+        thick = episode["continuous_actions"][step]
         mat_list.append(mat.item() if torch.is_tensor(mat) else mat)
         thick_list.append(thick.item() if torch.is_tensor(thick) else thick)
         mask_list.append(np.ones(policy.n_materials))  # Default mask
@@ -715,9 +815,14 @@ class PPOAgent:
         self.ent_coef = ent_coef
         self.vf_coef = vf_coef
         self.max_grad_norm = max_grad_norm
+        self.lstm_state = None  # carried across rollout steps of an episode
 
     def act(self, obs, mask, target_obj_idx, deterministic=False):
         """Sample action from policy.
+
+        The LSTM state is carried between calls so each step feeds the LSTM
+        only the layer just placed. _seq_step restarts it whenever the
+        observation has no layers placed, so a reset needs no bookkeeping here.
 
         Args:
             obs: observation
@@ -728,8 +833,8 @@ class PPOAgent:
         with torch.no_grad():
             obs_t = torch.FloatTensor(obs).unsqueeze(0)
             mask_t = torch.FloatTensor(mask).unsqueeze(0)
-            material, thickness, log_prob, value = self.policy(
-                obs_t, mask_t, target_obj_idx, deterministic
+            material, thickness, log_prob, value, self.lstm_state = self.policy(
+                obs_t, mask_t, target_obj_idx, deterministic, self.lstm_state
             )
             return (
                 material.item(),
@@ -785,7 +890,7 @@ class PPOAgent:
         episode_last_obs = rollout_data.get("episode_last_obs")
         episode_idx = rollout_data.get("episode_idx")
         step_idx = rollout_data.get("step_idx")
-        use_episode_batches = self.policy.use_lstm and episode_last_obs is not None
+        use_episode_batches = self.policy.use_sequence and episode_last_obs is not None
         if use_episode_batches:
             n_episodes = len(episode_last_obs)
             episode_steps = [
@@ -795,30 +900,11 @@ class PPOAgent:
             # keep roughly batch_size steps per minibatch
             episodes_per_batch = max(1, round(batch_size * n_episodes / n_samples))
 
-        for epoch in range(n_epochs):
-            # BC loss: one dedicated gradient step per epoch
-            if (
-                pareto_episodes is not None
-                and bc_weight > 0
-                and env_wrapper is not None
-            ):
-                bc_loss_epoch = compute_bc_loss_from_pareto(
-                    self.policy,
-                    pareto_episodes,
-                    env_wrapper,
-                    target_obj_idx,
-                    bc_weight,
-                    batch_size=32,
-                )
-                if torch.is_tensor(bc_loss_epoch):
-                    logs["bc_loss"] += bc_loss_epoch.item()
-                    self.optimizer.zero_grad()
-                    bc_loss_epoch.backward()
-                    torch.nn.utils.clip_grad_norm_(
-                        self.policy.parameters(), self.max_grad_norm
-                    )
-                    self.optimizer.step()
+        use_bc = (
+            pareto_episodes is not None and bc_weight > 0 and env_wrapper is not None
+        )
 
+        for epoch in range(n_epochs):
             if use_episode_batches:
                 ep_order = torch.randperm(n_episodes)
                 batches = [
@@ -832,7 +918,7 @@ class PPOAgent:
                     for start in range(0, n_samples, batch_size)
                 ]
 
-            for batch in batches:
+            for i_batch, batch in enumerate(batches):
                 if use_episode_batches:
                     batch_idx = torch.cat([episode_steps[int(e)] for e in batch])
                     episode_kwargs = {
@@ -882,6 +968,23 @@ class PPOAgent:
                     + self.vf_coef * value_loss
                     - self.ent_coef * entropy.mean()
                 )
+
+                # Behaviour cloning rides the first minibatch of each epoch:
+                # same number of archive samples as the old dedicated pass,
+                # but its gradient joins the PPO gradient in one clipped step
+                # instead of taking an optimiser step of its own.
+                if use_bc and i_batch == 0:
+                    bc_loss = compute_bc_loss_from_pareto(
+                        self.policy,
+                        pareto_episodes,
+                        env_wrapper,
+                        target_obj_idx,
+                        bc_weight,
+                        batch_size=32,
+                    )
+                    if torch.is_tensor(bc_loss):
+                        logs["bc_loss"] += bc_loss.item()
+                        loss = loss + bc_loss
 
                 self.optimizer.zero_grad()
                 loss.backward()
@@ -950,9 +1053,18 @@ def train(config_path: str, save_dir: str):
     mask_consecutive = _get(
         "mask_consecutive_materials", True, lambda x: x.lower() == "true"
     )
-    use_lstm = _get("use_lstm", False, lambda x: x.lower() == "true")
-    lstm_hidden = _get("lstm_hidden", 128, int)
-    lstm_layers = _get("lstm_layers", 1, int)
+    # Layer-stack encoder. Older configs said use_lstm/lstm_hidden/lstm_layers;
+    # those still work and map onto the same setting.
+    pre_model_type = _get("pre_model_type", "", str).strip().lower()
+    pre_model_params = ast.literal_eval(_get("pre_model_params", "{}") or "{}")
+    if not pre_model_type:
+        use_lstm = _get("use_lstm", False, lambda x: x.lower() == "true")
+        pre_model_type = "lstm" if use_lstm else "linear"
+        pre_model_params = {
+            "hidden": _get("lstm_hidden", 128, int),
+            "layers": _get("lstm_layers", 1, int),
+        }
+    use_sequence = pre_model_type != "linear"
     verbose = _get("verbose", 1, int)
     seed = _get("seed", 42, int)
 
@@ -994,6 +1106,8 @@ def train(config_path: str, save_dir: str):
             "ent_coef": ent_coef,
             "vf_coef": vf_coef,
             "hidden": str(hidden),
+            "pre_model_type": pre_model_type,
+            "pre_model_params": str(pre_model_params),
             "seed": seed,
         }
     )
@@ -1024,7 +1138,7 @@ def train(config_path: str, save_dir: str):
     min_thickness = env.env.min_thickness
     max_thickness = env.env.max_thickness
 
-    # Get number of constraints for LSTM
+    # Get number of constraints for the sequence encoder
     n_constraints = len(config.data.optimise_parameters)
     max_layers = config.data.n_layers
 
@@ -1034,11 +1148,12 @@ def train(config_path: str, save_dir: str):
         min_thickness=min_thickness,
         max_thickness=max_thickness,
         hidden_dims=hidden,
-        use_lstm=use_lstm,
-        lstm_hidden=lstm_hidden,
-        lstm_layers=lstm_layers,
-        max_layers=max_layers if use_lstm else None,
-        n_constraints=n_constraints if use_lstm else None,
+        pre_model_type=pre_model_type,
+        pre_model_params=pre_model_params,
+        # both are needed whatever the encoder: n_constraints sizes the
+        # per-objective value heads, and only the encoders require max_layers
+        max_layers=max_layers,
+        n_constraints=n_constraints,
     )
 
     # Initialize air material (index 0) with strong negative bias
@@ -1054,8 +1169,8 @@ def train(config_path: str, save_dir: str):
         )
 
     if verbose:
-        if use_lstm:
-            print(f"Using LSTM: {lstm_layers} layer(s), hidden_size={lstm_hidden}")
+        if use_sequence:
+            print(f"Layer-stack encoder: {pre_model_type} {pre_model_params}")
         if restart_decay_on_phase:
             print(
                 f"LR/entropy decay will restart every {lr_decay_episodes} episodes (warm restarts enabled)"
@@ -1082,6 +1197,13 @@ def train(config_path: str, save_dir: str):
     ep_lengths = []  # Track episode lengths
     sample_designs = []  # Track sample designs during warmup for debugging
     training_history = []  # periodic metrics rows for training_curves.png
+    # Logging and checkpointing are checked once per update, so episode_count
+    # jumps by episodes_per_update and rarely lands exactly on a multiple of
+    # these intervals -- with episodes_per_update=4 and plot_freq=5000 it never
+    # did, and a whole run wrote no checkpoints. Fire on elapsed episodes
+    # instead, so any interval is honoured at the first update past it.
+    last_log_episode = 0
+    last_plot_episode = 0
     objectives = list(config.data.optimise_parameters)
     objective_targets = dict(getattr(config.data, "optimise_targets", {}) or {})
 
@@ -1107,8 +1229,27 @@ def train(config_path: str, save_dir: str):
         env.episode_count = ckpt["episode"]
         env.is_warmup = ckpt["meta"]["is_warmup"]
         env.env.is_warmup = ckpt["meta"]["is_warmup"]
+        # Carry the log/plot clocks over so a resume keeps the same spacing
+        last_log_episode = ckpt["episode"]
+        last_plot_episode = ckpt["episode"]
         warmup_end_episode = ckpt["meta"]["warmup_end_episode"]
         was_warmup = ckpt["meta"]["is_warmup"]
+
+        # Reload metrics history so training_history.csv stays continuous
+        # across resumes (drop rows logged after the checkpoint episode)
+        history_csv = Path(save_dir) / "training_history.csv"
+        if history_csv.exists():
+            try:
+                import pandas as pd
+
+                prior = pd.read_csv(history_csv)
+                training_history = prior[
+                    prior["episode"] <= ckpt["episode"]
+                ].to_dict("records")
+            except Exception as e:
+                if verbose:
+                    print(f"  [history reload] skipped: {e}")
+
         if verbose:
             print(f"Resumed from checkpoint at episode {ckpt['episode']}")
 
@@ -1285,7 +1426,8 @@ def train(config_path: str, save_dir: str):
             env_wrapper=env,
         )
         # Logging
-        if env.episode_count % mlflow_log_freq == 0:
+        if env.episode_count - last_log_episode >= mlflow_log_freq:
+            last_log_episode = env.episode_count
             if verbose:
                 n_pareto = len(env.env.pareto_front_rewards)
                 phase = "warmup" if env.is_warmup else "constrained"
@@ -1391,7 +1533,8 @@ def train(config_path: str, save_dir: str):
                 )
 
         # Periodic checkpointing
-        if env.episode_count % plot_freq == 0 and env.episode_count > 0:
+        if env.episode_count - last_plot_episode >= plot_freq:
+            last_plot_episode = env.episode_count
             try:
                 designs_df, values_df, rewards_df = env.env.export_pareto_dataframes()
                 if not values_df.empty:
