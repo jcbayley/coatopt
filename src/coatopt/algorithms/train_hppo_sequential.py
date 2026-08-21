@@ -50,7 +50,6 @@ Config section: [hppo_sequential]
 import ast
 import configparser
 import math
-import random
 import time
 from pathlib import Path
 from typing import List
@@ -546,6 +545,37 @@ class HybridActorCritic(nn.Module):
             return self.encoder.encode_step(prefix, None, None)
         return self.encoder.encode_step(None, layers[:, n_placed - 1 : n_placed], state)
 
+    def _trunk_features(self, obs, seq_features=None):
+        if not self.use_sequence:
+            return self.trunk(obs)
+        tail = obs[:, -(self.n_objectives + self.n_constraints) :]
+        return self.trunk(torch.cat([seq_features, tail], dim=1))
+
+    def _material_dist(self, features, mask):
+        logits = self.material_head(features) + (1.0 - mask) * -1e8
+        return torch.distributions.Categorical(logits=logits)
+
+    def _thickness_dist(self, features, material):
+        """Thickness distribution, conditioned on the chosen material.
+
+        Shared so acting and evaluating cannot drift apart: PPO compares log
+        probs from the two, which only means something if they build the same
+        distribution.
+        """
+        material_onehot = torch.nn.functional.one_hot(
+            material, num_classes=self.n_materials
+        ).float()
+        thickness_input = torch.cat([features, material_onehot], dim=-1)
+        mean_raw = self.thickness_mean(thickness_input).squeeze(-1)
+        mean = self.min_t + (self.max_t - self.min_t) * torch.sigmoid(mean_raw)
+        log_std = torch.clamp(self.thickness_logstd(thickness_input).squeeze(-1), -4, 0)
+        return TruncatedNormalDist(
+            loc=mean,
+            scale=torch.exp(log_std),
+            a=torch.full_like(mean, self.min_t),
+            b=torch.full_like(mean, self.max_t),
+        )
+
     def forward(self, obs, mask, target_obj_idx, deterministic=False, lstm_state=None):
         """Forward pass returning actions, log_probs, and value.
 
@@ -564,55 +594,22 @@ class HybridActorCritic(nn.Module):
             value: state value V(s) for target objective
             lstm_state: updated (h, c) to pass to the next step (None without LSTM)
         """
+        seq_features = None
         if self.use_sequence:
             seq_features, lstm_state = self._seq_step(obs, lstm_state)
-            tail = obs[:, -(self.n_objectives + self.n_constraints) :]
-            features = self.trunk(torch.cat([seq_features, tail], dim=1))
-        else:
-            features = self.trunk(obs)
+        features = self._trunk_features(obs, seq_features)
 
-        # Discrete material selection (masked)
-        logits = self.material_head(features)
-        logits = logits + (1.0 - mask) * -1e8  # mask invalid actions
-        dist_d = torch.distributions.Categorical(logits=logits)
-        if deterministic:
-            material = logits.argmax(dim=-1)
-        else:
-            material = dist_d.sample()
-        log_prob_d = dist_d.log_prob(material)
+        dist_d = self._material_dist(features, mask)
+        material = dist_d.logits.argmax(dim=-1) if deterministic else dist_d.sample()
 
-        # Continuous thickness (TruncatedNormal) - conditioned on material
-        # Concatenate features with one-hot encoded material
-        material_onehot = torch.nn.functional.one_hot(
-            material, num_classes=self.n_materials
-        ).float()
-        thickness_input = torch.cat([features, material_onehot], dim=-1)
-
-        mean_raw = self.thickness_mean(thickness_input).squeeze(-1)
-        # Use sigmoid to softly constrain mean to valid range
-        mean = self.min_t + (self.max_t - self.min_t) * torch.sigmoid(mean_raw)
-
-        log_std = self.thickness_logstd(thickness_input).squeeze(-1)
-        log_std = torch.clamp(log_std, -4, 0)  # Clamp log_std
-        std = torch.exp(log_std)
-
-        # Create TruncatedNormal with bounds [min_t, max_t]
-        dist_c = TruncatedNormalDist(
-            loc=mean,
-            scale=std,
-            a=torch.full_like(mean, self.min_t),
-            b=torch.full_like(mean, self.max_t),
+        dist_c = self._thickness_dist(features, material)
+        thickness = (
+            dist_c.loc.clamp(self.min_t, self.max_t)
+            if deterministic
+            else dist_c.rsample()
         )
-        if deterministic:
-            thickness = mean.clamp(self.min_t, self.max_t)
-        else:
-            thickness = dist_c.rsample()
-        log_prob_c = dist_c.log_prob(thickness)
 
-        # Total log probability (joint = product of independent)
-        log_prob = log_prob_d + log_prob_c
-
-        # Value - select head based on target objective
+        log_prob = dist_d.log_prob(material) + dist_c.log_prob(thickness)
         value = self.value_heads[target_obj_idx](features).squeeze(-1)
 
         # Realised spread of the truncated normal, which is what sets the
@@ -644,55 +641,20 @@ class HybridActorCritic(nn.Module):
             episode_idx: episode index (into episode_last_obs) of each step
             step_idx: position of each step within its episode
         """
+        seq_features = None
         if self.use_sequence:
-            if episode_last_obs is not None:
-                seq_features = self._seq_features(
-                    episode_last_obs, episode_idx, step_idx
-                )
-            else:
-                seq_features = self._seq_features(obs)
-            tail = obs[:, -(self.n_objectives + self.n_constraints) :]
-            features = self.trunk(torch.cat([seq_features, tail], dim=1))
-        else:
-            features = self.trunk(obs)
+            seq_features = (
+                self._seq_features(episode_last_obs, episode_idx, step_idx)
+                if episode_last_obs is not None
+                else self._seq_features(obs)
+            )
+        features = self._trunk_features(obs, seq_features)
 
-        # Discrete
-        logits = self.material_head(features)
-        logits = logits + (1.0 - mask) * -1e8
-        dist_d = torch.distributions.Categorical(logits=logits)
-        log_prob_d = dist_d.log_prob(materials)
-        entropy_d = dist_d.entropy()
+        dist_d = self._material_dist(features, mask)
+        dist_c = self._thickness_dist(features, materials)
 
-        # Continuous - conditioned on material
-        # Concatenate features with one-hot encoded material
-        material_onehot = torch.nn.functional.one_hot(
-            materials, num_classes=self.n_materials
-        ).float()
-        thickness_input = torch.cat([features, material_onehot], dim=-1)
-
-        mean_raw = self.thickness_mean(thickness_input).squeeze(-1)
-        # Use sigmoid to softly constrain mean to valid range
-        mean = self.min_t + (self.max_t - self.min_t) * torch.sigmoid(mean_raw)
-
-        log_std = self.thickness_logstd(thickness_input).squeeze(-1)
-        log_std = torch.clamp(log_std, -4, 0)
-        std = torch.exp(log_std)
-
-        # Create TruncatedNormal with bounds [min_t, max_t]
-        dist_c = TruncatedNormalDist(
-            loc=mean,
-            scale=std,
-            a=torch.full_like(mean, self.min_t),
-            b=torch.full_like(mean, self.max_t),
-        )
-        log_prob_c = dist_c.log_prob(thicknesses)
-        entropy_c = dist_c.entropy()
-
-        log_prob = log_prob_d + log_prob_c
-        # Use normal entropy (removed 3x weighting to allow convergence)
-        entropy = entropy_d + entropy_c
-
-        # Value - select head based on target objective
+        log_prob = dist_d.log_prob(materials) + dist_c.log_prob(thicknesses)
+        entropy = dist_d.entropy() + dist_c.entropy()
         value = self.value_heads[target_obj_idx](features).squeeze(-1)
 
         return log_prob, value, entropy
@@ -761,7 +723,8 @@ def compute_bc_loss_from_pareto(
     # Sample a subset of Pareto episodes first — iterating all N episodes to collect
     # transitions is O(N * ep_len) every update, which is expensive for large fronts.
     max_episodes = min(batch_size, len(valid_episodes))
-    sampled_episodes = random.sample(valid_episodes, max_episodes)
+    picks = torch.randperm(len(valid_episodes))[:max_episodes].tolist()
+    sampled_episodes = [valid_episodes[i] for i in picks]
 
     # Index the pool rather than materialising every transition: the dicts for
     # thousands of steps were built and thrown away on every call.
@@ -780,7 +743,8 @@ def compute_bc_loss_from_pareto(
     # Sample batch
     n_samples = min(batch_size, len(transitions))
 
-    sampled = random.sample(transitions, n_samples)
+    picks = torch.randperm(len(transitions))[:n_samples].tolist()
+    sampled = [transitions[i] for i in picks]
 
     # Prepare batch tensors
     obs_list = []
