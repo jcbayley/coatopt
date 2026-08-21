@@ -59,8 +59,8 @@ def save_training_curves(
     ep = df["episode"].values
     n_obj_panels = len(objectives)
     n_cols = 3
-    # 6 fixed panels + constraint thresholds + one per objective
-    n_rows = 2 + int(np.ceil((1 + n_obj_panels) / n_cols))
+    # 7 fixed panels + constraint thresholds + one per objective
+    n_rows = 3 + int(np.ceil((1 + n_obj_panels) / n_cols))
     fig, axes = plt.subplots(
         n_rows, n_cols, figsize=(14, 3.1 * n_rows), facecolor="white"
     )
@@ -150,9 +150,32 @@ def save_training_curves(
     ax.legend(fontsize=7, frameon=False)
     _style(ax, "Constraint thresholds (0 = warmup)")
 
-    # 8+: per-objective best values (rolling window best)
+    # 8: thickness - what the policy samples, and what it places
+    ax = axes[7]
+    if "policy.thickness_std" in df:
+        ax.plot(
+            ep,
+            df["policy.thickness_std"].values,
+            color=_SERIES[0],
+            lw=1.5,
+            label="policy sampling sigma",
+        )
+        # The clamp on log_std makes exp(-4) unreachable from below, and 0.05
+        # is where thickness noise starts costing transmission badly
+        ax.axhline(np.exp(-4), color=_MUTED, lw=0.8, ls=":", label="floor exp(-4)")
+        ax.axhline(0.05, color=_MUTED, lw=0.8, ls="--", label="0.05 (5x cost)")
+    if "episode.thickness_mean" in df:
+        m = df["episode.thickness_mean"].values
+        ax.plot(ep, m, color=_SERIES[1], lw=1.2, label="mean placed thickness")
+        if "episode.thickness_spread" in df:
+            sp = df["episode.thickness_spread"].values
+            ax.fill_between(ep, m - sp, m + sp, color=_SERIES[1], alpha=0.15, lw=0)
+    ax.legend(fontsize=7, frameon=False)
+    _style(ax, "Thickness: sampling sigma vs placed", logy=True)
+
+    # 9+: per-objective best values (rolling window best)
     for i, obj in enumerate(objectives):
-        ax = axes[7 + i]
+        ax = axes[8 + i]
         col = f"vals.{obj}_best"
         if col in df:
             v = df[col].values
@@ -164,7 +187,7 @@ def save_training_curves(
         ax.set_xlabel("episode", fontsize=8, color=_MUTED)
 
     # Hide unused axes
-    for j in range(7 + n_obj_panels, len(axes)):
+    for j in range(8 + n_obj_panels, len(axes)):
         axes[j].set_visible(False)
 
     fig.suptitle("Training curves", fontsize=13, color=_INK)

@@ -646,6 +646,455 @@ def plot_normalized_comparison(
     plt.close(fig)
 
 
+# Chart tokens: categorical slots in fixed order, plus chrome inks. Marks carry
+# the series colour; all text stays in ink tokens.
+_TIMING_SERIES = [
+    "#2a78d6",
+    "#eb6834",
+    "#1baf7a",
+    "#eda100",
+    "#e87ba4",
+    "#008300",
+    "#4a3aa7",
+    "#e34948",
+]
+_TIMING_MARKERS = ["o", "s", "^", "D", "v", "P", "X", "*"]
+_INK_PRIMARY = "#0b0b0b"
+_INK_SECONDARY = "#52514e"
+_INK_MUTED = "#898781"
+_SURFACE = "#fcfcfb"
+_GRIDLINE = "#e1e0d9"
+_BASELINE = "#c3c2b7"
+
+
+def load_run_timings(directories, labels=None):
+    """Read per-run timings out of each run's run_metadata.json.
+
+    Returns a list of dicts, one per run that has usable metadata. Runs written
+    before the runtime split fall back to the older duration field, in which
+    case the algorithm and total times are the same number.
+    """
+    import json
+
+    from coatopt.utils.interactive_plots import _parse_run_name
+
+    rows = []
+    for i, dir_path in enumerate(directories):
+        directory = Path(dir_path)
+        meta_path = directory / "run_metadata.json"
+        if not meta_path.exists():
+            continue
+        try:
+            with open(meta_path) as f:
+                meta = json.load(f)
+        except (OSError, ValueError) as e:
+            print(f"Warning: could not read {meta_path}: {e}")
+            continue
+
+        label = labels[i] if labels else directory.name
+        total = meta.get("total_runtime", meta.get("duration_seconds"))
+        if total is None:
+            continue
+        # Older runs predate the split, so attribute everything to the algorithm
+        algorithm = meta.get("algorithm_runtime")
+        if algorithm is None:
+            algorithm = total
+        platform_info = meta.get("platform") or {}
+        rows.append(
+            {
+                "label": label,
+                "group": _parse_run_name(label)[0],
+                "algorithm_runtime": float(algorithm),
+                "total_runtime": float(total),
+                "logging_runtime": float(meta.get("logging_runtime") or 0.0),
+                "matmul_probe_ms": platform_info.get("matmul_probe_ms"),
+                "node": platform_info.get("node"),
+            }
+        )
+    return rows
+
+
+def print_timing_statistics(rows):
+    """Per-group timing summary — also the table view for the timing figure."""
+    if not rows:
+        return
+    groups = {}
+    for row in rows:
+        groups.setdefault(row["group"], []).append(row)
+
+    print("\n" + "=" * 78)
+    print("RUN TIMINGS (algorithm only, minutes)")
+    print("=" * 78)
+    print(f"{'group':<34}{'n':>4}{'median':>9}{'min':>9}{'max':>9}{'spread':>9}")
+    for group, group_rows in groups.items():
+        mins = sorted(r["algorithm_runtime"] / 60 for r in group_rows)
+        lo, hi = mins[0], mins[-1]
+        median = float(np.median(mins))
+        spread = f"{hi / lo:.1f}x" if lo > 0 else "-"
+        print(
+            f"{group[:33]:<34}{len(mins):>4}{median:>9.1f}{lo:>9.1f}{hi:>9.1f}{spread:>9}"
+        )
+
+    overhead = [r for r in rows if r["total_runtime"] > 0]
+    if overhead:
+        frac = np.mean(
+            [
+                (r["total_runtime"] - r["algorithm_runtime"]) / r["total_runtime"]
+                for r in overhead
+            ]
+        )
+        print(f"\nReporting overhead (total - algorithm): {frac * 100:.1f}% of total")
+    nodes = {r["node"] for r in rows if r.get("node")}
+    if len(nodes) > 1:
+        print(f"Ran across {len(nodes)} distinct hosts")
+    print("=" * 78)
+
+
+def plot_run_timings(rows, save_path=None, title="Run timings"):
+    """Histogram of per-run algorithm wall-clock, one series per run group.
+
+    A second panel appears when the runs recorded a CPU probe, plotting run
+    time against it: if the spread across supposedly identical runs is just
+    node speed, the points fall on a line, and if it isn't, they don't.
+    """
+    if not rows:
+        print("No run_metadata.json files found - skipping timing plot")
+        return
+
+    groups = {}
+    for row in rows:
+        groups.setdefault(row["group"], []).append(row)
+    names = list(groups)
+    if len(names) > len(_TIMING_SERIES):
+        print(
+            f"Warning: {len(names)} run groups exceeds the {len(_TIMING_SERIES)} "
+            "distinct colours available; extra groups are folded into 'Other'"
+        )
+        keep = names[: len(_TIMING_SERIES) - 1]
+        other = [r for n in names[len(_TIMING_SERIES) - 1 :] for r in groups[n]]
+        groups = {n: groups[n] for n in keep}
+        groups["Other"] = other
+        names = list(groups)
+
+    has_probe = any(r.get("matmul_probe_ms") for r in rows)
+    n_panels = 2 if has_probe else 1
+    fig, axes = plt.subplots(
+        1, n_panels, figsize=(7.0 * n_panels, 4.6), facecolor=_SURFACE
+    )
+    axes = np.atleast_1d(axes)
+
+    def style(ax):
+        ax.set_facecolor(_SURFACE)
+        ax.grid(True, color=_GRIDLINE, linewidth=1, linestyle="-", alpha=1.0)
+        ax.set_axisbelow(True)
+        for side in ("top", "right"):
+            ax.spines[side].set_visible(False)
+        for side in ("left", "bottom"):
+            ax.spines[side].set_color(_BASELINE)
+            ax.spines[side].set_linewidth(1)
+        ax.tick_params(colors=_INK_MUTED, labelsize=9, length=0)
+
+    # Panel 1 - distribution of algorithm runtime
+    ax = axes[0]
+    style(ax)
+    all_minutes = [r["algorithm_runtime"] / 60 for r in rows]
+    n_bins = int(np.clip(np.sqrt(len(all_minutes)) * 1.5, 5, 20))
+    edges = np.histogram_bin_edges(all_minutes, bins=n_bins)
+    width = (edges[1] - edges[0]) / max(len(names), 1)
+
+    for i, name in enumerate(names):
+        minutes = [r["algorithm_runtime"] / 60 for r in groups[name]]
+        counts, _ = np.histogram(minutes, bins=edges)
+        colour = _TIMING_SERIES[i % len(_TIMING_SERIES)]
+        # 2px surface gap does the separating between adjacent bars
+        ax.bar(
+            edges[:-1] + (i + 0.5) * width,
+            counts,
+            width=width * 0.88,
+            color=colour,
+            linewidth=0,
+            label=f"{name}  (n={len(minutes)})",
+            zorder=3,
+        )
+        # rug of the individual runs: with ~10 per group the bins are coarse
+        ax.plot(
+            minutes,
+            np.full(len(minutes), -0.06 * max(1, counts.max())),
+            marker="|",
+            linestyle="none",
+            color=colour,
+            markersize=8,
+            markeredgewidth=2,
+            clip_on=False,
+            zorder=4,
+        )
+
+    ax.set_xlabel("Algorithm runtime (minutes)", color=_INK_SECONDARY, fontsize=10)
+    ax.set_ylabel("Runs", color=_INK_SECONDARY, fontsize=10)
+    ax.set_title(
+        "Distribution of run time", color=_INK_PRIMARY, fontsize=11, loc="left", pad=10
+    )
+    handles, legend_labels = ax.get_legend_handles_labels()
+
+    # Panel 2 - is the spread explained by how fast the node was?
+    if has_probe:
+        ax = axes[1]
+        style(ax)
+        for i, name in enumerate(names):
+            pts = [r for r in groups[name] if r.get("matmul_probe_ms")]
+            if not pts:
+                continue
+            colour = _TIMING_SERIES[i % len(_TIMING_SERIES)]
+            # hue AND marker shape, so identity never rests on colour alone
+            ax.plot(
+                [r["matmul_probe_ms"] for r in pts],
+                [r["algorithm_runtime"] / 60 for r in pts],
+                marker=_TIMING_MARKERS[i % len(_TIMING_MARKERS)],
+                linestyle="none",
+                markersize=8,
+                color=colour,
+                markeredgecolor=_SURFACE,
+                markeredgewidth=2,
+                label=name,
+                zorder=3,
+            )
+        ax.set_xlabel(
+            "CPU probe: 256x256 matmul (ms, lower is faster)",
+            color=_INK_SECONDARY,
+            fontsize=10,
+        )
+        ax.set_ylabel("Algorithm runtime (minutes)", color=_INK_SECONDARY, fontsize=10)
+        ax.set_title(
+            "Run time vs node speed",
+            color=_INK_PRIMARY,
+            fontsize=11,
+            loc="left",
+            pad=10,
+        )
+
+    # One legend for the figure, above the panels - a histogram has no reliably
+    # empty corner, and both panels share the same series
+    fig.suptitle(title, color=_INK_PRIMARY, fontsize=13, x=0.01, ha="left")
+    legend = fig.legend(
+        handles,
+        legend_labels,
+        frameon=False,
+        fontsize=9,
+        loc="upper left",
+        bbox_to_anchor=(0.01, 0.94),
+        ncol=min(len(legend_labels), 4),
+    )
+    for text in legend.get_texts():
+        text.set_color(_INK_SECONDARY)
+    fig.tight_layout(rect=(0, 0, 1, 0.86))
+
+    if save_path:
+        fig.savefig(save_path, dpi=150, facecolor=_SURFACE, bbox_inches="tight")
+        print(f"Saved timing plot to {save_path}")
+        plt.close(fig)
+    else:
+        plt.show()
+
+
+# Chart tokens: categorical slots in fixed order, plus chrome inks. Marks carry
+# the series colour; all text stays in ink tokens.
+_SERIES = [
+    "#2a78d6",
+    "#eb6834",
+    "#1baf7a",
+    "#eda100",
+    "#e87ba4",
+    "#008300",
+    "#4a3aa7",
+    "#e34948",
+]
+_INK_PRIMARY = "#0b0b0b"
+_INK_SECONDARY = "#52514e"
+_INK_MUTED = "#898781"
+_SURFACE = "#fcfcfb"
+_GRIDLINE = "#e1e0d9"
+_BASELINE = "#c3c2b7"
+
+
+def _style_axes(ax):
+    """Recessive chrome: hairline grid, no top/right spines, muted ticks."""
+    ax.set_facecolor(_SURFACE)
+    ax.grid(True, color=_GRIDLINE, linewidth=1, linestyle="-")
+    ax.set_axisbelow(True)
+    for side in ("top", "right"):
+        ax.spines[side].set_visible(False)
+    for side in ("left", "bottom"):
+        ax.spines[side].set_color(_BASELINE)
+        ax.spines[side].set_linewidth(1)
+    ax.tick_params(colors=_INK_MUTED, labelsize=9, length=0)
+
+
+def load_convergence_histories(directories, labels=None):
+    """Read each run's training_history.csv as an (evaluations, hypervolume) trace.
+
+    Both trainers write this file with the same two columns, so an RL run and a
+    genetic run come back in the same shape.
+    """
+    from coatopt.utils.interactive_plots import _parse_run_name
+
+    histories = []
+    for i, dir_path in enumerate(directories):
+        path = Path(dir_path) / "training_history.csv"
+        if not path.exists():
+            continue
+        try:
+            df = pd.read_csv(path)
+        except (OSError, ValueError) as e:
+            print(f"Warning: could not read {path}: {e}")
+            continue
+        if "pareto.hypervolume" not in df.columns:
+            continue
+        if "evaluations" not in df.columns:
+            # Runs written before the column existed; episodes are evaluations
+            if "episode" not in df.columns:
+                continue
+            df = df.assign(evaluations=df["episode"])
+        df = df[["evaluations", "pareto.hypervolume"]].dropna()
+        if df.empty:
+            continue
+        label = labels[i] if labels else Path(dir_path).name
+        histories.append((df, label, _parse_run_name(label)[0]))
+    return histories
+
+
+def plot_hypervolume_vs_evaluations(
+    histories, save_path=None, title="Hypervolume vs designs evaluated", xscale="log"
+):
+    """Convergence against designs evaluated, not wall clock.
+
+    Evolutionary and RL searches differ by an order of magnitude in how many
+    designs they get through per second, so wall clock flatters whichever
+    evaluates faster and says nothing about how well either uses a sample.
+    Runs from the same group share a colour; the group median is drawn solid
+    over the individual runs.
+    """
+    if not histories:
+        print("No training_history.csv files found - skipping convergence plot")
+        return
+
+    groups = {}
+    for df, label, group in histories:
+        groups.setdefault(group, []).append((df, label))
+    names = list(groups)
+    if len(names) > len(_SERIES):
+        print(
+            f"Warning: {len(names)} run groups exceeds the {len(_SERIES)} distinct "
+            "colours available; later groups reuse colours"
+        )
+
+    fig, ax = plt.subplots(figsize=(8.5, 5.2), facecolor=_SURFACE)
+    _style_axes(ax)
+
+    for i, name in enumerate(names):
+        colour = _SERIES[i % len(_SERIES)]
+        runs = groups[name]
+        for df, _ in runs:
+            ax.plot(
+                df["evaluations"],
+                df["pareto.hypervolume"],
+                color=colour,
+                linewidth=1,
+                alpha=0.35,
+                zorder=2,
+            )
+        # Median across the group, on a shared evaluation grid
+        if len(runs) > 1:
+            lo = max(df["evaluations"].min() for df, _ in runs)
+            hi = min(df["evaluations"].max() for df, _ in runs)
+            if hi > lo:
+                grid = np.linspace(lo, hi, 200)
+                stack = np.vstack(
+                    [
+                        np.interp(grid, df["evaluations"], df["pareto.hypervolume"])
+                        for df, _ in runs
+                    ]
+                )
+                ax.plot(
+                    grid,
+                    np.median(stack, axis=0),
+                    color=colour,
+                    linewidth=2,
+                    solid_joinstyle="round",
+                    solid_capstyle="round",
+                    label=f"{name}  (n={len(runs)})",
+                    zorder=3,
+                )
+                continue
+        df, _ = runs[0]
+        # Markers so a sparse history - or a single recorded point - still shows
+        ax.plot(
+            df["evaluations"],
+            df["pareto.hypervolume"],
+            color=colour,
+            linewidth=2,
+            marker="o" if len(df) <= 40 else None,
+            markersize=6,
+            markeredgecolor=_SURFACE,
+            markeredgewidth=1.5,
+            solid_joinstyle="round",
+            solid_capstyle="round",
+            label=name,
+            zorder=3,
+        )
+
+    if xscale == "log":
+        ax.set_xscale("log")
+    ax.set_xlabel("Designs evaluated", color=_INK_SECONDARY, fontsize=10)
+    ax.set_ylabel("Pareto hypervolume (reward space)", color=_INK_SECONDARY, fontsize=10)
+    ax.set_title(title, color=_INK_PRIMARY, fontsize=12, loc="left", pad=12)
+    # Curves rise left to right, so the upper left is the reliably empty corner
+    legend = ax.legend(frameon=False, fontsize=9, loc="upper left")
+    for text in legend.get_texts():
+        text.set_color(_INK_SECONDARY)
+    ax.margins(y=0.12)
+
+    fig.tight_layout()
+    if save_path:
+        fig.savefig(save_path, dpi=150, facecolor=_SURFACE, bbox_inches="tight")
+        print(f"Saved convergence plot to {save_path}")
+        plt.close(fig)
+    else:
+        plt.show()
+
+
+def print_convergence_statistics(histories):
+    """Hypervolume reached at matched evaluation budgets - the table view."""
+    if not histories:
+        return
+    groups = {}
+    for df, _, group in histories:
+        groups.setdefault(group, []).append(df)
+
+    budgets = [10_000, 50_000, 100_000, 500_000, 1_000_000]
+    usable = [
+        b for b in budgets if any(df["evaluations"].max() >= b for dfs in groups.values() for df in dfs)
+    ]
+    if not usable:
+        usable = [max(df["evaluations"].max() for dfs in groups.values() for df in dfs)]
+
+    print("\n" + "=" * 78)
+    print("HYPERVOLUME AT MATCHED EVALUATION BUDGETS (median across runs)")
+    print("=" * 78)
+    header = f"{'group':<30}{'n':>4}" + "".join(f"{b:>11,}" for b in usable)
+    print(header)
+    for group, dfs in groups.items():
+        cells = []
+        for budget in usable:
+            reached = [
+                float(df.loc[df["evaluations"] <= budget, "pareto.hypervolume"].iloc[-1])
+                for df in dfs
+                if (df["evaluations"] <= budget).any()
+            ]
+            cells.append(f"{np.median(reached):>11.4f}" if reached else f"{'-':>11}")
+        print(f"{group[:29]:<30}{len(dfs):>4}" + "".join(cells))
+    print("=" * 78)
+
+
 def print_statistics(pareto_fronts: List[Tuple[pd.DataFrame, str]]):
     """Print statistics for each Pareto front (legacy function for value space only).
 
@@ -1065,6 +1514,30 @@ Examples:
         help="Plot an additional comparison with only the top N runs by reward hypervolume",
     )
     parser.add_argument(
+        "--convergence",
+        action="store_true",
+        default=True,
+        help="Plot hypervolume against designs evaluated from training_history.csv (default: True)",
+    )
+    parser.add_argument(
+        "--no-convergence",
+        action="store_false",
+        dest="convergence",
+        help="Skip the hypervolume-vs-evaluations plot",
+    )
+    parser.add_argument(
+        "--timings",
+        action="store_true",
+        default=True,
+        help="Plot per-run wall-clock timings from run_metadata.json (default: True)",
+    )
+    parser.add_argument(
+        "--no-timings",
+        action="store_false",
+        dest="timings",
+        help="Skip the run timing plot",
+    )
+    parser.add_argument(
         "--interactive",
         action="store_true",
         default=True,
@@ -1393,6 +1866,48 @@ Examples:
     # Print statistics if requested
     if args.stats:
         print_statistics_both_spaces(pareto_fronts)
+
+    # Convergence against designs evaluated, which puts RL and genetic runs on
+    # the same axis regardless of how fast each gets through a design
+    if args.convergence:
+        histories = load_convergence_histories(
+            directories, args.labels if args.labels else None
+        )
+        if histories:
+            print_convergence_statistics(histories)
+            conv_path = output_path.parent / (
+                output_path.stem + "_convergence" + output_path.suffix
+            )
+            plot_hypervolume_vs_evaluations(
+                histories,
+                save_path=conv_path,
+                title=args.title + " - hypervolume vs designs evaluated",
+            )
+        else:
+            print(
+                "\nNo training_history.csv found in any run directory "
+                "- skipping convergence plot"
+            )
+
+    # Timing comparison across runs
+    if args.timings:
+        timing_rows = load_run_timings(
+            directories, args.labels if args.labels else None
+        )
+        if timing_rows:
+            print_timing_statistics(timing_rows)
+            timings_path = output_path.parent / (
+                output_path.stem + "_timings" + output_path.suffix
+            )
+            plot_run_timings(
+                timing_rows,
+                save_path=timings_path,
+                title=args.title + " - run timings",
+            )
+        else:
+            print(
+                "\nNo run_metadata.json found in any run directory - skipping timings"
+            )
 
     # Plot coating designs if requested
     if args.plot_designs:

@@ -27,6 +27,7 @@ import numpy as np
 from pymoo.algorithms.moo.moead import MOEAD
 from pymoo.algorithms.moo.nsga2 import NSGA2
 from pymoo.algorithms.moo.nsga3 import NSGA3
+from pymoo.core.callback import Callback
 from pymoo.core.problem import ElementwiseProblem
 from pymoo.core.repair import Repair
 from pymoo.operators.crossover.sbx import SBX
@@ -38,8 +39,52 @@ from pymoo.util.ref_dirs import get_reference_directions
 from coatopt.environments.environment import CoatingEnvironment
 from coatopt.environments.state import CoatingState
 from coatopt.utils.configs import load_config
+from coatopt.utils.metrics import compute_hypervolume
 from coatopt.utils.plotting import plot_coating_stack, plot_pareto_front
 from coatopt.utils.utils import convert_pymoo_to_dataframes, load_materials_from_parser
+
+
+class HypervolumeHistory(Callback):
+    """Record hypervolume against evaluation count as the search runs.
+
+    Wall-clock is a poor axis for comparing an evolutionary search against an
+    RL one, since they differ by an order of magnitude in designs evaluated per
+    second. Evaluations put both on the same footing, so record them here in
+    the same reward space and with the same reference point the RL trainer
+    logs (F is the negated normalised reward, so -F is directly comparable).
+
+    Sampled every `every` generations: hypervolume is quadratic in front size,
+    and on a 1000-member front computing it every generation costs more than
+    the search itself.
+    """
+
+    def __init__(self, n_objectives: int, every: int = 10):
+        super().__init__()
+        self.every = max(1, every)
+        self.ref_point = np.zeros(n_objectives)
+        self.rows = []
+
+    def notify(self, algorithm):
+        generation = algorithm.n_gen
+        if generation != 1 and generation % self.every:
+            return
+        front = algorithm.opt.get("F") if algorithm.opt is not None else None
+        if front is None or len(front) == 0:
+            return
+        try:
+            hv = compute_hypervolume(
+                -np.asarray(front, dtype=float), self.ref_point, maximize=True
+            )
+        except Exception:
+            return
+        self.rows.append(
+            {
+                "generation": int(generation),
+                "evaluations": int(algorithm.evaluator.n_eval),
+                "pareto.size": int(len(front)),
+                "pareto.hypervolume": float(hv),
+            }
+        )
 
 
 class CoatingOptimizationProblem(ElementwiseProblem):
@@ -291,6 +336,10 @@ def train_genetic(config_path: str, save_dir: Optional[str] = None):
 
     # Run optimization. algorithm_runtime covers this alone; the Pareto and
     # stack plots below are excluded so the figure is comparable across runs.
+    history = HypervolumeHistory(
+        n_objectives=len(env.optimise_parameters),
+        every=parser.getint("nsga2", "hypervolume_freq", fallback=10),
+    )
     opt_start = time.perf_counter()
     result = minimize(
         problem,
@@ -298,8 +347,22 @@ def train_genetic(config_path: str, save_dir: Optional[str] = None):
         ("n_gen", total_generations),
         seed=seed,
         verbose=verbose,
+        callback=history,
     )
     algorithm_runtime = time.perf_counter() - opt_start
+
+    # Same filename and columns the RL trainer writes, so anything reading a
+    # run directory gets one format regardless of which algorithm produced it.
+    if save_dir and history.rows:
+        import pandas as pd
+
+        history_path = Path(save_dir)
+        history_path.mkdir(parents=True, exist_ok=True)
+        pd.DataFrame(history.rows).to_csv(
+            history_path / "training_history.csv", index=False
+        )
+        if verbose:
+            print(f"  Saved hypervolume history ({len(history.rows)} points)")
 
     if verbose:
         print("\nOptimization complete!")

@@ -16,6 +16,9 @@ Config section: [hppo_sequential]
   n_epochs                 = 5              # SGD epochs per update
   batch_size               = 64
   constraint_penalty       = 3.0
+  constraint_level_schedule = cycle        # "cycle": repeat the ramp; "ramp": climb once, then hold at the top
+  update_constraint_bounds = false         # keep the per-objective bests anchoring the thresholds rising after warmup
+  constraint_anchor        = warmup        # "warmup": scale thresholds by this run's warmup best; "absolute": by the normalised 1.0, rising if beaten
   pareto_bonus             = 0.0            # Hypervolume improvement bonus
   bc_weight                = 0.1            # Behavior cloning weight from Pareto episodes (0.0 = disabled)
   bc_selection             = target         # "target": imitate archive best for current target+constraints; "all": whole front
@@ -84,6 +87,9 @@ class CoatOptHybridEnv(gym.Env):
         min_layers_before_air: int = 4,
         randomise_constraints: bool = False,
         warmup_block_episodes: int = None,
+        constraint_level_schedule: str = "cycle",
+        update_constraint_bounds: bool = False,
+        constraint_anchor: str = "warmup",
     ):
         super().__init__()
         self.env = CoatingEnvironment(config, materials)
@@ -105,6 +111,12 @@ class CoatOptHybridEnv(gym.Env):
         self.episodes_per_step = episodes_per_step
         self.steps_per_objective = steps_per_objective
         self.randomise_constraints = randomise_constraints
+        if constraint_level_schedule not in ("cycle", "ramp"):
+            raise ValueError(
+                f"constraint_level_schedule must be 'cycle' or 'ramp', "
+                f"got {constraint_level_schedule!r}"
+            )
+        self.constraint_level_schedule = constraint_level_schedule
         self.episode_count = 0
         self.is_warmup = True
 
@@ -114,6 +126,8 @@ class CoatOptHybridEnv(gym.Env):
             steps_per_objective=steps_per_objective,
             episodes_per_step=episodes_per_step,
             constraint_penalty=constraint_penalty,
+            update_constraint_bounds=update_constraint_bounds,
+            constraint_anchor_mode=constraint_anchor,
         )
 
         # Action space: Dict with discrete material + continuous thickness
@@ -198,8 +212,16 @@ class CoatOptHybridEnv(gym.Env):
             obj_idx = phase % len(self.objectives)
             target_obj = self.objectives[obj_idx]
 
-            # Constraint level (gradually tighten)
-            level = (phase // len(self.objectives)) % self.steps_per_objective
+            # Constraint level (gradually tighten). "cycle" restarts the ramp
+            # once it tops out; "ramp" climbs once and stays there. With
+            # randomise_constraints the top level draws frac from U(0, 1),
+            # which already covers every threshold the lower levels sample, so
+            # restarting the ramp narrows the range rather than widening it.
+            sweep = phase // len(self.objectives)
+            if self.constraint_level_schedule == "ramp":
+                level = min(sweep, self.steps_per_objective - 1)
+            else:
+                level = sweep % self.steps_per_objective
 
             # Set constraints on other objectives
             max_frac = (level + 1) / self.steps_per_objective
@@ -211,8 +233,7 @@ class CoatOptHybridEnv(gym.Env):
                         if self.randomise_constraints
                         else max_frac
                     )
-                    best = self.env.warmup_best_rewards.get(obj, 0.0)
-                    constraints[obj] = frac * best
+                    constraints[obj] = frac * self.env.constraint_anchor(obj)
 
             self.env.target_objective = target_obj
             self.env.constraints = constraints
@@ -594,7 +615,11 @@ class HybridActorCritic(nn.Module):
         # Value - select head based on target objective
         value = self.value_heads[target_obj_idx](features).squeeze(-1)
 
-        return material, thickness, log_prob, value, lstm_state
+        # std is returned so the rollout can log how wide the policy is
+        # sampling thicknesses: ppo.entropy sums the discrete and continuous
+        # heads together and cannot separate "sure about materials" from
+        # "sure about thicknesses", which is the one that limits precision.
+        return material, thickness, log_prob, value, std, lstm_state
 
     def evaluate_actions(
         self,
@@ -819,6 +844,7 @@ class PPOAgent:
         self.vf_coef = vf_coef
         self.max_grad_norm = max_grad_norm
         self.lstm_state = None  # carried across rollout steps of an episode
+        self.last_thickness_std = float("nan")  # sampling width of the last act()
 
     def act(self, obs, mask, target_obj_idx, deterministic=False):
         """Sample action from policy.
@@ -836,9 +862,10 @@ class PPOAgent:
         with torch.no_grad():
             obs_t = torch.FloatTensor(obs).unsqueeze(0)
             mask_t = torch.FloatTensor(mask).unsqueeze(0)
-            material, thickness, log_prob, value, self.lstm_state = self.policy(
+            material, thickness, log_prob, value, std, self.lstm_state = self.policy(
                 obs_t, mask_t, target_obj_idx, deterministic, self.lstm_state
             )
+            self.last_thickness_std = std.item()
             return (
                 material.item(),
                 thickness.item(),
@@ -1079,6 +1106,18 @@ def train(config_path: str, save_dir: str):
     randomise_constraints = _get(
         "randomise_constraints", False, lambda x: x.lower() == "true"
     )
+    # "cycle" repeats the constraint ramp (the original behaviour); "ramp"
+    # climbs once and holds at the top level for the rest of the run.
+    constraint_level_schedule = _get("constraint_level_schedule", "cycle", str).strip()
+    # Keep the per-objective bests that anchor the thresholds rising during the
+    # constrained phase, instead of freezing them at whatever warmup reached.
+    update_constraint_bounds = _get(
+        "update_constraint_bounds", False, lambda x: x.lower() == "true"
+    )
+    # "warmup" scales thresholds by this run's warmup best (run-dependent, so
+    # repeat runs solve different problems); "absolute" scales by the
+    # normalised reward's own 1.0, rising only if a run beats it.
+    constraint_anchor = _get("constraint_anchor", "warmup", str).strip().lower()
 
     # Parse hidden layers
     hidden_str = _get("hidden", "[256, 256]")
@@ -1113,6 +1152,9 @@ def train(config_path: str, save_dir: str):
                 "n_epochs": n_epochs,
                 "batch_size": batch_size,
                 "constraint_penalty": constraint_penalty,
+                "constraint_level_schedule": constraint_level_schedule,
+                "update_constraint_bounds": update_constraint_bounds,
+                "constraint_anchor": constraint_anchor,
                 "pareto_bonus": pareto_bonus,
                 "bc_weight": bc_weight,
                 "lr": lr,
@@ -1140,6 +1182,9 @@ def train(config_path: str, save_dir: str):
         min_layers_before_air=min_layers_before_air,
         randomise_constraints=randomise_constraints,
         warmup_block_episodes=warmup_block_episodes,
+        constraint_level_schedule=constraint_level_schedule,
+        update_constraint_bounds=update_constraint_bounds,
+        constraint_anchor=constraint_anchor,
     )
 
     # Enable Pareto bonus (hypervolume improvement reward)
@@ -1211,6 +1256,11 @@ def train(config_path: str, save_dir: str):
     ep_rewards = []
     ep_vals = []
     ep_lengths = []  # Track episode lengths
+    # Two different things, both needed: policy_std is how wide the policy
+    # chooses to sample thicknesses (its exploration), thickness_mean is the
+    # thicknesses it actually places (0.25 is quarter-wave).
+    ep_policy_std = []
+    ep_thickness_mean = []
     sample_designs = []  # Track sample designs during warmup for debugging
     training_history = []  # periodic metrics rows for training_curves.png
     # Logging and checkpointing are checked once per update, so episode_count
@@ -1279,12 +1329,15 @@ def train(config_path: str, save_dir: str):
     if verbose:
         print(f"Training for {total_episodes} episodes")
 
-    # algorithm_runtime is the optimisation alone: the periodic checkpoint,
-    # CSV and plot writes below are timed separately and subtracted, and the
-    # final plots fall outside the loop, so the figure stays comparable
-    # between runs that end with very differently sized Pareto fronts.
+    # algorithm_runtime is the optimisation alone. Everything the loop does
+    # for reporting -- the metrics block, MLflow writes, checkpoints, CSVs and
+    # curve plots -- is timed into logging_io_seconds and subtracted, and the
+    # final plots fall outside the loop entirely. total_runtime minus
+    # algorithm_runtime is therefore what reporting cost you, which is worth
+    # watching: MLflow writes at mlflow_log_freq and hypervolume at
+    # hypervolume_freq are both easy to make dominate a run by accident.
     loop_start = time.perf_counter()
-    plot_io_seconds = 0.0
+    logging_io_seconds = 0.0
 
     while env.episode_count < total_episodes:
         # Collect episodes for this update
@@ -1300,6 +1353,8 @@ def train(config_path: str, save_dir: str):
 
             # Collect single episode
             episode_done = False
+            episode_stds = []
+            episode_thicknesses = []
             while not episode_done:
                 # Get target objective index for value head selection
                 target_obj_idx = objective_to_idx[env.env.target_objective]
@@ -1326,6 +1381,9 @@ def train(config_path: str, save_dir: str):
                         "continuous_actions": episode_thicknesses,
                     }
 
+                episode_stds.append(agent.last_thickness_std)
+                episode_thicknesses.append(thickness)
+
                 next_obs, reward, done, _, info = env.step(action, **step_kwargs)
                 next_mask = info["mask"]
 
@@ -1339,6 +1397,8 @@ def train(config_path: str, save_dir: str):
                         ep_rewards.append(reward)
                         ep_vals.append(info["vals"])
                         ep_lengths.append(env.current_layer)  # Track episode length
+                        ep_policy_std.append(float(np.mean(episode_stds)))
+                        ep_thickness_mean.append(float(np.mean(episode_thicknesses)))
 
                         # Sample designs during warmup for debugging (keep last 100)
                         if env.is_warmup:
@@ -1453,6 +1513,7 @@ def train(config_path: str, save_dir: str):
         # Logging
         if env.episode_count - last_log_episode >= mlflow_log_freq:
             last_log_episode = env.episode_count
+            io_start = time.perf_counter()
             if verbose:
                 n_pareto = len(env.env.pareto_front_rewards)
                 phase = "warmup" if env.is_warmup else "constrained"
@@ -1500,6 +1561,20 @@ def train(config_path: str, save_dir: str):
                 metrics["episode.length_std"] = float(np.std(length_window))
                 metrics["episode.length_min"] = float(np.min(length_window))
                 metrics["episode.length_max"] = float(np.max(length_window))
+
+            # How wide the policy samples thicknesses. The clamp on log_std
+            # puts a hard floor at exp(-4) = 0.018; measured on a 20-layer
+            # stack, sigma 0.02 costs almost nothing but 0.05 costs 5x in
+            # transmission and 0.1 costs 95x, so where this sits between the
+            # floor and 0.05 decides whether exploration is the limit.
+            if ep_policy_std:
+                std_window = ep_policy_std[-100:]
+                metrics["policy.thickness_std"] = float(np.mean(std_window))
+                metrics["policy.thickness_std_min"] = float(np.min(std_window))
+            if ep_thickness_mean:
+                thickness_window = ep_thickness_mean[-100:]
+                metrics["episode.thickness_mean"] = float(np.mean(thickness_window))
+                metrics["episode.thickness_spread"] = float(np.std(thickness_window))
 
             # Objective values
             if ep_vals:
@@ -1556,6 +1631,10 @@ def train(config_path: str, save_dir: str):
                 metrics["policy.air_logit_init"] = air_logit
 
             metrics["episode"] = env.episode_count
+            # One episode produces one design, so episodes are the evaluation
+            # count. Named to match what the genetic trainer records, so the
+            # two can be compared on designs evaluated rather than wall clock.
+            metrics["evaluations"] = env.episode_count
             training_history.append(metrics)
 
             if mlflow.active_run():
@@ -1563,6 +1642,8 @@ def train(config_path: str, save_dir: str):
                     {k: v for k, v in metrics.items() if k != "episode"},
                     step=env.episode_count,
                 )
+
+            logging_io_seconds += time.perf_counter() - io_start
 
         # Periodic checkpointing
         if env.episode_count - last_plot_episode >= plot_freq:
@@ -1623,9 +1704,9 @@ def train(config_path: str, save_dir: str):
                 if verbose:
                     print(f"  [training curves] skipped: {e}")
 
-            plot_io_seconds += time.perf_counter() - io_start
+            logging_io_seconds += time.perf_counter() - io_start
 
-    algorithm_runtime = time.perf_counter() - loop_start - plot_io_seconds
+    algorithm_runtime = time.perf_counter() - loop_start - logging_io_seconds
 
     # Final Pareto export and plots
     try:
@@ -1661,5 +1742,6 @@ def train(config_path: str, save_dir: str):
             "algorithm": "ppo_sequential",
             "total_episodes": total_episodes,
             "algorithm_runtime": round(algorithm_runtime, 2),
+            "logging_runtime": round(logging_io_seconds, 2),
         },
     }

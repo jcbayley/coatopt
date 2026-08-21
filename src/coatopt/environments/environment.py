@@ -140,6 +140,8 @@ class CoatingEnvironment:
 
         # Constrained training state
         self.use_constrained_training = False  # Set by wrapper if needed
+        self.update_constraint_bounds = False  # Set by enable_constrained_training
+        self.constraint_anchor_mode = "warmup"  # Set by enable_constrained_training
         self.episode_count = 0
         self.is_warmup = True
         self.target_objective = None
@@ -313,14 +315,41 @@ class CoatingEnvironment:
                         self.observed_value_bounds[obj]["max"], val
                     )
 
-    def update_warmup_best(self, objective: str, normalised_reward: float):
-        """Update best normalised reward seen during warmup."""
+    def update_warmup_best(
+        self, objective: str, normalised_reward: float, phase: str = "WARMUP"
+    ):
+        """Raise the best normalised reward on record for an objective.
+
+        These bests anchor every constraint threshold afterwards
+        (``constraints[obj] = frac * best``), so if they stay frozen at what
+        warmup managed, a policy that later exceeds them is no longer being
+        constrained by anything demanding.
+        """
         old_best = self.warmup_best_rewards[objective]
         if normalised_reward > old_best:
             print(
-                f"    WARMUP: New best {objective}={normalised_reward:.4f} (was {old_best:.4f})"
+                f"    {phase}: New best {objective}={normalised_reward:.4f} (was {old_best:.4f})"
             )
         self.warmup_best_rewards[objective] = max(old_best, normalised_reward)
+
+    def constraint_anchor(self, objective: str) -> float:
+        """Scale that this objective's constraint thresholds are a fraction of.
+
+        With "warmup" the scale is whatever that run's warmup happened to
+        reach. That is a max over a noisy process, so it differs between runs
+        and two runs of the same config end up solving genuinely different
+        constrained problems - a large part of why repeat runs disagree.
+
+        With "absolute" the scale starts at 1.0, which is what the normalised
+        reward equals at the best end of objective_bounds, so every run sweeps
+        the same thresholds and a given level means the same thing everywhere.
+        It still rises if a run beats that, since a threshold below what the
+        policy can already reach has stopped constraining anything.
+        """
+        best = self.warmup_best_rewards.get(objective, 0.0)
+        if self.constraint_anchor_mode == "absolute":
+            return max(1.0, best)
+        return best
 
     def enable_constrained_training(
         self,
@@ -328,13 +357,26 @@ class CoatingEnvironment:
         steps_per_objective: int = 10,
         episodes_per_step: int = 200,
         constraint_penalty: float = 10.0,
+        update_constraint_bounds: bool = False,
+        constraint_anchor_mode: str = "warmup",
     ):
         """Enable two-phase constrained training.
 
         Phase 1 (Warmup): Optimize each objective individually
         Phase 2 (Constrained): Cycle through objectives with constraints
+
+        update_constraint_bounds keeps the per-objective bests rising during
+        phase 2 rather than freezing them at warmup, so the thresholds scale
+        with what the policy can actually reach.
         """
+        if constraint_anchor_mode not in ("warmup", "absolute"):
+            raise ValueError(
+                f"constraint_anchor must be 'warmup' or 'absolute', "
+                f"got {constraint_anchor_mode!r}"
+            )
         self.use_constrained_training = True
+        self.update_constraint_bounds = update_constraint_bounds
+        self.constraint_anchor_mode = constraint_anchor_mode
         self.warmup_episodes_per_objective = warmup_episodes_per_objective
         self.total_warmup_episodes = warmup_episodes_per_objective * len(
             self.optimise_parameters
@@ -609,6 +651,15 @@ class CoatingEnvironment:
             else:
                 # Phase 2 (Constrained): Optimize target objective with constraints
                 total_reward = individual_rewards.get(self.target_objective, 0.0)
+
+                # Keep the constraint anchors current. Every objective is scored
+                # on every episode, so any of them can raise its own best, not
+                # just the one being targeted.
+                if self.update_constraint_bounds:
+                    for obj in self.optimise_parameters:
+                        reward = individual_rewards.get(obj)
+                        if reward is not None and np.isfinite(reward):
+                            self.update_warmup_best(obj, reward, phase="CONSTRAINED")
 
                 # Add constraint penalty modifier
                 penalty = self._compute_constraint_penalty(vals, individual_rewards)

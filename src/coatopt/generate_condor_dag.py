@@ -76,6 +76,12 @@ output = logs/job_$(run_id).out
 error = logs/job_$(run_id).err
 log = logs/job_$(run_id).log
 
+# Keep every library inside the CPU allocation. Without this each job sizes
+# its thread pool from the machine's core count, so several jobs packed onto
+# one node oversubscribe it badly -- matmul-heavy work (attention, BLAS) slows
+# down several-fold while the node looks idle.
+environment = "OMP_NUM_THREADS={request_cpus} MKL_NUM_THREADS={request_cpus} OPENBLAS_NUM_THREADS={request_cpus} NUMEXPR_NUM_THREADS={request_cpus}"
+
 # Resource requirements
 request_cpus = {request_cpus}
 request_memory = {request_memory}
