@@ -615,11 +615,9 @@ class HybridActorCritic(nn.Module):
         # Value - select head based on target objective
         value = self.value_heads[target_obj_idx](features).squeeze(-1)
 
-        # std is returned so the rollout can log how wide the policy is
-        # sampling thicknesses: ppo.entropy sums the discrete and continuous
-        # heads together and cannot separate "sure about materials" from
-        # "sure about thicknesses", which is the one that limits precision.
-        return material, thickness, log_prob, value, std, lstm_state
+        # Realised spread of the truncated normal, which is what sets the
+        # search width. It is well below scale once the truncation bites.
+        return material, thickness, log_prob, value, dist_c.variance.sqrt(), lstm_state
 
     def evaluate_actions(
         self,
@@ -1256,11 +1254,9 @@ def train(config_path: str, save_dir: str):
     ep_rewards = []
     ep_vals = []
     ep_lengths = []  # Track episode lengths
-    # Two different things, both needed: policy_std is how wide the policy
-    # chooses to sample thicknesses (its exploration), thickness_mean is the
-    # thicknesses it actually places (0.25 is quarter-wave).
-    ep_policy_std = []
+    ep_policy_std = []          # realised sampling std of the truncated normal
     ep_thickness_mean = []
+    ep_thickness_within = []    # spread of layers within one design
     sample_designs = []  # Track sample designs during warmup for debugging
     training_history = []  # periodic metrics rows for training_curves.png
     # Logging and checkpointing are checked once per update, so episode_count
@@ -1351,10 +1347,11 @@ def train(config_path: str, save_dir: str):
                 episode_materials = []
                 episode_thicknesses = []
 
-            # Collect single episode
+            # Collect single episode. Names kept distinct from the BC tracking
+            # above, which reuses the per-step actions for its own list.
             episode_done = False
             episode_stds = []
-            episode_thicknesses = []
+            episode_sampled_thicknesses = []
             while not episode_done:
                 # Get target objective index for value head selection
                 target_obj_idx = objective_to_idx[env.env.target_objective]
@@ -1382,7 +1379,7 @@ def train(config_path: str, save_dir: str):
                     }
 
                 episode_stds.append(agent.last_thickness_std)
-                episode_thicknesses.append(thickness)
+                episode_sampled_thicknesses.append(thickness)
 
                 next_obs, reward, done, _, info = env.step(action, **step_kwargs)
                 next_mask = info["mask"]
@@ -1398,7 +1395,12 @@ def train(config_path: str, save_dir: str):
                         ep_vals.append(info["vals"])
                         ep_lengths.append(env.current_layer)  # Track episode length
                         ep_policy_std.append(float(np.mean(episode_stds)))
-                        ep_thickness_mean.append(float(np.mean(episode_thicknesses)))
+                        ep_thickness_mean.append(
+                            float(np.mean(episode_sampled_thicknesses))
+                        )
+                        ep_thickness_within.append(
+                            float(np.std(episode_sampled_thicknesses))
+                        )
 
                         # Sample designs during warmup for debugging (keep last 100)
                         if env.is_warmup:
@@ -1562,19 +1564,19 @@ def train(config_path: str, save_dir: str):
                 metrics["episode.length_min"] = float(np.min(length_window))
                 metrics["episode.length_max"] = float(np.max(length_window))
 
-            # How wide the policy samples thicknesses. The clamp on log_std
-            # puts a hard floor at exp(-4) = 0.018; measured on a 20-layer
-            # stack, sigma 0.02 costs almost nothing but 0.05 costs 5x in
-            # transmission and 0.1 costs 95x, so where this sits between the
-            # floor and 0.05 decides whether exploration is the limit.
+            # Search width in thickness. Measured on a 20-layer stack, 0.02
+            # costs almost nothing, 0.05 costs 5x transmission and 0.1 costs 95x.
             if ep_policy_std:
                 std_window = ep_policy_std[-100:]
                 metrics["policy.thickness_std"] = float(np.mean(std_window))
                 metrics["policy.thickness_std_min"] = float(np.min(std_window))
             if ep_thickness_mean:
-                thickness_window = ep_thickness_mean[-100:]
-                metrics["episode.thickness_mean"] = float(np.mean(thickness_window))
-                metrics["episode.thickness_spread"] = float(np.std(thickness_window))
+                metrics["episode.thickness_mean"] = float(
+                    np.mean(ep_thickness_mean[-100:])
+                )
+                metrics["episode.thickness_spread"] = float(
+                    np.mean(ep_thickness_within[-100:])
+                )
 
             # Objective values
             if ep_vals:
@@ -1589,6 +1591,8 @@ def train(config_path: str, save_dir: str):
                         metrics[f"vals.{obj}_best"] = float(
                             min(vals, key=lambda v: abs(v - target))
                         )
+                        metrics[f"vals.{obj}_p10"] = float(np.percentile(vals, 10))
+                        metrics[f"vals.{obj}_p90"] = float(np.percentile(vals, 90))
 
             # Hypervolume. This is by far the most expensive metric here and
             # it scales roughly quadratically with the archive: measured at 3

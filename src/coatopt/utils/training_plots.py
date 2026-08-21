@@ -150,40 +150,46 @@ def save_training_curves(
     ax.legend(fontsize=7, frameon=False)
     _style(ax, "Constraint thresholds (0 = warmup)")
 
-    # 8: thickness - what the policy samples, and what it places
+    # 8: thickness placed, and how wide the policy samples
     ax = axes[7]
-    if "policy.thickness_std" in df:
-        ax.plot(
-            ep,
-            df["policy.thickness_std"].values,
-            color=_SERIES[0],
-            lw=1.5,
-            label="policy sampling sigma",
-        )
-        # The clamp on log_std makes exp(-4) unreachable from below, and 0.05
-        # is where thickness noise starts costing transmission badly
-        ax.axhline(np.exp(-4), color=_MUTED, lw=0.8, ls=":", label="floor exp(-4)")
-        ax.axhline(0.05, color=_MUTED, lw=0.8, ls="--", label="0.05 (5x cost)")
     if "episode.thickness_mean" in df:
         m = df["episode.thickness_mean"].values
         ax.plot(ep, m, color=_SERIES[1], lw=1.2, label="mean placed thickness")
         if "episode.thickness_spread" in df:
             sp = df["episode.thickness_spread"].values
             ax.fill_between(ep, m - sp, m + sp, color=_SERIES[1], alpha=0.15, lw=0)
+    if "policy.thickness_std" in df:
+        ax.plot(
+            ep,
+            df["policy.thickness_std"].values,
+            color=_SERIES[0],
+            lw=1.5,
+            label="sampling spread",
+        )
+        ax.axhline(
+            np.exp(-4), color=_MUTED, lw=0.8, ls=":", label="min spread (0.018)"
+        )
+    ax.axhline(0.25, color=_MUTED, lw=0.8, ls="--", label="quarter-wave (0.25)")
     ax.legend(fontsize=7, frameon=False)
-    _style(ax, "Thickness: sampling sigma vs placed", logy=True)
+    _style(ax, "Thickness placed and sampling spread", logy=True)
 
     # 9+: per-objective best values (rolling window best)
     for i, obj in enumerate(objectives):
         ax = axes[8 + i]
         col = f"vals.{obj}_best"
+        colour = _SERIES[i % len(_SERIES)]
         if col in df:
             v = df[col].values
-            ax.plot(ep, v, color=_SERIES[i % len(_SERIES)], lw=1.2)
+            lo, hi = f"vals.{obj}_p10", f"vals.{obj}_p90"
+            if lo in df and hi in df:
+                ax.fill_between(
+                    ep, df[lo].values, df[hi].values, color=colour, alpha=0.15, lw=0
+                )
+            ax.plot(ep, v, color=colour, lw=1.2)
             ok = np.isfinite(v) & (v != 0)
             if ok.any() and np.all(v[ok] > 0):
                 ax.set_yscale("log")
-        _style(ax, f"{obj} (best in 100-ep window)")
+        _style(ax, f"{obj} (best, band = 10-90th pct)")
         ax.set_xlabel("episode", fontsize=8, color=_MUTED)
 
     # Hide unused axes
