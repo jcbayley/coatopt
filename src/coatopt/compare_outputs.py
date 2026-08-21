@@ -648,7 +648,7 @@ def plot_normalized_comparison(
 
 # Chart tokens: categorical slots in fixed order, plus chrome inks. Marks carry
 # the series colour; all text stays in ink tokens.
-_TIMING_SERIES = [
+_SERIES = [
     "#2a78d6",
     "#eb6834",
     "#1baf7a",
@@ -658,13 +658,26 @@ _TIMING_SERIES = [
     "#4a3aa7",
     "#e34948",
 ]
-_TIMING_MARKERS = ["o", "s", "^", "D", "v", "P", "X", "*"]
+_MARKERS = ["o", "s", "^", "D", "v", "P", "X", "*"]
 _INK_PRIMARY = "#0b0b0b"
 _INK_SECONDARY = "#52514e"
 _INK_MUTED = "#898781"
 _SURFACE = "#fcfcfb"
 _GRIDLINE = "#e1e0d9"
 _BASELINE = "#c3c2b7"
+
+
+def _style_axes(ax):
+    """Recessive chrome: hairline grid, no top/right spines, muted ticks."""
+    ax.set_facecolor(_SURFACE)
+    ax.grid(True, color=_GRIDLINE, linewidth=1, linestyle="-")
+    ax.set_axisbelow(True)
+    for side in ("top", "right"):
+        ax.spines[side].set_visible(False)
+    for side in ("left", "bottom"):
+        ax.spines[side].set_color(_BASELINE)
+        ax.spines[side].set_linewidth(1)
+    ax.tick_params(colors=_INK_MUTED, labelsize=9, length=0)
 
 
 def load_run_timings(directories, labels=None):
@@ -765,13 +778,13 @@ def plot_run_timings(rows, save_path=None, title="Run timings"):
     for row in rows:
         groups.setdefault(row["group"], []).append(row)
     names = list(groups)
-    if len(names) > len(_TIMING_SERIES):
+    if len(names) > len(_SERIES):
         print(
-            f"Warning: {len(names)} run groups exceeds the {len(_TIMING_SERIES)} "
+            f"Warning: {len(names)} run groups exceeds the {len(_SERIES)} "
             "distinct colours available; extra groups are folded into 'Other'"
         )
-        keep = names[: len(_TIMING_SERIES) - 1]
-        other = [r for n in names[len(_TIMING_SERIES) - 1 :] for r in groups[n]]
+        keep = names[: len(_SERIES) - 1]
+        other = [r for n in names[len(_SERIES) - 1 :] for r in groups[n]]
         groups = {n: groups[n] for n in keep}
         groups["Other"] = other
         names = list(groups)
@@ -783,20 +796,9 @@ def plot_run_timings(rows, save_path=None, title="Run timings"):
     )
     axes = np.atleast_1d(axes)
 
-    def style(ax):
-        ax.set_facecolor(_SURFACE)
-        ax.grid(True, color=_GRIDLINE, linewidth=1, linestyle="-", alpha=1.0)
-        ax.set_axisbelow(True)
-        for side in ("top", "right"):
-            ax.spines[side].set_visible(False)
-        for side in ("left", "bottom"):
-            ax.spines[side].set_color(_BASELINE)
-            ax.spines[side].set_linewidth(1)
-        ax.tick_params(colors=_INK_MUTED, labelsize=9, length=0)
-
     # Panel 1 - distribution of algorithm runtime
     ax = axes[0]
-    style(ax)
+    _style_axes(ax)
     all_minutes = [r["algorithm_runtime"] / 60 for r in rows]
     n_bins = int(np.clip(np.sqrt(len(all_minutes)) * 1.5, 5, 20))
     edges = np.histogram_bin_edges(all_minutes, bins=n_bins)
@@ -805,7 +807,7 @@ def plot_run_timings(rows, save_path=None, title="Run timings"):
     for i, name in enumerate(names):
         minutes = [r["algorithm_runtime"] / 60 for r in groups[name]]
         counts, _ = np.histogram(minutes, bins=edges)
-        colour = _TIMING_SERIES[i % len(_TIMING_SERIES)]
+        colour = _SERIES[i % len(_SERIES)]
         # 2px surface gap does the separating between adjacent bars
         ax.bar(
             edges[:-1] + (i + 0.5) * width,
@@ -839,17 +841,17 @@ def plot_run_timings(rows, save_path=None, title="Run timings"):
     # Panel 2 - is the spread explained by how fast the node was?
     if has_probe:
         ax = axes[1]
-        style(ax)
+        _style_axes(ax)
         for i, name in enumerate(names):
             pts = [r for r in groups[name] if r.get("matmul_probe_ms")]
             if not pts:
                 continue
-            colour = _TIMING_SERIES[i % len(_TIMING_SERIES)]
+            colour = _SERIES[i % len(_SERIES)]
             # hue AND marker shape, so identity never rests on colour alone
             ax.plot(
                 [r["matmul_probe_ms"] for r in pts],
                 [r["algorithm_runtime"] / 60 for r in pts],
-                marker=_TIMING_MARKERS[i % len(_TIMING_MARKERS)],
+                marker=_MARKERS[i % len(_MARKERS)],
                 linestyle="none",
                 markersize=8,
                 color=colour,
@@ -894,39 +896,6 @@ def plot_run_timings(rows, save_path=None, title="Run timings"):
         plt.close(fig)
     else:
         plt.show()
-
-
-# Chart tokens: categorical slots in fixed order, plus chrome inks. Marks carry
-# the series colour; all text stays in ink tokens.
-_SERIES = [
-    "#2a78d6",
-    "#eb6834",
-    "#1baf7a",
-    "#eda100",
-    "#e87ba4",
-    "#008300",
-    "#4a3aa7",
-    "#e34948",
-]
-_INK_PRIMARY = "#0b0b0b"
-_INK_SECONDARY = "#52514e"
-_INK_MUTED = "#898781"
-_SURFACE = "#fcfcfb"
-_GRIDLINE = "#e1e0d9"
-_BASELINE = "#c3c2b7"
-
-
-def _style_axes(ax):
-    """Recessive chrome: hairline grid, no top/right spines, muted ticks."""
-    ax.set_facecolor(_SURFACE)
-    ax.grid(True, color=_GRIDLINE, linewidth=1, linestyle="-")
-    ax.set_axisbelow(True)
-    for side in ("top", "right"):
-        ax.spines[side].set_visible(False)
-    for side in ("left", "bottom"):
-        ax.spines[side].set_color(_BASELINE)
-        ax.spines[side].set_linewidth(1)
-    ax.tick_params(colors=_INK_MUTED, labelsize=9, length=0)
 
 
 def load_convergence_histories(directories, labels=None):
