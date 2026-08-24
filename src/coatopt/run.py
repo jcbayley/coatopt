@@ -51,6 +51,7 @@ def run_experiment(
         "morl",
         "morl_discrete",
         "nsga2",
+        "moead",
         "sac_multiagent",
         "sac_hybrid",
         "hppo_multiagent",
@@ -163,7 +164,7 @@ def run_experiment(
 
         results = train(config_path=str(config_backup), save_dir=str(save_dir))
 
-    elif algorithm == "nsga2":
+    elif algorithm in ("nsga2", "moead"):
         from coatopt.algorithms.train_genetic_simple import train_genetic as train
 
         results = train(config_path=str(config_backup), save_dir=str(save_dir))

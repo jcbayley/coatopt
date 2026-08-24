@@ -7,16 +7,19 @@ Uses PyMOO to optimize coating designs with repair operators enforcing:
 - All layers after first air must be air
 - No air until min_layers_before_air reached
 
-Config section: [nsga2]
+Config section: [nsga2] or [moead]
   n_generations            = 100
-  population_size          = 100
+  population_size          = 100            # NSGA2/NSGA3 only
   algorithm                = NSGA2          # NSGA2, NSGA3, or MOEAD
   seed                     = 42
   crossover_probability    = 0.9
   crossover_eta            = 15.0
-  mutation_probability     = None           # Default: 1/n_var
+  mutation_probability     =                # Blank/None: 1/n_var
   mutation_eta             = 20.0
   min_layers_before_air    = 0              # Min layers before air allowed
+  n_partitions             = 12             # NSGA3/MOEAD reference directions
+  n_neighbors              = 20             # MOEAD only
+  prob_neighbor_mating     = 0.9            # MOEAD only
 """
 
 import time
@@ -242,16 +245,24 @@ def train_genetic(config_path: str, save_dir: Optional[str] = None):
     if save_dir is None:
         save_dir = parser.get("general", "save_dir")
 
-    # [nsga2] section
-    total_generations = parser.getint("nsga2", "n_generations")
-    population_size = parser.getint("nsga2", "population_size")
-    algorithm = parser.get("nsga2", "algorithm")
-    seed = parser.getint("nsga2", "seed")
-    crossover_prob = parser.getfloat("nsga2", "crossover_probability")
-    crossover_eta = parser.getfloat("nsga2", "crossover_eta")
-    mutation_prob = parser.getfloat("nsga2", "mutation_probability")
-    mutation_eta = parser.getfloat("nsga2", "mutation_eta")
-    min_layers_before_air = parser.getint("nsga2", "min_layers_before_air", fallback=0)
+    # [nsga2] section, or [moead] for MOEA/D runs
+    section = "moead" if parser.has_section("moead") else "nsga2"
+    total_generations = parser.getint(section, "n_generations")
+    # MOEA/D takes its population from the reference directions instead
+    population_size = parser.getint(section, "population_size", fallback=0)
+    algorithm = parser.get(section, "algorithm")
+    seed = parser.getint(section, "seed")
+    crossover_prob = parser.getfloat(section, "crossover_probability")
+    crossover_eta = parser.getfloat(section, "crossover_eta")
+    # Blank or "None" means the pymoo default of 1/n_var, applied below
+    mutation_prob_raw = parser.get(section, "mutation_probability", fallback="")
+    mutation_prob = (
+        None
+        if mutation_prob_raw.strip().lower() in ("", "none")
+        else float(mutation_prob_raw)
+    )
+    mutation_eta = parser.getfloat(section, "mutation_eta")
+    min_layers_before_air = parser.getint(section, "min_layers_before_air", fallback=0)
     verbose = True
 
     # [Data] section
@@ -268,9 +279,12 @@ def train_genetic(config_path: str, save_dir: Optional[str] = None):
     config = load_config(config_path)
     config.data.n_layers = n_layers
 
-    n_partitions = None
-    n_neighbors = 20
-    prob_neighbor_mating = 0.7
+    # Reference directions for NSGA-III/MOEA/D; defaults are pymoo's own
+    n_partitions = parser.getint(section, "n_partitions", fallback=12)
+    n_neighbors = parser.getint(section, "n_neighbors", fallback=20)
+    prob_neighbor_mating = parser.getfloat(
+        section, "prob_neighbor_mating", fallback=0.9
+    )
 
     # Create environment
     env = CoatingEnvironment(config, materials)
@@ -295,8 +309,6 @@ def train_genetic(config_path: str, save_dir: Optional[str] = None):
             eliminate_duplicates=True,
         )
     elif algorithm == "NSGA3":
-        if n_partitions is None:
-            n_partitions = 12  # Default for 2 objectives
         ref_dirs = get_reference_directions(
             "uniform", len(env.optimise_parameters), n_partitions=n_partitions
         )
@@ -310,11 +322,11 @@ def train_genetic(config_path: str, save_dir: Optional[str] = None):
             eliminate_duplicates=True,
         )
     elif algorithm == "MOEAD":
-        if n_partitions is None:
-            n_partitions = population_size
         ref_dirs = get_reference_directions(
             "uniform", len(env.optimise_parameters), n_partitions=n_partitions
         )
+        # One subproblem per direction, so the directions set the population
+        population_size = len(ref_dirs)
         algo = MOEAD(
             ref_dirs=ref_dirs,
             n_neighbors=n_neighbors,
@@ -338,7 +350,7 @@ def train_genetic(config_path: str, save_dir: Optional[str] = None):
     # stack plots below are excluded so the figure is comparable across runs.
     history = HypervolumeHistory(
         n_objectives=len(env.optimise_parameters),
-        every=parser.getint("nsga2", "hypervolume_freq", fallback=10),
+        every=parser.getint(section, "hypervolume_freq", fallback=10),
     )
     opt_start = time.perf_counter()
     result = minimize(
