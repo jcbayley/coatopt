@@ -1618,6 +1618,57 @@ def generate_3d_rank_dashboard_from_args(args):
         wbeam_m = 0.062
         print("  No 'wbeam' / 'beam_radius' key found in config.ini. Defaulting laser beam radius to 6.2 cm (0.0620 m).")
 
+    # Extract operating temperature (Temp) from config.ini files
+    temp_k = None
+    temp_src = None
+    for subdir in subdirs:
+        config_path = subdir / "config.ini"
+        if config_path.exists():
+            cfg = configparser.ConfigParser()
+            cfg.read(config_path)
+            for section in ["General", "general", "Data", "data"]:
+                if cfg.has_section(section):
+                    for key in ["temperature", "temp", "Temp", "T", "temp_k"]:
+                        if cfg.has_option(section, key):
+                            try:
+                                val_str = cfg.get(section, key)
+                                val_clean = re.sub(r'[^\d\.\-eE]', '', val_str)
+                                temp_k = float(val_clean)
+                                temp_src = f"{subdir.name}/config.ini [{section}] ({key})"
+                                break
+                            except ValueError:
+                                pass
+                    if temp_k is not None:
+                        break
+            if temp_k is not None:
+                break
+
+    if temp_k is None:
+        config_path = directory / "config.ini"
+        if config_path.exists():
+            cfg = configparser.ConfigParser()
+            cfg.read(config_path)
+            for section in ["General", "general", "Data", "data"]:
+                if cfg.has_section(section):
+                    for key in ["temperature", "temp", "Temp", "T", "temp_k"]:
+                        if cfg.has_option(section, key):
+                            try:
+                                val_str = cfg.get(section, key)
+                                val_clean = re.sub(r'[^\d\.\-eE]', '', val_str)
+                                temp_k = float(val_clean)
+                                temp_src = f"{directory.name}/config.ini [{section}] ({key})"
+                                break
+                            except ValueError:
+                                pass
+                    if temp_k is not None:
+                        break
+
+    if temp_k is not None:
+        print(f"  Loaded operating temperature (Temp): {temp_k:.1f} K (from {temp_src})")
+    else:
+        temp_k = 293.0
+        print("  No 'temperature' key found in config.ini. Defaulting operating temperature to 293.0 K.")
+
     # Load Pareto fronts and merge materials
     all_designs = []
     all_values = []
@@ -1883,7 +1934,7 @@ def generate_3d_rank_dashboard_from_args(args):
                                 lambda_=wavelength_nm * 1e-9,  # getCoatingThermalNoise expects meters!
                                 f=100.0,
                                 wBeam=wbeam_m,
-                                Temp=290.0,
+                                Temp=temp_k,
                                 plots=False
                             )
                         
@@ -2452,9 +2503,15 @@ def generate_3d_rank_dashboard_from_args(args):
                         <label for="input-comp-thick">Thickness (nm)</label>
                         <input type="number" id="input-comp-thick" step="any" placeholder="e.g. 6000">
                     </div>
-                    <div>
-                        <label for="input-beam-radius">Beam Radius w<sub>0</sub> (cm)</label>
-                        <input type="number" id="input-beam-radius" step="0.1" min="0.1" value="__WBEAM_CM__" placeholder="e.g. 6.2">
+                    <div style="display: flex; gap: 8px;">
+                        <div style="flex: 1;">
+                            <label for="input-beam-radius">Beam Radius w<sub>0</sub> (cm)</label>
+                            <input type="number" id="input-beam-radius" step="0.1" min="0.1" value="__WBEAM_CM__" placeholder="e.g. 6.2">
+                        </div>
+                        <div style="flex: 1;">
+                            <label for="input-temp-k">Temp T (K)</label>
+                            <input type="number" id="input-temp-k" step="0.1" min="0.1" value="__TEMP_K__" placeholder="e.g. 293.0">
+                        </div>
                     </div>
                 </div>
                 <div style="display: flex; gap: 8px; margin-top: 8px;">
@@ -3089,6 +3146,9 @@ def generate_3d_rank_dashboard_from_args(args):
             }
             var materialParamsStr = matParamsLines.join(",\\n");
 
+            var curWBeamM = (document.getElementById('input-beam-radius') && document.getElementById('input-beam-radius').value) ? (parseFloat(document.getElementById('input-beam-radius').value) / 100.0) : __WBEAM_M__;
+            var curTempK = (document.getElementById('input-temp-k') && document.getElementById('input-temp-k').value) ? parseFloat(document.getElementById('input-temp-k').value) : __TEMP_K__;
+
             var py = `# ==============================================================================\\n` +
                      `# Rank ${design.rank} Coating Design - Exported from coatopt\\n` +
                      `# Reflectivity: ${design.reflectivity.toFixed(6)}\\n` +
@@ -3120,8 +3180,8 @@ def generate_3d_rank_dashboard_from_args(args):
                      `aLIGO_params["lambda_"]        = lambda_nm * 1e-9                    # IFO wavelength in meters for physics solvers\\n` +
                      `aLIGO_params["lambda_nm"]     = lambda_nm                          # IFO wavelength (nm)\\n` +
                      `aLIGO_params["f"]              = np.logspace(1, 3, 100)             # Frequency range to evaluate CTN \\n` +
-                     `aLIGO_params["wBeam"]          = __WBEAM_M__                        # laser beam size on ETM (m) \\n` +
-                     `aLIGO_params["Temp"]           = 293.0                              # detector temperature (K) \\n` +
+                     `aLIGO_params["wBeam"]          = ${curWBeamM.toFixed(6)}                        # laser beam size on ETM (m) \\n` +
+                     `aLIGO_params["Temp"]           = ${curTempK.toFixed(1)}                              # detector temperature (K) \\n` +
                      `aLIGO_params["plots "]         = False                              # boolean for activating plots \\n` +
                      `aLIGO_params["t_air"]          = 500                                # thickness of air in EFI calculations for optical absorption : Default is 500nm\\n` +
                      `aLIGO_params["polarisation"]   = 'p'                                # light polarisation for EFI calculations \\n` +
@@ -4025,6 +4085,8 @@ def generate_3d_rank_dashboard_from_args(args):
 
         var refWBeamM = __WBEAM_M__;
         var currentWBeamM = refWBeamM;
+        var refTempK = __TEMP_K__;
+        var currentTempK = refTempK;
 
         var originalCtnValues = (data3d && data3d[0] && data3d[0].y) ? data3d[0].y.slice() : [];
         var originalTmmCtn = {};
@@ -4036,10 +4098,13 @@ def generate_3d_rank_dashboard_from_args(args):
             }
         }
 
-        function updateBeamRadiusScale(newWm) {
-            if (!newWm || newWm <= 0) return;
-            currentWBeamM = newWm;
-            var scaleFactor = refWBeamM / newWm;
+        function updatePhysicsScaling(newWm, newTempK) {
+            if (newWm && newWm > 0) currentWBeamM = newWm;
+            if (newTempK && newTempK > 0) currentTempK = newTempK;
+
+            var wScale = refWBeamM / currentWBeamM;
+            var tempScale = Math.sqrt(currentTempK / refTempK);
+            var scaleFactor = wScale * tempScale;
             
             if (data3d && data3d[0] && originalCtnValues.length > 0) {
                 var newY = [];
@@ -4060,6 +4125,14 @@ def generate_3d_rank_dashboard_from_args(args):
             if (typeof applyFiltersAndWeights === 'function') {
                 applyFiltersAndWeights();
             }
+        }
+
+        function updateBeamRadiusScale(newWm) {
+            updatePhysicsScaling(newWm, null);
+        }
+
+        function updateTemperatureScale(newTempK) {
+            updatePhysicsScaling(null, newTempK);
         }
 
         window.addEventListener('DOMContentLoaded', function() {
@@ -4083,6 +4156,15 @@ def generate_3d_rank_dashboard_from_args(args):
                     var cmVal = parseFloat(this.value);
                     if (cmVal && cmVal > 0) {
                         updateBeamRadiusScale(cmVal / 100.0);
+                    }
+                });
+            }
+            var inputTempK = document.getElementById('input-temp-k');
+            if (inputTempK) {
+                inputTempK.addEventListener('input', function() {
+                    var kVal = parseFloat(this.value);
+                    if (kVal && kVal > 0) {
+                        updateTemperatureScale(kVal);
                     }
                 });
             }
@@ -4114,6 +4196,7 @@ def generate_3d_rank_dashboard_from_args(args):
     compiled_html = compiled_html.replace("__WAVELENGTH_NM__", f"{wavelength_nm:.1f}")
     compiled_html = compiled_html.replace("__WBEAM_M__", f"{wbeam_m:.6f}")
     compiled_html = compiled_html.replace("__WBEAM_CM__", f"{wbeam_m * 100.0:.2f}")
+    compiled_html = compiled_html.replace("__TEMP_K__", f"{temp_k:.1f}")
     compiled_html = compiled_html.replace("__WEIGHT_REFL__", f"{args.weight_refl:.4f}")
     compiled_html = compiled_html.replace("__WEIGHT_ABS__", f"{args.weight_abs:.4f}")
     compiled_html = compiled_html.replace("__WEIGHT_TN__", f"{args.weight_tn:.4e}")
