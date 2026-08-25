@@ -938,6 +938,8 @@ class TestParetoArchiveEpsilon:
         env.pareto_front_values = []
         env.pareto_front_episodes = []
         env.pending_pareto_candidates = []
+        env._front_version = 0
+        env._crowding_cache = None
         for start in range(0, len(rewards), 8):
             for i, r in enumerate(rewards[start : start + 8], start):
                 env.pending_pareto_candidates.append((r, r * 2.0, None, f"ep{i}"))
@@ -1016,6 +1018,8 @@ class TestParetoArchiveEpsilon:
         env.pareto_front_rewards = [(r, None) for r in crowded]
         env.pareto_front_values = [(r, None) for r in crowded]
         env.pareto_front_episodes = [None] * len(crowded)
+        env._front_version = 0
+        env._crowding_cache = None
         env.pending_pareto_candidates = [
             (np.array([0.05, 0.95, 0.05]), np.zeros(3), None, None)
         ]
@@ -1025,3 +1029,110 @@ class TestParetoArchiveEpsilon:
         assert len({tuple(b) for b in boxes}) == len(boxes)
         # The best of the three crowded points is the one that survives
         assert any(np.allclose(s, [0.53, 0.53, 0.53]) for s in stored)
+
+
+class TestReferenceConstraints:
+    """Test constraint thresholds drawn from an archived design."""
+
+    @staticmethod
+    def _env(basic_config, materials, **kw):
+        env = CoatingEnvironment(basic_config, materials)
+        env.enable_constrained_training(constraint_source="reference", **kw)
+        env.is_warmup = False
+        return env
+
+    @staticmethod
+    def _front(env, n=40, seed=0):
+        """A concave 2-objective front, so most threshold pairs are infeasible."""
+        rng = np.random.default_rng(seed)
+        u = np.sort(rng.random(n))
+        pts = np.stack([u, 1.0 - u**2], axis=1)
+        env.pareto_front_rewards = [(list(p), None) for p in pts]
+        env._front_version += 1
+        return pts
+
+    def test_rejects_an_unknown_source(self, basic_config, materials):
+        env = CoatingEnvironment(basic_config, materials)
+        with pytest.raises(ValueError, match="constraint_source"):
+            env.enable_constrained_training(constraint_source="elsewhere")
+
+    def test_returns_none_while_the_front_is_too_small(self, basic_config, materials):
+        """Caller needs the fallback signal, not a guess off two points."""
+        env = self._env(basic_config, materials)
+        env.pareto_front_rewards = [([0.4, 0.6], None), ([0.8, 0.2], None)]
+        assert env.constraint_reference("reflectivity") is None
+
+    def test_constrains_every_objective_but_the_target(self, basic_config, materials):
+        env = self._env(basic_config, materials)
+        self._front(env)
+        c = env.constraint_reference("reflectivity", randomise=False)
+        assert set(c) == set(env.optimise_parameters) - {"reflectivity"}
+
+    def test_thresholds_are_met_by_the_point_they_came_from(
+        self, basic_config, materials
+    ):
+        """The whole point: with no extension the subproblem always has an answer."""
+        env = self._env(basic_config, materials, constraint_ref_extend=0.0)
+        front = self._front(env)
+        idx = env.optimise_parameters.index("absorption")
+        for _ in range(50):
+            c = env.constraint_reference("reflectivity", randomise=False)
+            assert (front[:, idx] >= c["absorption"] - 1e-12).any()
+
+    def test_extension_asks_for_more_than_its_reference(
+        self, basic_config, materials
+    ):
+        """Non-zero extend must push past the point, or it exerts no pressure."""
+        env = self._env(basic_config, materials, constraint_ref_extend=1.0)
+        front = self._front(env)
+        idx = env.optimise_parameters.index("absorption")
+        strictly_better = 0
+        for _ in range(200):
+            c = env.constraint_reference("reflectivity", randomise=False)
+            # No archived point sits exactly on the threshold once extended
+            if not np.any(np.isclose(front[:, idx], c["absorption"])):
+                strictly_better += 1
+        assert strictly_better > 0
+
+    def test_reference_beats_the_box_on_feasibility(self, basic_config, materials):
+        """The claim the scheme rests on, on a deliberately concave front."""
+        env = self._env(basic_config, materials, constraint_ref_extend=0.0)
+        front = self._front(env, n=60)
+        idx = env.optimise_parameters.index("absorption")
+
+        def feasible(threshold):
+            return bool((front[:, idx] >= threshold - 1e-12).any())
+
+        ref = sum(
+            feasible(env.constraint_reference("reflectivity", randomise=False)["absorption"])
+            for _ in range(300)
+        )
+        env.constraint_extend_low = env.constraint_extend_high = 0.2
+        lo, hi = env.constraint_range("absorption")
+        box = sum(feasible(np.random.uniform(lo, hi)) for _ in range(300))
+        assert ref == 300
+        assert box < ref
+
+    def test_crowding_favours_the_sparse_stretch(self, basic_config, materials):
+        """Sampling weight must move toward where the front is thin."""
+        env = self._env(basic_config, materials)
+        # 30 points crammed into [0, 0.1], 10 spread across [0.5, 1.0]
+        dense = np.linspace(0.0, 0.1, 30)
+        sparse = np.linspace(0.5, 1.0, 10)
+        xs = np.concatenate([dense, sparse])
+        env.pareto_front_rewards = [([x, 1.0 - x], None) for x in xs]
+        env._front_version += 1
+        weights, gaps = env._front_crowding()
+        assert weights[30:].sum() > weights[:30].sum()
+        assert gaps[30:, 0].mean() > gaps[:30, 0].mean()
+
+    def test_crowding_is_cached_until_the_front_changes(
+        self, basic_config, materials
+    ):
+        env = self._env(basic_config, materials)
+        self._front(env)
+        w1, _ = env._front_crowding()
+        w2, _ = env._front_crowding()
+        assert w1 is w2
+        self._front(env, n=41, seed=1)
+        assert env._front_crowding()[0] is not w1

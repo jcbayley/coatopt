@@ -21,6 +21,8 @@ Config section: [hppo_sequential]
   constraint_anchor        = warmup        # "warmup": scale thresholds by this run's warmup best; "absolute": by the normalised 1.0, rising if beaten
   constraint_extend_low    = 0.2           # widen the low end of the constraint range by this fraction of the front's spread
   constraint_extend_high   = 0.2           # widen the high end likewise; this is what demands more than the run has reached
+  constraint_source        = box           # "box": draw each threshold from its objective's range; "reference": take them all from one archived design
+  constraint_ref_extend    = 1.0           # reference only: how far past that design to ask, in units of its local spacing on the front
   pareto_bonus             = 0.0            # Hypervolume improvement bonus
   bc_weight                = 0.1            # Behavior cloning weight from Pareto episodes (0.0 = disabled)
   bc_selection             = target         # "target": imitate archive best for current target+constraints; "all": whole front
@@ -93,6 +95,8 @@ class CoatOptHybridEnv(gym.Env):
         constraint_anchor: str = "warmup",
         constraint_extend_low: float = 0.2,
         constraint_extend_high: float = 0.2,
+        constraint_source: str = "box",
+        constraint_ref_extend: float = 1.0,
     ):
         super().__init__()
         self.env = CoatingEnvironment(config, materials)
@@ -133,6 +137,8 @@ class CoatOptHybridEnv(gym.Env):
             constraint_anchor_mode=constraint_anchor,
             constraint_extend_low=constraint_extend_low,
             constraint_extend_high=constraint_extend_high,
+            constraint_source=constraint_source,
+            constraint_ref_extend=constraint_ref_extend,
         )
 
         # Action space: Dict with discrete material + continuous thickness
@@ -228,19 +234,29 @@ class CoatOptHybridEnv(gym.Env):
             else:
                 level = sweep % self.steps_per_objective
 
-            # Set constraints on other objectives, drawn from the range the
-            # front currently spans rather than a fixed [0, anchor] interval
+            # Set constraints on the other objectives. "reference" takes them
+            # from one archived design so the subproblem is answerable by
+            # construction; "box" draws each from the range the front spans.
             max_frac = (level + 1) / self.steps_per_objective
-            constraints = {}
-            for i, obj in enumerate(self.objectives):
-                if i != obj_idx:
-                    low, high = self.env.constraint_range(obj)
-                    top = low + max_frac * (high - low)
-                    constraints[obj] = (
-                        np.random.uniform(low, top)
-                        if self.randomise_constraints
-                        else top
-                    )
+            constraints = None
+            if self.env.constraint_source == "reference":
+                constraints = self.env.constraint_reference(
+                    target_obj,
+                    level_frac=max_frac,
+                    randomise=self.randomise_constraints,
+                )
+            if constraints is None:
+                # Also the fallback while the front is too small to measure on
+                constraints = {}
+                for i, obj in enumerate(self.objectives):
+                    if i != obj_idx:
+                        low, high = self.env.constraint_range(obj)
+                        top = low + max_frac * (high - low)
+                        constraints[obj] = (
+                            np.random.uniform(low, top)
+                            if self.randomise_constraints
+                            else top
+                        )
 
             self.env.target_objective = target_obj
             self.env.constraints = constraints
@@ -1091,6 +1107,13 @@ def train(config_path: str, save_dir: str):
     # Fraction of the front's own spread to widen each end of that range by
     constraint_extend_low = _get("constraint_extend_low", 0.2, float)
     constraint_extend_high = _get("constraint_extend_high", 0.2, float)
+    # "box": each threshold drawn independently from its objective's range.
+    # "reference": all thresholds taken from one archived design, so the
+    # constrained subproblem always has at least that design as an answer.
+    constraint_source = _get("constraint_source", "box", str).strip().lower()
+    # How far past the reference point to ask, in units of that point's local
+    # neighbour spacing on the front. 0.0 asks only to match it.
+    constraint_ref_extend = _get("constraint_ref_extend", 1.0, float)
 
     # Parse hidden layers
     hidden_str = _get("hidden", "[256, 256]")
@@ -1130,6 +1153,8 @@ def train(config_path: str, save_dir: str):
                 "constraint_anchor": constraint_anchor,
                 "constraint_extend_low": constraint_extend_low,
                 "constraint_extend_high": constraint_extend_high,
+                "constraint_source": constraint_source,
+                "constraint_ref_extend": constraint_ref_extend,
                 "pareto_bonus": pareto_bonus,
                 "bc_weight": bc_weight,
                 "lr": lr,
@@ -1162,6 +1187,8 @@ def train(config_path: str, save_dir: str):
         constraint_anchor=constraint_anchor,
         constraint_extend_low=constraint_extend_low,
         constraint_extend_high=constraint_extend_high,
+        constraint_source=constraint_source,
+        constraint_ref_extend=constraint_ref_extend,
     )
 
     # Enable Pareto bonus (hypervolume improvement reward)
