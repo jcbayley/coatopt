@@ -55,6 +55,13 @@ class DataConfig:
     apply_air_penalty: bool = True
     air_penalty_weight: float = 0.5
 
+    # Pareto archive resolution, in normalised-reward units. Candidates landing
+    # in the same eps-box count as the same trade-off and only the best is kept,
+    # which bounds the archive instead of letting it grow with every episode.
+    # 0.0005 costs ~0.05% of the hypervolume; raise it for a smaller front
+    # (0.005 costs ~0.6%). 0.0 stores every distinct point.
+    pareto_epsilon: float = 0.0005
+
     # Preference constraints (disabled by default for SB3)
     apply_preference_constraints: bool = False
 
@@ -165,6 +172,7 @@ def load_config(config_path: str) -> Config:
                 "max_thickness",
                 "air_penalty_weight",
                 "objective_bounds_penalty_weight",
+                "pareto_epsilon",
             ):
                 val = float(value)
                 # Convert nm to meters if value > 1e-3 (e.g. 1550 -> 1550e-9)

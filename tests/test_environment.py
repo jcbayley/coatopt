@@ -881,3 +881,105 @@ run_name = test_run
     assert abs(cfg.data.beam_radius - 0.05) < 1e-6
     assert cfg.data.frequency == 120.0
     assert cfg.data.temperature == 295.0
+
+
+class TestParetoArchiveEpsilon:
+    """Test the epsilon-box Pareto archive."""
+
+    @staticmethod
+    def _archive(eps, rewards):
+        """Feed reward vectors through flush() one batch at a time."""
+        env = CoatingEnvironment.__new__(CoatingEnvironment)
+        env.multi_objective = True
+        env.pareto_epsilon = eps
+        env.pareto_front_rewards = []
+        env.pareto_front_values = []
+        env.pareto_front_episodes = []
+        env.pending_pareto_candidates = []
+        for start in range(0, len(rewards), 8):
+            for i, r in enumerate(rewards[start : start + 8], start):
+                env.pending_pareto_candidates.append((r, r * 2.0, None, f"ep{i}"))
+            env.flush_pareto_candidates()
+        return env
+
+    @staticmethod
+    def _spread_front(n=400, seed=0):
+        """Points scattered over a concave 3-objective trade-off surface."""
+        rng = np.random.default_rng(seed)
+        u, v = rng.random(n), rng.random(n)
+        return np.stack([u, v * (1 - u), (1 - u) * (1 - v)], axis=1)
+
+    def test_epsilon_bounds_the_archive(self):
+        """A coarser grid must never store more points than a finer one."""
+        rewards = self._spread_front()
+        sizes = [
+            len(self._archive(eps, rewards).pareto_front_rewards)
+            for eps in (0.01, 0.05, 0.1)
+        ]
+        assert sizes == sorted(sizes, reverse=True), sizes
+        assert sizes[-1] < len(rewards)
+
+    def test_one_point_per_box_and_no_dominated_box(self):
+        """The two invariants the archive is supposed to maintain."""
+        from coatopt.environments.environment import _dominated_by
+
+        eps = 0.05
+        env = self._archive(eps, self._spread_front())
+        stored = np.array([r for r, _ in env.pareto_front_rewards])
+        boxes = np.floor(stored / eps)
+        assert len({tuple(b) for b in boxes}) == len(boxes)
+        assert not _dominated_by(boxes, boxes).any()
+
+    def test_parallel_front_lists_stay_aligned(self):
+        """Rewards, values and episodes are indexed together elsewhere."""
+        env = self._archive(0.05, self._spread_front())
+        assert (
+            len(env.pareto_front_rewards)
+            == len(env.pareto_front_values)
+            == len(env.pareto_front_episodes)
+        )
+        for (reward, _), (value, _) in zip(
+            env.pareto_front_rewards, env.pareto_front_values
+        ):
+            assert np.allclose(np.array(value), np.array(reward) * 2.0)
+
+    def test_epsilon_zero_keeps_every_non_dominated_point(self):
+        """eps = 0 must reproduce plain non-dominated filtering."""
+        from coatopt.environments.environment import _dominated_by
+
+        rewards = self._spread_front(n=200, seed=1)
+        env = self._archive(0.0, rewards)
+        stored = np.array([r for r, _ in env.pareto_front_rewards])
+        expected = rewards[~_dominated_by(rewards, rewards)]
+        assert len(stored) == len(expected)
+        assert not _dominated_by(stored, stored).any()
+
+    def test_better_point_replaces_the_incumbent_in_its_box(self):
+        """A box keeps its best member, not whichever arrived first."""
+        eps = 0.1
+        weak = np.array([[0.51, 0.51, 0.51]])
+        strong = np.array([[0.59, 0.59, 0.59]])  # same box, strictly better
+        env = self._archive(eps, np.vstack([weak, strong]))
+        stored = np.array([r for r, _ in env.pareto_front_rewards])
+        assert len(stored) == 1
+        assert np.allclose(stored[0], strong[0])
+
+    def test_legacy_archive_with_several_points_per_box_is_collapsed(self):
+        """An archive restored from a pre-epsilon checkpoint gets compacted."""
+        eps = 0.1
+        env = CoatingEnvironment.__new__(CoatingEnvironment)
+        env.multi_objective = True
+        env.pareto_epsilon = eps
+        crowded = [[0.51, 0.51, 0.51], [0.52, 0.52, 0.52], [0.53, 0.53, 0.53]]
+        env.pareto_front_rewards = [(r, None) for r in crowded]
+        env.pareto_front_values = [(r, None) for r in crowded]
+        env.pareto_front_episodes = [None] * len(crowded)
+        env.pending_pareto_candidates = [
+            (np.array([0.05, 0.95, 0.05]), np.zeros(3), None, None)
+        ]
+        env.flush_pareto_candidates()
+        stored = np.array([r for r, _ in env.pareto_front_rewards])
+        boxes = np.floor(stored / eps)
+        assert len({tuple(b) for b in boxes}) == len(boxes)
+        # The best of the three crowded points is the one that survives
+        assert any(np.allclose(s, [0.53, 0.53, 0.53]) for s in stored)
