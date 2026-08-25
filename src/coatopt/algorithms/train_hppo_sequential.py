@@ -1236,6 +1236,14 @@ def train(config_path: str, save_dir: str):
     ep_policy_std = []          # realised sampling std of the truncated normal
     ep_thickness_mean = []
     ep_thickness_within = []    # spread of layers within one design
+    # Per-episode constraint thresholds and target. Logging fires once per
+    # update, so reading env.constraints there samples one episode out of
+    # every episodes_per_update; when that stride is a whole number of
+    # objective cycles the same phase is sampled every time and one
+    # objective's column reads 0.0 for the entire run. Record per episode and
+    # aggregate over the window instead.
+    ep_constraints = []
+    ep_targets = []
     sample_designs = []  # Track sample designs during warmup for debugging
     training_history = []  # periodic metrics rows for training_curves.png
     # Logging and checkpointing are checked once per update, so episode_count
@@ -1380,6 +1388,15 @@ def train(config_path: str, save_dir: str):
                         ep_thickness_within.append(
                             float(np.std(episode_sampled_thicknesses))
                         )
+                        # Captured before reset() overwrites them for the next
+                        # episode, so these are the thresholds this episode ran under
+                        ep_constraints.append(dict(env.env.constraints))
+                        ep_targets.append(env.env.target_objective)
+                        # Only the last 100 are ever read; cap so a 150k-episode
+                        # run does not carry a dict per episode
+                        if len(ep_constraints) > 200:
+                            del ep_constraints[:-100]
+                            del ep_targets[:-100]
 
                         # Sample designs during warmup for debugging (keep last 100)
                         if env.is_warmup:
@@ -1593,9 +1610,24 @@ def train(config_path: str, save_dir: str):
             for obj, best in env.env.warmup_best_rewards.items():
                 metrics[f"warmup_best.{obj}"] = best
 
-            # Current constraint thresholds (0.0 during warmup)
-            for obj in objectives:
-                metrics[f"constraint.{obj}"] = float(env.env.constraints.get(obj, 0.0))
+            # Constraint thresholds over the window, averaged only across the
+            # episodes where each objective was actually constrained, so a
+            # column no longer depends on which phase the log happened to land
+            # on. constraint.<obj>_frac is how often it was constrained at all;
+            # target.<obj>_frac how often it was the target. Both are 0.0
+            # during warmup, when nothing is constrained.
+            if ep_constraints:
+                window = ep_constraints[-100:]
+                target_window = ep_targets[-100:]
+                for obj in objectives:
+                    held = [c[obj] for c in window if obj in c]
+                    metrics[f"constraint.{obj}"] = (
+                        float(np.mean(held)) if held else 0.0
+                    )
+                    metrics[f"constraint.{obj}_frac"] = len(held) / len(window)
+                    metrics[f"target.{obj}_frac"] = (
+                        target_window.count(obj) / len(target_window)
+                    )
 
             # Monitor air material bias (check if it's shooting up)
             air_bias = float(policy.material_head.bias[0].item())
