@@ -639,6 +639,48 @@ class TestCoatingEnvironmentConstrainedTraining:
         # Should have penalty for reflectivity constraint violation
         assert penalty > 0
 
+    def test_constraint_range_falls_back_on_a_sparse_front(
+        self, basic_config, materials
+    ):
+        """Too few front points to measure a spread: use objective_bounds."""
+        env = CoatingEnvironment(basic_config, materials)
+        env.enable_constrained_training(constraint_anchor_mode="absolute")
+        env.pareto_front_rewards = [([0.4, 0.6], None), ([0.8, 0.2], None)]
+
+        assert env.constraint_range("reflectivity") == (0.0, 1.0)
+
+    def test_constraint_range_spans_the_front_plus_extensions(
+        self, basic_config, materials
+    ):
+        """Range is the front's own spread, widened by the two fractions."""
+        env = CoatingEnvironment(basic_config, materials)
+        env.enable_constrained_training(
+            constraint_extend_low=0.1, constraint_extend_high=0.5
+        )
+        # reflectivity spans 0.2 -> 0.7, so a width of 0.5
+        env.pareto_front_rewards = [([0.2 + 0.05 * i, 0.5], None) for i in range(11)]
+
+        low, high = env.constraint_range("reflectivity")
+        assert low == pytest.approx(0.2 - 0.1 * 0.5)
+        assert high == pytest.approx(0.7 + 0.5 * 0.5)
+
+    def test_constraint_range_is_invariant_to_the_reward_scale(
+        self, basic_config, materials
+    ):
+        """An affine rescale of the reward moves the range with it, not within it."""
+        env = CoatingEnvironment(basic_config, materials)
+        env.enable_constrained_training()
+        front = [0.30 + 0.02 * i for i in range(11)]
+        env.pareto_front_rewards = [([r, 0.5], None) for r in front]
+        low, high = env.constraint_range("reflectivity")
+
+        # Same designs under bounds twice as wide, offset by 0.1
+        env.pareto_front_rewards = [([0.1 + 2 * r, 0.5], None) for r in front]
+        low2, high2 = env.constraint_range("reflectivity")
+
+        assert low2 == pytest.approx(0.1 + 2 * low)
+        assert high2 == pytest.approx(0.1 + 2 * high)
+
     def test_update_warmup_best(self, basic_config, materials, capsys):
         """Test warmup best reward tracking."""
         env = CoatingEnvironment(basic_config, materials)

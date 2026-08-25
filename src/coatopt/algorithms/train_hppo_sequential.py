@@ -19,6 +19,8 @@ Config section: [hppo_sequential]
   constraint_level_schedule = cycle        # "cycle": repeat the ramp; "ramp": climb once, then hold at the top
   update_constraint_bounds = false         # keep the per-objective bests anchoring the thresholds rising after warmup
   constraint_anchor        = warmup        # "warmup": scale thresholds by this run's warmup best; "absolute": by the normalised 1.0, rising if beaten
+  constraint_extend_low    = 0.2           # widen the low end of the constraint range by this fraction of the front's spread
+  constraint_extend_high   = 0.2           # widen the high end likewise; this is what demands more than the run has reached
   pareto_bonus             = 0.0            # Hypervolume improvement bonus
   bc_weight                = 0.1            # Behavior cloning weight from Pareto episodes (0.0 = disabled)
   bc_selection             = target         # "target": imitate archive best for current target+constraints; "all": whole front
@@ -89,6 +91,8 @@ class CoatOptHybridEnv(gym.Env):
         constraint_level_schedule: str = "cycle",
         update_constraint_bounds: bool = False,
         constraint_anchor: str = "warmup",
+        constraint_extend_low: float = 0.2,
+        constraint_extend_high: float = 0.2,
     ):
         super().__init__()
         self.env = CoatingEnvironment(config, materials)
@@ -127,6 +131,8 @@ class CoatOptHybridEnv(gym.Env):
             constraint_penalty=constraint_penalty,
             update_constraint_bounds=update_constraint_bounds,
             constraint_anchor_mode=constraint_anchor,
+            constraint_extend_low=constraint_extend_low,
+            constraint_extend_high=constraint_extend_high,
         )
 
         # Action space: Dict with discrete material + continuous thickness
@@ -222,17 +228,19 @@ class CoatOptHybridEnv(gym.Env):
             else:
                 level = sweep % self.steps_per_objective
 
-            # Set constraints on other objectives
+            # Set constraints on other objectives, drawn from the range the
+            # front currently spans rather than a fixed [0, anchor] interval
             max_frac = (level + 1) / self.steps_per_objective
             constraints = {}
             for i, obj in enumerate(self.objectives):
                 if i != obj_idx:
-                    frac = (
-                        np.random.uniform(0, max_frac)
+                    low, high = self.env.constraint_range(obj)
+                    top = low + max_frac * (high - low)
+                    constraints[obj] = (
+                        np.random.uniform(low, top)
                         if self.randomise_constraints
-                        else max_frac
+                        else top
                     )
-                    constraints[obj] = frac * self.env.constraint_anchor(obj)
 
             self.env.target_objective = target_obj
             self.env.constraints = constraints
@@ -1080,6 +1088,9 @@ def train(config_path: str, save_dir: str):
     # repeat runs solve different problems); "absolute" scales by the
     # normalised reward's own 1.0, rising only if a run beats it.
     constraint_anchor = _get("constraint_anchor", "warmup", str).strip().lower()
+    # Fraction of the front's own spread to widen each end of that range by
+    constraint_extend_low = _get("constraint_extend_low", 0.2, float)
+    constraint_extend_high = _get("constraint_extend_high", 0.2, float)
 
     # Parse hidden layers
     hidden_str = _get("hidden", "[256, 256]")
@@ -1117,6 +1128,8 @@ def train(config_path: str, save_dir: str):
                 "constraint_level_schedule": constraint_level_schedule,
                 "update_constraint_bounds": update_constraint_bounds,
                 "constraint_anchor": constraint_anchor,
+                "constraint_extend_low": constraint_extend_low,
+                "constraint_extend_high": constraint_extend_high,
                 "pareto_bonus": pareto_bonus,
                 "bc_weight": bc_weight,
                 "lr": lr,
@@ -1147,6 +1160,8 @@ def train(config_path: str, save_dir: str):
         constraint_level_schedule=constraint_level_schedule,
         update_constraint_bounds=update_constraint_bounds,
         constraint_anchor=constraint_anchor,
+        constraint_extend_low=constraint_extend_low,
+        constraint_extend_high=constraint_extend_high,
     )
 
     # Enable Pareto bonus (hypervolume improvement reward)

@@ -19,6 +19,11 @@ from ..utils.metrics import (
 )
 
 
+# Below this the front is too sparse for its spread to mean anything, so
+# constraint_range falls back to the objective_bounds scale.
+MIN_FRONT_FOR_CONSTRAINT_RANGE = 10
+
+
 def _dominated_by(points: np.ndarray, others: np.ndarray) -> np.ndarray:
     """Mask of points that some row of `others` dominates (maximisation).
 
@@ -142,6 +147,8 @@ class CoatingEnvironment:
         self.use_constrained_training = False  # Set by wrapper if needed
         self.update_constraint_bounds = False  # Set by enable_constrained_training
         self.constraint_anchor_mode = "warmup"  # Set by enable_constrained_training
+        self.constraint_extend_low = 0.2  # Set by enable_constrained_training
+        self.constraint_extend_high = 0.2  # Set by enable_constrained_training
         self.episode_count = 0
         self.is_warmup = True
         self.target_objective = None
@@ -354,6 +361,30 @@ class CoatingEnvironment:
             return max(1.0, best)
         return best
 
+    def constraint_range(self, objective: str) -> Tuple[float, float]:
+        """Reward range to draw this objective's constraint threshold from.
+
+        objective_bounds only fixes an arbitrary origin and unit for the
+        reward, so a fixed [0, anchor] interval leaves it to that guess how
+        many thresholds land where designs actually are. Taking the range
+        from the front's own spread instead makes it invariant to the guess,
+        since the spread carries the same units. Both ends are widened by a
+        fraction of that spread; the upper one is what asks for thresholds no
+        design has met yet, and the lower one keeps the opposite corner
+        reachable so the front can still extend downwards.
+        """
+        idx = self.optimise_parameters.index(objective)
+        rewards = [r[idx] for r, _ in self.pareto_front_rewards]
+        if len(rewards) < MIN_FRONT_FOR_CONSTRAINT_RANGE:
+            return 0.0, self.constraint_anchor(objective)
+
+        lo, hi = min(rewards), max(rewards)
+        width = hi - lo
+        return (
+            lo - self.constraint_extend_low * width,
+            hi + self.constraint_extend_high * width,
+        )
+
     def enable_constrained_training(
         self,
         warmup_episodes_per_objective: int = 200,
@@ -362,6 +393,8 @@ class CoatingEnvironment:
         constraint_penalty: float = 10.0,
         update_constraint_bounds: bool = False,
         constraint_anchor_mode: str = "warmup",
+        constraint_extend_low: float = 0.2,
+        constraint_extend_high: float = 0.2,
     ):
         """Enable two-phase constrained training.
 
@@ -380,6 +413,8 @@ class CoatingEnvironment:
         self.use_constrained_training = True
         self.update_constraint_bounds = update_constraint_bounds
         self.constraint_anchor_mode = constraint_anchor_mode
+        self.constraint_extend_low = constraint_extend_low
+        self.constraint_extend_high = constraint_extend_high
         self.warmup_episodes_per_objective = warmup_episodes_per_objective
         self.total_warmup_episodes = warmup_episodes_per_objective * len(
             self.optimise_parameters
