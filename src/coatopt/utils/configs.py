@@ -51,10 +51,6 @@ class DataConfig:
         }
     )
 
-    # Air penalty (penalize early termination)
-    apply_air_penalty: bool = True
-    air_penalty_weight: float = 0.5
-
     # Pareto archive resolution, in normalised-reward units. Candidates landing
     # in the same eps-box count as the same trade-off and only the best is kept,
     # which bounds the archive instead of letting it grow with every episode.
@@ -170,7 +166,6 @@ def load_config(config_path: str) -> Config:
                 "temp",
                 "min_thickness",
                 "max_thickness",
-                "air_penalty_weight",
                 "objective_bounds_penalty_weight",
                 "pareto_epsilon",
             ):
@@ -196,6 +191,13 @@ def load_config(config_path: str) -> Config:
                     data_kwargs[key] = value
             else:
                 data_kwargs[key] = value
+
+    # Keys that used to be DataConfig fields. apply_air_penalty and
+    # air_penalty_weight were parsed into the config but never read by any
+    # environment, so setting them did nothing; dropped here rather than
+    # rejected so archived config.ini files still load.
+    for retired in ("apply_air_penalty", "air_penalty_weight"):
+        data_kwargs.pop(retired, None)
 
     # Map beam radius aliases (INI keys are lowercased by configparser) onto the
     # wBeam/beam_radius dataclass fields, removing the alias keys so
