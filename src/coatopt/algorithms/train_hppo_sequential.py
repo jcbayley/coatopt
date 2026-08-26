@@ -178,7 +178,9 @@ class CoatOptHybridEnv(gym.Env):
 
     def _get_obs(self, state) -> np.ndarray:
         """Convert state to observation with objective weights and constraint thresholds."""
-        tensor = state.get_observation_tensor(pre_type="lstm")
+        tensor = state.get_observation_tensor(
+            pre_type="lstm", max_thickness=self.env.max_thickness
+        )
         base = tensor.numpy().flatten().astype(np.float32)
         n_obj = len(self.objectives)
         obs = np.empty(len(base) + 2 * n_obj, dtype=np.float32)
@@ -444,6 +446,17 @@ class AttentionEncoder(nn.Module):
 
 PRE_MODELS = {"lstm": LSTMEncoder, "attention": AttentionEncoder}
 
+# Thickness sampling width, as a fraction of (max_t - min_t) rather than an
+# absolute value. An absolute clamp does not mean the same thing at every
+# thickness range: at scale ~ the range the truncated normal is
+# indistinguishable from uniform and d(log_prob)/d(log_std) falls to ~2e-4, so
+# the head sits on a dead plateau and never learns a width. Measured on a
+# 20-layer 3-objective run at [0.01, 0.40] the realised std stayed pinned at
+# the uniform limit (0.1123) for all 150k episodes; the same run at
+# [0.10, 0.40] escaped by chance around episode 13k and reached 0.024. These
+# bounds put the whole usable interval in the informative region at any range.
+LOG_STD_MIN, LOG_STD_MAX = -5.0, -1.2  # 0.7% .. 30% of the thickness range
+
 
 class HybridActorCritic(nn.Module):
     """Actor-Critic with hybrid discrete+continuous actions.
@@ -591,11 +604,16 @@ class HybridActorCritic(nn.Module):
         ).float()
         thickness_input = torch.cat([features, material_onehot], dim=-1)
         mean_raw = self.thickness_mean(thickness_input).squeeze(-1)
-        mean = self.min_t + (self.max_t - self.min_t) * torch.sigmoid(mean_raw)
-        log_std = torch.clamp(self.thickness_logstd(thickness_input).squeeze(-1), -4, 0)
+        width = self.max_t - self.min_t
+        mean = self.min_t + width * torch.sigmoid(mean_raw)
+        log_std = torch.clamp(
+            self.thickness_logstd(thickness_input).squeeze(-1),
+            LOG_STD_MIN,
+            LOG_STD_MAX,
+        )
         return TruncatedNormalDist(
             loc=mean,
-            scale=torch.exp(log_std),
+            scale=width * torch.exp(log_std),
             a=torch.full_like(mean, self.min_t),
             b=torch.full_like(mean, self.max_t),
         )
@@ -1228,6 +1246,13 @@ def train(config_path: str, save_dir: str):
         initial_air_bias = -3.0
         policy.material_head.bias[0] = initial_air_bias
 
+        # Start the thickness width at the wide end of its clamp. The default
+        # linear init puts roughly half of states above LOG_STD_MAX, where the
+        # clamp passes no gradient, so the head would have to random-walk down
+        # before it could learn anything.
+        policy.thickness_logstd.weight.mul_(0.01)
+        policy.thickness_logstd.bias.fill_(LOG_STD_MAX)
+
     if verbose:
         print(
             f"Initialized air material bias: {initial_air_bias:.2f} (low probability)"
@@ -1304,6 +1329,11 @@ def train(config_path: str, save_dir: str):
         env.env.pareto_front_values = ckpt["pareto"]["values"]
         env.env.pareto_front_episodes = ckpt["pareto"]["episodes"]
         env.env.warmup_best_rewards = ckpt["pareto"]["warmup_best"]
+        # Only-grows, so it cannot be rebuilt from the restored front alone
+        spread = ckpt["pareto"].get("constraint_spread")
+        if spread:
+            env.env._constraint_spread.update(spread)
+        env.env.n_evaluations = ckpt["pareto"].get("n_evaluations", 0)
         env.episode_count = ckpt["episode"]
         env.is_warmup = ckpt["meta"]["is_warmup"]
         env.env.is_warmup = ckpt["meta"]["is_warmup"]
@@ -1676,7 +1706,10 @@ def train(config_path: str, save_dir: str):
             # One episode produces one design, so episodes are the evaluation
             # count. Named to match what the genetic trainer records, so the
             # two can be compared on designs evaluated rather than wall clock.
-            metrics["evaluations"] = env.episode_count
+            # Designs scored, not episodes run: the genetic trainer logs
+            # pymoo's n_eval here, and the two only agree when an episode costs
+            # exactly one evaluation (see CoatingEnvironment.n_evaluations)
+            metrics["evaluations"] = env.env.n_evaluations
             training_history.append(metrics)
 
             if mlflow.active_run():
@@ -1722,6 +1755,8 @@ def train(config_path: str, save_dir: str):
                                 "values": env.env.pareto_front_values,
                                 "episodes": env.env.pareto_front_episodes,
                                 "warmup_best": env.env.warmup_best_rewards,
+                                "constraint_spread": env.env._constraint_spread,
+                                "n_evaluations": env.env.n_evaluations,
                             },
                             "meta": {
                                 "is_warmup": env.is_warmup,

@@ -184,6 +184,15 @@ class CoatingEnvironment:
         # Bumped whenever the front changes, so _front_crowding can cache
         self._front_version = 0
         self._crowding_cache = None
+        # Highest front spread seen per objective; see constraint_spread
+        self._constraint_spread = {obj: None for obj in self.optimise_parameters}
+        # Designs scored by the merit function since the run started. This is
+        # the search's real cost and the only budget that means the same thing
+        # for an RL run and a genetic one, so it is what convergence is plotted
+        # against. Episodes are not a stand-in: with use_intermediate_reward a
+        # single episode scores the partial stack after every layer, so a
+        # 20-layer episode spends 20 evaluations, not one.
+        self.n_evaluations = 0
         # Grid resolution for the archive, in normalised-reward units. See
         # flush_pareto_candidates. 0.0 falls back to storing every distinct point.
         self.pareto_epsilon = float(getattr(data, "pareto_epsilon", 0.0005))
@@ -273,6 +282,7 @@ class CoatingEnvironment:
 
         # Calculate reward
         if finished or self.use_intermediate_reward:
+            self.n_evaluations += 1
             total_reward, vals, reward_components = self.compute_training_reward(
                 self.current_state,
                 objective_weights=objective_weights,
@@ -390,7 +400,40 @@ class CoatingEnvironment:
             hi + self.constraint_extend_high * width,
         )
 
-    def _front_crowding(self) -> Tuple[np.ndarray, np.ndarray]:
+    def constraint_spread(self, objective: str) -> float:
+        """Scale this objective's constraint violations are measured against.
+
+        A violation is a shortfall in normalised reward, and a reward unit does
+        not mean the same thing in each objective: objective_bounds fixes an
+        arbitrary origin and unit per objective, so how far the front stretches
+        in one is unrelated to how far it stretches in another. Measured on a
+        3-objective 20-layer archive the front spans 1.29 in reflectivity, 0.77
+        in absorption and 0.13 in thermal noise, so a flat constraint_penalty
+        pushes about ten times harder on reflectivity than on thermal noise for
+        no reason anyone chose. Dividing by the spread makes a violation read as
+        "this fraction of the front's own range", which says the same thing in
+        every objective and does not move when objective_bounds, the layer count
+        or the thickness range change.
+
+        The spread only ever grows. The epsilon-box archive can displace the
+        point holding an extreme, so a freshly measured spread can shrink, and a
+        scale free to move both ways would score the same design differently
+        from one rollout to the next.
+
+        Returns 1.0 until the front is large enough to measure, which leaves the
+        penalty exactly as it was before this scaling existed.
+        """
+        if len(self.pareto_front_rewards) >= MIN_FRONT_FOR_CONSTRAINT_RANGE:
+            _, _, spans = self._front_crowding()
+            idx = self.optimise_parameters.index(objective)
+            measured = float(spans[idx])
+            best = self._constraint_spread.get(objective)
+            if measured > 0 and (best is None or measured > best):
+                self._constraint_spread[objective] = measured
+        best = self._constraint_spread.get(objective)
+        return best if best else 1.0
+
+    def _front_crowding(self) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
         """Sampling weights over the front, and each point's local spacing.
 
         Crowding distance in the NSGA-II sense: a point's score is the sum,
@@ -401,7 +444,9 @@ class CoatingEnvironment:
         already dense. The per-objective neighbour gaps are returned alongside
         because they set how far past a reference point it is worth asking for
         - a step measured in local spacing rather than in the front's global
-        spread, which is what keeps the ask reachable.
+        spread, which is what keeps the ask reachable. The per-objective spans
+        come back with them: they are already measured here, and
+        constraint_spread needs exactly the same numbers.
 
         Cached against ``_front_version`` so it is recomputed once per flush
         rather than once per episode. Measured at 3 objectives this costs
@@ -415,11 +460,12 @@ class CoatingEnvironment:
         key = (self._front_version, len(front))
         cached = self._crowding_cache
         if cached is not None and cached[0] == key:
-            return cached[1], cached[2]
+            return cached[1], cached[2], cached[3]
 
         n, m = front.shape
         crowd = np.zeros(n)
         gaps = np.zeros((n, m))
+        spans = np.zeros(m)
         for j in range(m):
             order = np.argsort(front[:, j])
             col = front[order, j]
@@ -432,6 +478,7 @@ class CoatingEnvironment:
             gaps[order, j] = g
 
             span = col[-1] - col[0]
+            spans[j] = span
             if span > 0:
                 if n > 2:
                     crowd[order[1:-1]] += (col[2:] - col[:-2]) / span
@@ -445,8 +492,8 @@ class CoatingEnvironment:
         total = weights.sum()
         weights = weights / total if total > 0 else np.full(n, 1.0 / n)
 
-        self._crowding_cache = (key, weights, gaps)
-        return weights, gaps
+        self._crowding_cache = (key, weights, gaps, spans)
+        return weights, gaps, spans
 
     def constraint_reference(
         self, target_objective: str, level_frac: float = 1.0, randomise: bool = True
@@ -474,7 +521,7 @@ class CoatingEnvironment:
         front = np.asarray(
             [r for r, _ in self.pareto_front_rewards], dtype=float
         )
-        weights, gaps = self._front_crowding()
+        weights, gaps, _ = self._front_crowding()
         k = int(np.random.choice(len(front), p=weights))
 
         extend = self.constraint_ref_extend * level_frac
@@ -956,7 +1003,9 @@ class CoatingEnvironment:
             norm_reward = rewards.get(obj, 0.0)
 
             if norm_reward < threshold:
-                violation = threshold - norm_reward
+                # In units of this objective's own front spread, so
+                # constraint_penalty means the same thing for all of them
+                violation = (threshold - norm_reward) / self.constraint_spread(obj)
                 penalty += violation * self.constraint_penalty
 
         return penalty

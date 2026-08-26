@@ -1122,7 +1122,7 @@ class TestReferenceConstraints:
         xs = np.concatenate([dense, sparse])
         env.pareto_front_rewards = [([x, 1.0 - x], None) for x in xs]
         env._front_version += 1
-        weights, gaps = env._front_crowding()
+        weights, gaps, _ = env._front_crowding()
         assert weights[30:].sum() > weights[:30].sum()
         assert gaps[30:, 0].mean() > gaps[:30, 0].mean()
 
@@ -1131,8 +1131,194 @@ class TestReferenceConstraints:
     ):
         env = self._env(basic_config, materials)
         self._front(env)
-        w1, _ = env._front_crowding()
-        w2, _ = env._front_crowding()
+        w1, _, _ = env._front_crowding()
+        w2, _, _ = env._front_crowding()
         assert w1 is w2
         self._front(env, n=41, seed=1)
         assert env._front_crowding()[0] is not w1
+
+
+def test_observation_scaling_puts_columns_on_a_common_scale(materials):
+    """max_thickness scales thickness, n and k onto comparable ranges.
+
+    Raw, the three columns span 0.01-0.4, 1-3.7 and 0-5e-3, so k is three
+    orders below n despite being what the absorption objective turns on.
+    """
+    state = CoatingState(max_layers=4, n_materials=len(materials), materials=materials)
+    state.set_layer(0, 0.01, 1)
+    state.set_layer(1, 0.40, 3)
+
+    raw = state.get_observation_tensor(pre_type="lstm").view(4, -1)
+    scaled = state.get_observation_tensor(pre_type="lstm", max_thickness=0.40).view(4, -1)
+
+    # Thickness reaches the top of its own range instead of a fraction of it
+    assert raw[1, 0] == pytest.approx(0.40)
+    assert scaled[1, 0] == pytest.approx(1.0)
+
+    # n and k both land in [0, 1], and k now separates the materials rather
+    # than sitting at ~0 for everything but the most absorbing one
+    for col in (-2, -1):
+        assert scaled[:, col].min() >= 0.0
+        assert scaled[:, col].max() == pytest.approx(1.0)
+    assert scaled[0, -1] > 0.05, "low-k material should not collapse onto zero"
+
+
+def test_observation_scaling_keeps_padding_distinguishable(materials):
+    """A layer at min_thickness must not scale down onto the padding value.
+
+    The sequence encoders count placed layers with ``thickness > 0`` on column
+    0, so scaling has to leave 0 meaning "no layer here".
+    """
+    state = CoatingState(max_layers=6, n_materials=len(materials), materials=materials)
+    state.set_layer(0, 0.01, 1)
+    state.set_layer(1, 0.25, 2)
+    state.set_layer(2, 0.01, 3)
+
+    scaled = state.get_observation_tensor(pre_type="lstm", max_thickness=0.40).view(6, -1)
+    assert int((scaled[:, 0] > 0).sum()) == 3
+    assert scaled[3:, 0].abs().max() == 0.0
+
+
+def test_observation_scaling_is_invariant_to_the_thickness_range(materials):
+    """The same fraction of the range gives the same observation at any range.
+
+    This is the point of scaling: a network tuned at [0.1, 0.4] should see the
+    same input distribution at [0.01, 0.4] rather than needing to be retuned.
+    """
+    a = CoatingState(max_layers=3, n_materials=len(materials), materials=materials)
+    b = CoatingState(max_layers=3, n_materials=len(materials), materials=materials)
+    a.set_layer(0, 0.20, 2)  # half of a 0.40 range
+    b.set_layer(0, 0.40, 2)  # half of a 0.80 range
+
+    obs_a = a.get_observation_tensor(pre_type="lstm", max_thickness=0.40)
+    obs_b = b.get_observation_tensor(pre_type="lstm", max_thickness=0.80)
+    assert np.allclose(obs_a.numpy(), obs_b.numpy())
+
+
+class TestConstraintSpread:
+    """Test that constraint violations are measured in per-objective units."""
+
+    @staticmethod
+    def _env(basic_config, materials, **kw):
+        env = CoatingEnvironment(basic_config, materials)
+        env.enable_constrained_training(**kw)
+        env.is_warmup = False
+        return env
+
+    @staticmethod
+    def _front(env, spread_a=1.0, spread_b=0.1, n=40):
+        """A front deliberately stretched much further in one objective."""
+        u = np.linspace(0.0, 1.0, n)
+        pts = np.stack([u * spread_a, (1.0 - u) * spread_b], axis=1)
+        env.pareto_front_rewards = [(list(p), None) for p in pts]
+        env._front_version += 1
+        return pts
+
+    def test_falls_back_to_one_while_the_front_is_too_small(
+        self, basic_config, materials
+    ):
+        """Below the measurement threshold the penalty must be unchanged."""
+        env = self._env(basic_config, materials)
+        env.pareto_front_rewards = [([0.4, 0.6], None), ([0.8, 0.2], None)]
+        for obj in env.optimise_parameters:
+            assert env.constraint_spread(obj) == 1.0
+
+    def test_measures_each_objective_own_spread(self, basic_config, materials):
+        env = self._env(basic_config, materials)
+        self._front(env, spread_a=1.0, spread_b=0.1)
+        a, b = env.optimise_parameters
+        assert env.constraint_spread(a) == pytest.approx(1.0)
+        assert env.constraint_spread(b) == pytest.approx(0.1)
+
+    def test_spread_only_ever_grows(self, basic_config, materials):
+        """A displaced extreme must not rescale designs already scored."""
+        env = self._env(basic_config, materials)
+        a = env.optimise_parameters[0]
+        self._front(env, spread_a=1.0)
+        assert env.constraint_spread(a) == pytest.approx(1.0)
+
+        self._front(env, spread_a=0.3)  # front shrinks back
+        assert env.constraint_spread(a) == pytest.approx(1.0)
+
+        self._front(env, spread_a=2.0)  # but still tracks growth
+        assert env.constraint_spread(a) == pytest.approx(2.0)
+
+    def test_equal_relative_shortfalls_cost_the_same(self, basic_config, materials):
+        """The point of the scaling: the objectives get equal say.
+
+        Raw, a shortfall of 0.05 in an objective spanning 0.1 is penalised the
+        same as 0.05 in one spanning 1.0, so the wide objective dominates.
+        """
+        env = self._env(basic_config, materials, constraint_penalty=1.0)
+        wide, narrow = env.optimise_parameters
+        self._front(env, spread_a=1.0, spread_b=0.1)
+
+        # Half of each objective's own range
+        env.constraints = {wide: 0.5}
+        p_wide = env._compute_constraint_penalty({}, {wide: 0.0, narrow: 0.0})
+        env.constraints = {narrow: 0.05}
+        p_narrow = env._compute_constraint_penalty({}, {wide: 0.0, narrow: 0.0})
+        assert p_wide == pytest.approx(p_narrow)
+        assert p_wide == pytest.approx(0.5)
+
+    def test_met_constraints_are_still_free(self, basic_config, materials):
+        env = self._env(basic_config, materials, constraint_penalty=1.0)
+        wide, narrow = env.optimise_parameters
+        self._front(env)
+        env.constraints = {wide: 0.5, narrow: 0.05}
+        assert env._compute_constraint_penalty({}, {wide: 0.9, narrow: 0.09}) == 0.0
+
+
+class TestEvaluationCounter:
+    """Test that the search's real budget is counted, not episodes."""
+
+    @staticmethod
+    def _env(materials, intermediate):
+        data = DataConfig(
+            n_layers=10,
+            min_thickness=0.01,
+            max_thickness=0.4,
+            use_optical_thickness=True,
+            optimise_parameters=["reflectivity", "absorption"],
+            optimise_targets={"reflectivity": 1.0, "absorption": 0.0},
+            objective_bounds={
+                "reflectivity": [0.0, 0.999999],
+                "absorption": [50000, 1e-3],
+            },
+            use_intermediate_reward=intermediate,
+            combine="sum",
+        )
+        env = CoatingEnvironment(Config(data=data, training=TrainingConfig()), materials)
+        env.reset()
+        return env
+
+    @staticmethod
+    def _episode(env, n_layers=10):
+        rng = np.random.default_rng(0)
+        for _ in range(n_layers):
+            mat = int(rng.integers(1, env.n_materials))
+            *_, finished, _, _, _ = env.step([mat, float(rng.uniform(0.05, 0.35))])
+            if finished:
+                break
+
+    def test_terminal_reward_costs_one_evaluation(self, materials):
+        env = self._env(materials, intermediate=False)
+        self._episode(env)
+        assert env.n_evaluations == 1
+
+    def test_intermediate_reward_costs_one_per_layer(self, materials):
+        """The whole reason episodes cannot stand in for evaluations.
+
+        A genetic run logs designs actually scored, so counting episodes here
+        would put the RL curve an order of magnitude too far left.
+        """
+        env = self._env(materials, intermediate=True)
+        self._episode(env)
+        assert env.n_evaluations == 10
+
+    def test_counter_accumulates_across_episodes(self, materials):
+        env = self._env(materials, intermediate=False)
+        for _ in range(3):
+            env.reset()
+            self._episode(env)
+        assert env.n_evaluations == 3

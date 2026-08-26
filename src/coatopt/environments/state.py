@@ -123,6 +123,7 @@ class CoatingState:
         merit_function_callback=None,
         constraints: Optional[dict] = None,
         objective_names: Optional[list] = None,
+        max_thickness: Optional[float] = None,
         **physics_params,
     ) -> torch.Tensor:
         """
@@ -140,11 +141,45 @@ class CoatingState:
             merit_function_callback: Physics function from environment
             constraints: Dict of constraint thresholds {objective_name: threshold}
             objective_names: Ordered list of objective names for consistent constraint ordering
+            max_thickness: Upper end of the thickness action range. When given,
+                the per-layer columns are put on a common scale (see below);
+                omit it to keep the raw columns.
             **physics_params: Additional physics parameters
 
         Returns:
             Tensor with active layers only (or all layers if pre_type=="lstm")
         """
+        # Per-layer column scaling. The encoder reads these columns straight
+        # off, so their raw magnitudes decide how much of each one it sees, and
+        # those magnitudes have nothing to do with how informative the column
+        # is: thickness spans the action range (0.01-0.4), n spans 1-3.7, and k
+        # spans 0-5e-3, three orders below n despite being the property the
+        # absorption objective turns on. Raw thickness also means the encoder's
+        # input distribution shifts whenever the action range is changed, so a
+        # network tuned at one range has to be retuned at the next.
+        #
+        # Thickness is divided by its own upper bound rather than mapped onto
+        # [0, 1] across [min_t, max_t]: 0 has to keep meaning "no layer placed
+        # here", which is how the sequence encoders count placed layers, and a
+        # layer at min_t must not collide with padding. n is min-maxed across
+        # the material library, k the same after a log (it spans decades, so a
+        # linear map would leave every material but the most absorbing at ~0).
+        scale_features = max_thickness is not None
+        if scale_features:
+            n_vals = [
+                float(m.get("n", 1.0)) for m in self.materials.values()
+            ] or [1.0]
+            k_vals = [
+                float(m.get("k", 0.0)) for m in self.materials.values()
+            ] or [0.0]
+            n_lo, n_hi = min(n_vals), max(n_vals)
+            # Floor a decade below the smallest non-zero k, so a k of 0 lands
+            # at the bottom of the scale instead of at log(0)
+            positive_k = [k for k in k_vals if k > 0]
+            k_floor = min(positive_k) / 10.0 if positive_k else 1.0
+            k_lo = np.log10(k_floor)
+            k_hi = np.log10(max(max(k_vals), k_floor))
+
         # Build layer stack observation
         # For LSTM: include all max_layers (with zero padding for inactive)
         # For others: only include active layers
@@ -172,7 +207,17 @@ class CoatingState:
                 n_val = 1.0  # Default for air
                 k_val = 0.0
 
-            row = [float(thickness)] + material_onehot + [n_val, k_val]
+            t_val = float(thickness)
+            if scale_features:
+                t_val = t_val / max_thickness
+                n_val = (n_val - n_lo) / (n_hi - n_lo) if n_hi > n_lo else 0.0
+                k_val = (
+                    (np.log10(max(k_val, k_floor)) - k_lo) / (k_hi - k_lo)
+                    if k_hi > k_lo
+                    else 0.0
+                )
+
+            row = [t_val] + material_onehot + [n_val, k_val]
             layer_data.append(row)
 
         # Handle empty state (shouldn't happen with LSTM since we pad)
