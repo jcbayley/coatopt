@@ -54,6 +54,7 @@ def run_experiment(
         "moead",
         "sac_multiagent",
         "sac_hybrid",
+        "pcn",
         "hppo_multiagent",
         "hppo_sequential",
         "hppo_hybrid",
@@ -211,6 +212,11 @@ def run_experiment(
 
         results = train(config_path=str(config_backup), save_dir=str(save_dir))
 
+    elif algorithm == "pcn":
+        from coatopt.algorithms.train_pcn import train
+
+        results = train(config_path=str(config_backup), save_dir=str(save_dir))
+
     elif algorithm == "hppo_multiagent":
         from coatopt.algorithms.train_hppo_multiagent import train
 
@@ -233,7 +239,7 @@ def run_experiment(
 
     else:
         raise ValueError(
-            f"Unknown algorithm: {algorithm}. Must be one of: sb3_discrete, sb3_discrete_lstm, sb3_dqn, sb3_simple, morl, morl_discrete, nsga2, hppo, sac_multiagent, sac_hybrid, ppo_multiagent, ppo_sequential, hppo_hybrid, hppo_preference"
+            f"Unknown algorithm: {algorithm}. Must be one of: sb3_discrete, sb3_discrete_lstm, sb3_dqn, sb3_simple, morl, morl_discrete, nsga2, hppo, sac_multiagent, sac_hybrid, pcn, ppo_multiagent, ppo_sequential, hppo_hybrid, hppo_preference"
         )
 
     end_time = time.time()
