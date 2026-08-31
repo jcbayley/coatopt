@@ -35,6 +35,8 @@ Config section: [hppo_sequential]
   clip_range               = 0.2
   ent_coef                 = 0.01
   ent_coef_final           = 0.001          # Final entropy coefficient (annealing target)
+  ent_coef_thickness       =                # Thickness-head entropy coefficient; unset tracks ent_coef
+  ent_coef_thickness_final =                # Its annealing target; unset = the value above, i.e. no annealing
   ent_decay_episodes       = 10000          # Anneal over this many episodes per phase
   vf_coef                  = 0.5
   max_grad_norm            = 0.5
@@ -309,9 +311,17 @@ class RolloutBuffer:
         self.log_probs = []
         self.dones = []
         self.masks = []
+        # Target objective of the episode each step belongs to. Only the
+        # advantage normalisation reads it - the value head is shared - but a
+        # rollout spans as many targets as episodes whenever the phase is
+        # shorter than the rollout, and the grouping has to come from
+        # somewhere.
+        self.target_idxs = []
         self.ptr = 0
 
-    def add(self, obs, material, thickness, reward, value, log_prob, done, mask):
+    def add(
+        self, obs, material, thickness, reward, value, log_prob, done, mask, target_idx
+    ):
         self.observations.append(obs)
         self.materials.append(material)
         self.thicknesses.append(thickness)
@@ -320,6 +330,7 @@ class RolloutBuffer:
         self.log_probs.append(log_prob)
         self.dones.append(done)
         self.masks.append(mask)
+        self.target_idxs.append(target_idx)
         self.ptr += 1
 
     def finalize(
@@ -363,6 +374,7 @@ class RolloutBuffer:
             "episode_last_obs": torch.FloatTensor(observations[ends]),
             "episode_idx": torch.LongTensor(episode_idx),
             "step_idx": torch.LongTensor(step_idx),
+            "target_idxs": torch.LongTensor(self.target_idxs),
         }
 
 
@@ -533,12 +545,16 @@ class HybridActorCritic(nn.Module):
         self.thickness_mean = nn.Linear(prev_dim + n_materials, 1)
         self.thickness_logstd = nn.Linear(prev_dim + n_materials, 1)
 
-        # Value heads - one per objective for stable learning
-        # Each head learns value function for when that objective is the target
+        # One value head, not one per objective. The trunk input already
+        # carries the target one-hot and the constraint thresholds (see
+        # _trunk_features), so the features every head would read are already
+        # target-conditioned. The thresholds are continuous and redrawn every
+        # episode besides, so no finite set of heads can index the subproblem
+        # actually being solved; splitting the last layer per objective only
+        # fragmented the rollout across them, which costs most when the target
+        # cycles every episode.
         self.n_objectives = n_constraints  # Number of objectives
-        self.value_heads = nn.ModuleList(
-            [nn.Linear(prev_dim, 1) for _ in range(self.n_objectives)]
-        )
+        self.value_head = nn.Linear(prev_dim, 1)
 
     def _obs_layers(self, obs):
         """Layer-stack rows of an observation, without the objective tail."""
@@ -618,13 +634,12 @@ class HybridActorCritic(nn.Module):
             b=torch.full_like(mean, self.max_t),
         )
 
-    def forward(self, obs, mask, target_obj_idx, deterministic=False, lstm_state=None):
+    def forward(self, obs, mask, deterministic=False, lstm_state=None):
         """Forward pass returning actions, log_probs, and value.
 
         Args:
             obs: observation tensor
             mask: action mask
-            target_obj_idx: index of target objective (selects which value head to use)
             deterministic: whether to sample or take argmax
             lstm_state: (h, c) carried from this episode's previous step, or
                 None at its first step
@@ -633,7 +648,7 @@ class HybridActorCritic(nn.Module):
             material: sampled material index
             thickness: sampled thickness value
             log_prob: total log probability (discrete + continuous)
-            value: state value V(s) for target objective
+            value: state value V(s)
             lstm_state: updated (h, c) to pass to the next step (None without LSTM)
         """
         seq_features = None
@@ -652,7 +667,7 @@ class HybridActorCritic(nn.Module):
         )
 
         log_prob = dist_d.log_prob(material) + dist_c.log_prob(thickness)
-        value = self.value_heads[target_obj_idx](features).squeeze(-1)
+        value = self.value_head(features).squeeze(-1)
 
         # Realised spread of the truncated normal, which is what sets the
         # search width. It is well below scale once the truncation bites.
@@ -664,7 +679,6 @@ class HybridActorCritic(nn.Module):
         mask,
         materials,
         thicknesses,
-        target_obj_idx,
         episode_last_obs=None,
         episode_idx=None,
         step_idx=None,
@@ -676,7 +690,6 @@ class HybridActorCritic(nn.Module):
             mask: action mask
             materials: material actions
             thicknesses: thickness actions
-            target_obj_idx: index of target objective (selects which value head to use)
             episode_last_obs: final observation per episode; if given with
                 episode_idx/step_idx, the LSTM runs once per episode
                 instead of once per step
@@ -696,10 +709,12 @@ class HybridActorCritic(nn.Module):
         dist_c = self._thickness_dist(features, materials)
 
         log_prob = dist_d.log_prob(materials) + dist_c.log_prob(thicknesses)
-        entropy = dist_d.entropy() + dist_c.entropy()
-        value = self.value_heads[target_obj_idx](features).squeeze(-1)
+        value = self.value_head(features).squeeze(-1)
 
-        return log_prob, value, entropy
+        # The two entropies come back separately because they carry their own
+        # coefficients: the thickness width wants to collapse early for a clean
+        # reward signal, while material exploration wants to stay open.
+        return log_prob, value, dist_d.entropy(), dist_c.entropy()
 
 
 def select_bc_episodes(
@@ -742,7 +757,7 @@ def select_bc_episodes(
 
 
 def compute_bc_loss_from_pareto(
-    policy, pareto_episodes, env_wrapper, target_obj_idx, bc_weight=0.1, batch_size=32
+    policy, pareto_episodes, env_wrapper, bc_weight=0.1, batch_size=32
 ):
     """Compute behavior cloning loss from Pareto front episodes stored in environment.
 
@@ -750,7 +765,6 @@ def compute_bc_loss_from_pareto(
         policy: policy network
         pareto_episodes: list of Pareto front episodes
         env_wrapper: environment wrapper
-        target_obj_idx: index of target objective (for value head selection)
         bc_weight: weight for BC loss
         batch_size: batch size for sampling
     """
@@ -819,9 +833,7 @@ def compute_bc_loss_from_pareto(
     mask_t = torch.FloatTensor(np.array(mask_list))
 
     # Compute log probs from policy
-    log_probs, _, _ = policy.evaluate_actions(
-        obs_t, mask_t, mat_t, thick_t, target_obj_idx
-    )
+    log_probs, *_ = policy.evaluate_actions(obs_t, mask_t, mat_t, thick_t)
     bc_loss = -log_probs.mean()  # Negative log likelihood
 
     return bc_weight * bc_loss
@@ -837,6 +849,7 @@ class PPOAgent:
         gamma: float = 0.99,
         clip_range: float = 0.2,
         ent_coef: float = 0.01,
+        ent_coef_thickness: float = None,
         vf_coef: float = 0.5,
         max_grad_norm: float = 0.5,
     ):
@@ -845,12 +858,17 @@ class PPOAgent:
         self.gamma = gamma
         self.clip_range = clip_range
         self.ent_coef = ent_coef
+        # Entropy coefficient for the thickness head. None tracks ent_coef,
+        # which is the single-coefficient behaviour this had before the split.
+        self.ent_coef_thickness = (
+            ent_coef if ent_coef_thickness is None else ent_coef_thickness
+        )
         self.vf_coef = vf_coef
         self.max_grad_norm = max_grad_norm
         self.lstm_state = None  # carried across rollout steps of an episode
         self.last_thickness_std = float("nan")  # sampling width of the last act()
 
-    def act(self, obs, mask, target_obj_idx, deterministic=False):
+    def act(self, obs, mask, deterministic=False):
         """Sample action from policy.
 
         The LSTM state is carried between calls so each step feeds the LSTM
@@ -860,14 +878,13 @@ class PPOAgent:
         Args:
             obs: observation
             mask: action mask
-            target_obj_idx: index of target objective
             deterministic: whether to sample or take argmax
         """
         with torch.no_grad():
             obs_t = torch.FloatTensor(obs).unsqueeze(0)
             mask_t = torch.FloatTensor(mask).unsqueeze(0)
             material, thickness, log_prob, value, std, self.lstm_state = self.policy(
-                obs_t, mask_t, target_obj_idx, deterministic, self.lstm_state
+                obs_t, mask_t, deterministic, self.lstm_state
             )
             self.last_thickness_std = std.item()
             return (
@@ -882,7 +899,6 @@ class PPOAgent:
         rollout_data: dict,
         n_epochs: int,
         batch_size: int,
-        target_obj_idx: int,
         pareto_episodes=None,
         bc_weight=0.1,
         env_wrapper=None,
@@ -893,7 +909,6 @@ class PPOAgent:
             rollout_data: dict with observations, actions, returns, etc.
             n_epochs: number of optimization epochs
             batch_size: minibatch size
-            target_obj_idx: index of target objective (for value head selection)
             pareto_episodes: optional list of Pareto front episodes for BC loss
             bc_weight: weight for behavior cloning loss
             env_wrapper: environment wrapper (for BC loss)
@@ -905,15 +920,31 @@ class PPOAgent:
         returns = rollout_data["returns"]
         advantages = rollout_data["advantages"]
         masks = rollout_data["masks"]
+        target_idxs = rollout_data["target_idxs"]
 
-        # Normalize advantages
-        advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
+        # Normalise advantages within each target objective rather than across
+        # the whole rollout. A rollout spans several targets whenever the phase
+        # is shorter than it, and the objectives sit at different reward
+        # levels, so one shared mean and std lets "which objective this episode
+        # was" outweigh "were these actions any good" in the advantage. With a
+        # single target this is exactly the old whole-batch normalisation.
+        advantages = advantages.clone()
+        for t in torch.unique(target_idxs):
+            sel = target_idxs == t
+            group = advantages[sel]
+            advantages[sel] = (
+                (group - group.mean()) / (group.std() + 1e-8)
+                if group.numel() > 1
+                else torch.zeros_like(group)
+            )
 
         n_samples = len(obs)
         logs = {
             "policy_loss": 0.0,
             "value_loss": 0.0,
             "entropy": 0.0,
+            "entropy_material": 0.0,
+            "entropy_thickness": 0.0,
             "clip_frac": 0.0,
             "bc_loss": 0.0,
         }
@@ -971,13 +1002,14 @@ class PPOAgent:
                     batch_idx = batch
                     episode_kwargs = {}
 
-                log_probs, values, entropy = self.policy.evaluate_actions(
-                    obs[batch_idx],
-                    masks[batch_idx],
-                    materials[batch_idx],
-                    thicknesses[batch_idx],
-                    target_obj_idx,
-                    **episode_kwargs,
+                log_probs, values, entropy_d, entropy_c = (
+                    self.policy.evaluate_actions(
+                        obs[batch_idx],
+                        masks[batch_idx],
+                        materials[batch_idx],
+                        thicknesses[batch_idx],
+                        **episode_kwargs,
+                    )
                 )
 
                 # Policy loss (clipped surrogate)
@@ -1000,7 +1032,8 @@ class PPOAgent:
                 loss = (
                     policy_loss
                     + self.vf_coef * value_loss
-                    - self.ent_coef * entropy.mean()
+                    - self.ent_coef * entropy_d.mean()
+                    - self.ent_coef_thickness * entropy_c.mean()
                 )
 
                 # Behaviour cloning rides the first minibatch of each epoch:
@@ -1012,7 +1045,6 @@ class PPOAgent:
                         self.policy,
                         pareto_episodes,
                         env_wrapper,
-                        target_obj_idx,
                         bc_weight,
                         batch_size=32,
                     )
@@ -1030,7 +1062,12 @@ class PPOAgent:
                 # Logging
                 logs["policy_loss"] += policy_loss.item()
                 logs["value_loss"] += value_loss.item()
-                logs["entropy"] += entropy.mean().item()
+                # Kept as the sum so ppo.entropy still means what it did
+                entropy_d_mean = entropy_d.mean().item()
+                entropy_c_mean = entropy_c.mean().item()
+                logs["entropy"] += entropy_d_mean + entropy_c_mean
+                logs["entropy_material"] += entropy_d_mean
+                logs["entropy_thickness"] += entropy_c_mean
                 logs["clip_frac"] += (
                     ((ratio - 1.0).abs() > self.clip_range).float().mean().item()
                 )
@@ -1081,6 +1118,22 @@ def train(config_path: str, save_dir: str):
     clip_range = _get("clip_range", 0.2, float)
     ent_coef = _get("ent_coef", 0.01, float)
     ent_coef_final = _get("ent_coef_final", ent_coef, float)
+    # The thickness head can carry its own entropy coefficient: the sampling
+    # width wants to collapse early, so the reward the material head learns
+    # from stops being dominated by thickness jitter, while material
+    # exploration wants to stay open. Unset, both track ent_coef, which is the
+    # single-coefficient behaviour. Set alone, the final defaults to itself
+    # (no annealing) rather than to ent_coef_final, which would otherwise ramp
+    # a deliberately small thickness coefficient back up.
+    _ent_thickness = _get("ent_coef_thickness", "", str).strip()
+    if _ent_thickness:
+        ent_coef_thickness = float(_ent_thickness)
+        ent_coef_thickness_final = _get(
+            "ent_coef_thickness_final", ent_coef_thickness, float
+        )
+    else:
+        ent_coef_thickness = ent_coef
+        ent_coef_thickness_final = ent_coef_final
     vf_coef = _get("vf_coef", 0.5, float)
     max_grad_norm = _get("max_grad_norm", 0.5, float)
     min_layers_before_air = _get("min_layers_before_air", 4, int)
@@ -1275,6 +1328,7 @@ def train(config_path: str, save_dir: str):
         gamma=gamma,
         clip_range=clip_range,
         ent_coef=ent_coef,
+        ent_coef_thickness=ent_coef_thickness,
         vf_coef=vf_coef,
         max_grad_norm=max_grad_norm,
     )
@@ -1317,6 +1371,8 @@ def train(config_path: str, save_dir: str):
     lr_init = lr
     ent_coef_init = ent_coef
     current_ent_coef = ent_coef
+    ent_coef_thickness_init = ent_coef_thickness
+    current_ent_coef_thickness = ent_coef_thickness
     warmup_end_episode = 0  # Track when warmup ended for phase-based annealing reset
     was_warmup = True  # Track warmup state to detect transition
 
@@ -1397,11 +1453,10 @@ def train(config_path: str, save_dir: str):
             episode_stds = []
             episode_sampled_thicknesses = []
             while not episode_done:
-                # Get target objective index for value head selection
+                # Recorded per step so the update can group advantages by
+                # target; the value head itself is shared across objectives.
                 target_obj_idx = objective_to_idx[env.env.target_objective]
-                material, thickness, log_prob, value = agent.act(
-                    obs, mask, target_obj_idx
-                )
+                material, thickness, log_prob, value = agent.act(obs, mask)
                 action = {
                     "material": material,
                     "thickness": np.array([thickness], dtype=np.float32),
@@ -1429,7 +1484,15 @@ def train(config_path: str, save_dir: str):
                 next_mask = info["mask"]
 
                 buffer.add(
-                    obs, material, thickness, reward, value, log_prob, done, mask
+                    obs,
+                    material,
+                    thickness,
+                    reward,
+                    value,
+                    log_prob,
+                    done,
+                    mask,
+                    target_obj_idx,
                 )
 
                 if done:
@@ -1483,8 +1546,7 @@ def train(config_path: str, save_dir: str):
                 step_count += 1
 
         # Finalize buffer
-        target_obj_idx = objective_to_idx[env.env.target_objective]
-        _, _, _, last_value = agent.act(obs, mask, target_obj_idx)
+        _, _, _, last_value = agent.act(obs, mask)
         buffer.finalize(last_value, gamma, gae_lambda)
 
         # Detect warmup -> constrained transition
@@ -1529,11 +1591,16 @@ def train(config_path: str, save_dir: str):
         current_ent_coef = (
             ent_coef_final + (ent_coef_init - ent_coef_final) * decay_mult
         )
+        current_ent_coef_thickness = (
+            ent_coef_thickness_final
+            + (ent_coef_thickness_init - ent_coef_thickness_final) * decay_mult
+        )
 
         # Update agent LR and entropy
         for param_group in agent.optimizer.param_groups:
             param_group["lr"] = current_lr
         agent.ent_coef = current_ent_coef
+        agent.ent_coef_thickness = current_ent_coef_thickness
 
         # Flush staged Pareto candidates (batched NDS) before policy update
         env.env.flush_pareto_candidates()
@@ -1555,12 +1622,10 @@ def train(config_path: str, save_dir: str):
                 )
             else:  # "all": original behaviour, whole front
                 pareto_episodes = env.env.pareto_front_episodes
-        target_obj_idx = objective_to_idx[env.env.target_objective]
         ppo_logs = agent.update(
             rollout_data,
             n_epochs,
             batch_size,
-            target_obj_idx,
             pareto_episodes=pareto_episodes,
             bc_weight=bc_weight,
             env_wrapper=env,
@@ -1593,6 +1658,7 @@ def train(config_path: str, save_dir: str):
                 "pareto.size": len(env.env.pareto_front_rewards),
                 "schedule.lr": float(current_lr),
                 "schedule.ent_coef": float(current_ent_coef),
+                "schedule.ent_coef_thickness": float(current_ent_coef_thickness),
             }
             # Add pareto episodes count if BC loss enabled
             if bc_weight > 0 and hasattr(env.env, "pareto_front_episodes"):
