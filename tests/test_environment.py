@@ -417,13 +417,14 @@ class TestCoatingEnvironmentStateValue:
         state.set_layer(0, 100e-9, 2)  # SiO2
         state.set_layer(1, 100e-9, 3)  # aSi
 
-        reflectivity, thermal_noise, absorption, thickness = env.compute_state_value(
-            state
+        reflectivity, thermal_noise, absorption, thickness, transmission = (
+            env.compute_state_value(state)
         )
 
         assert isinstance(reflectivity, (float, np.floating))
         assert isinstance(absorption, (float, np.floating))
         assert isinstance(thickness, (float, np.floating))
+        assert isinstance(transmission, (float, np.floating))
         # thermal_noise can be None if not computed
         assert thermal_noise is None or isinstance(thermal_noise, (float, np.floating))
 
@@ -433,8 +434,8 @@ class TestCoatingEnvironmentStateValue:
         state = env.reset()
 
         # Don't add any layers (all air)
-        reflectivity, thermal_noise, absorption, thickness = env.compute_state_value(
-            state
+        reflectivity, thermal_noise, absorption, thickness, transmission = (
+            env.compute_state_value(state)
         )
 
         # Empty coating returns substrate properties
@@ -452,7 +453,9 @@ class TestCoatingEnvironmentStateValue:
 
         result = env.compute_state_value(state, return_field_data=True)
 
-        assert len(result) == 5  # (r, thermal, absorption, thickness, field_data)
+        assert (
+            len(result) == 6
+        )  # (r, thermal, absorption, thickness, transmission, field_data)
 
 
 class TestCoatingEnvironmentActionSpace:
@@ -635,6 +638,48 @@ class TestCoatingEnvironmentConstrainedTraining:
 
         # Should have penalty for reflectivity constraint violation
         assert penalty > 0
+
+    def test_constraint_range_falls_back_on_a_sparse_front(
+        self, basic_config, materials
+    ):
+        """Too few front points to measure a spread: use objective_bounds."""
+        env = CoatingEnvironment(basic_config, materials)
+        env.enable_constrained_training(constraint_anchor_mode="absolute")
+        env.pareto_front_rewards = [([0.4, 0.6], None), ([0.8, 0.2], None)]
+
+        assert env.constraint_range("reflectivity") == (0.0, 1.0)
+
+    def test_constraint_range_spans_the_front_plus_extensions(
+        self, basic_config, materials
+    ):
+        """Range is the front's own spread, widened by the two fractions."""
+        env = CoatingEnvironment(basic_config, materials)
+        env.enable_constrained_training(
+            constraint_extend_low=0.1, constraint_extend_high=0.5
+        )
+        # reflectivity spans 0.2 -> 0.7, so a width of 0.5
+        env.pareto_front_rewards = [([0.2 + 0.05 * i, 0.5], None) for i in range(11)]
+
+        low, high = env.constraint_range("reflectivity")
+        assert low == pytest.approx(0.2 - 0.1 * 0.5)
+        assert high == pytest.approx(0.7 + 0.5 * 0.5)
+
+    def test_constraint_range_is_invariant_to_the_reward_scale(
+        self, basic_config, materials
+    ):
+        """An affine rescale of the reward moves the range with it, not within it."""
+        env = CoatingEnvironment(basic_config, materials)
+        env.enable_constrained_training()
+        front = [0.30 + 0.02 * i for i in range(11)]
+        env.pareto_front_rewards = [([r, 0.5], None) for r in front]
+        low, high = env.constraint_range("reflectivity")
+
+        # Same designs under bounds twice as wide, offset by 0.1
+        env.pareto_front_rewards = [([0.1 + 2 * r, 0.5], None) for r in front]
+        low2, high2 = env.constraint_range("reflectivity")
+
+        assert low2 == pytest.approx(0.1 + 2 * low)
+        assert high2 == pytest.approx(0.1 + 2 * high)
 
     def test_update_warmup_best(self, basic_config, materials, capsys):
         """Test warmup best reward tracking."""
@@ -878,3 +923,383 @@ run_name = test_run
     assert abs(cfg.data.beam_radius - 0.05) < 1e-6
     assert cfg.data.frequency == 120.0
     assert cfg.data.temperature == 295.0
+
+
+class TestParetoArchiveEpsilon:
+    """Test the epsilon-box Pareto archive."""
+
+    @staticmethod
+    def _archive(eps, rewards):
+        """Feed reward vectors through flush() one batch at a time."""
+        env = CoatingEnvironment.__new__(CoatingEnvironment)
+        env.multi_objective = True
+        env.pareto_epsilon = eps
+        env.pareto_front_rewards = []
+        env.pareto_front_values = []
+        env.pareto_front_episodes = []
+        env.pending_pareto_candidates = []
+        env._front_version = 0
+        env._crowding_cache = None
+        for start in range(0, len(rewards), 8):
+            for i, r in enumerate(rewards[start : start + 8], start):
+                env.pending_pareto_candidates.append((r, r * 2.0, None, f"ep{i}"))
+            env.flush_pareto_candidates()
+        return env
+
+    @staticmethod
+    def _spread_front(n=400, seed=0):
+        """Points scattered over a concave 3-objective trade-off surface."""
+        rng = np.random.default_rng(seed)
+        u, v = rng.random(n), rng.random(n)
+        return np.stack([u, v * (1 - u), (1 - u) * (1 - v)], axis=1)
+
+    def test_epsilon_bounds_the_archive(self):
+        """A coarser grid must never store more points than a finer one."""
+        rewards = self._spread_front()
+        sizes = [
+            len(self._archive(eps, rewards).pareto_front_rewards)
+            for eps in (0.01, 0.05, 0.1)
+        ]
+        assert sizes == sorted(sizes, reverse=True), sizes
+        assert sizes[-1] < len(rewards)
+
+    def test_one_point_per_box_and_no_dominated_box(self):
+        """The two invariants the archive is supposed to maintain."""
+        from coatopt.environments.environment import _dominated_by
+
+        eps = 0.05
+        env = self._archive(eps, self._spread_front())
+        stored = np.array([r for r, _ in env.pareto_front_rewards])
+        boxes = np.floor(stored / eps)
+        assert len({tuple(b) for b in boxes}) == len(boxes)
+        assert not _dominated_by(boxes, boxes).any()
+
+    def test_parallel_front_lists_stay_aligned(self):
+        """Rewards, values and episodes are indexed together elsewhere."""
+        env = self._archive(0.05, self._spread_front())
+        assert (
+            len(env.pareto_front_rewards)
+            == len(env.pareto_front_values)
+            == len(env.pareto_front_episodes)
+        )
+        for (reward, _), (value, _) in zip(
+            env.pareto_front_rewards, env.pareto_front_values
+        ):
+            assert np.allclose(np.array(value), np.array(reward) * 2.0)
+
+    def test_epsilon_zero_keeps_every_non_dominated_point(self):
+        """eps = 0 must reproduce plain non-dominated filtering."""
+        from coatopt.environments.environment import _dominated_by
+
+        rewards = self._spread_front(n=200, seed=1)
+        env = self._archive(0.0, rewards)
+        stored = np.array([r for r, _ in env.pareto_front_rewards])
+        expected = rewards[~_dominated_by(rewards, rewards)]
+        assert len(stored) == len(expected)
+        assert not _dominated_by(stored, stored).any()
+
+    def test_better_point_replaces_the_incumbent_in_its_box(self):
+        """A box keeps its best member, not whichever arrived first."""
+        eps = 0.1
+        weak = np.array([[0.51, 0.51, 0.51]])
+        strong = np.array([[0.59, 0.59, 0.59]])  # same box, strictly better
+        env = self._archive(eps, np.vstack([weak, strong]))
+        stored = np.array([r for r, _ in env.pareto_front_rewards])
+        assert len(stored) == 1
+        assert np.allclose(stored[0], strong[0])
+
+    def test_legacy_archive_with_several_points_per_box_is_collapsed(self):
+        """An archive restored from a pre-epsilon checkpoint gets compacted."""
+        eps = 0.1
+        env = CoatingEnvironment.__new__(CoatingEnvironment)
+        env.multi_objective = True
+        env.pareto_epsilon = eps
+        crowded = [[0.51, 0.51, 0.51], [0.52, 0.52, 0.52], [0.53, 0.53, 0.53]]
+        env.pareto_front_rewards = [(r, None) for r in crowded]
+        env.pareto_front_values = [(r, None) for r in crowded]
+        env.pareto_front_episodes = [None] * len(crowded)
+        env._front_version = 0
+        env._crowding_cache = None
+        env.pending_pareto_candidates = [
+            (np.array([0.05, 0.95, 0.05]), np.zeros(3), None, None)
+        ]
+        env.flush_pareto_candidates()
+        stored = np.array([r for r, _ in env.pareto_front_rewards])
+        boxes = np.floor(stored / eps)
+        assert len({tuple(b) for b in boxes}) == len(boxes)
+        # The best of the three crowded points is the one that survives
+        assert any(np.allclose(s, [0.53, 0.53, 0.53]) for s in stored)
+
+
+class TestReferenceConstraints:
+    """Test constraint thresholds drawn from an archived design."""
+
+    @staticmethod
+    def _env(basic_config, materials, **kw):
+        env = CoatingEnvironment(basic_config, materials)
+        env.enable_constrained_training(constraint_source="reference", **kw)
+        env.is_warmup = False
+        return env
+
+    @staticmethod
+    def _front(env, n=40, seed=0):
+        """A concave 2-objective front, so most threshold pairs are infeasible."""
+        rng = np.random.default_rng(seed)
+        u = np.sort(rng.random(n))
+        pts = np.stack([u, 1.0 - u**2], axis=1)
+        env.pareto_front_rewards = [(list(p), None) for p in pts]
+        env._front_version += 1
+        return pts
+
+    def test_rejects_an_unknown_source(self, basic_config, materials):
+        env = CoatingEnvironment(basic_config, materials)
+        with pytest.raises(ValueError, match="constraint_source"):
+            env.enable_constrained_training(constraint_source="elsewhere")
+
+    def test_returns_none_while_the_front_is_too_small(self, basic_config, materials):
+        """Caller needs the fallback signal, not a guess off two points."""
+        env = self._env(basic_config, materials)
+        env.pareto_front_rewards = [([0.4, 0.6], None), ([0.8, 0.2], None)]
+        assert env.constraint_reference("reflectivity") is None
+
+    def test_constrains_every_objective_but_the_target(self, basic_config, materials):
+        env = self._env(basic_config, materials)
+        self._front(env)
+        c = env.constraint_reference("reflectivity", randomise=False)
+        assert set(c) == set(env.optimise_parameters) - {"reflectivity"}
+
+    def test_thresholds_are_met_by_the_point_they_came_from(
+        self, basic_config, materials
+    ):
+        """The whole point: with no extension the subproblem always has an answer."""
+        env = self._env(basic_config, materials, constraint_ref_extend=0.0)
+        front = self._front(env)
+        idx = env.optimise_parameters.index("absorption")
+        for _ in range(50):
+            c = env.constraint_reference("reflectivity", randomise=False)
+            assert (front[:, idx] >= c["absorption"] - 1e-12).any()
+
+    def test_extension_asks_for_more_than_its_reference(
+        self, basic_config, materials
+    ):
+        """Non-zero extend must push past the point, or it exerts no pressure."""
+        env = self._env(basic_config, materials, constraint_ref_extend=1.0)
+        front = self._front(env)
+        idx = env.optimise_parameters.index("absorption")
+        strictly_better = 0
+        for _ in range(200):
+            c = env.constraint_reference("reflectivity", randomise=False)
+            # No archived point sits exactly on the threshold once extended
+            if not np.any(np.isclose(front[:, idx], c["absorption"])):
+                strictly_better += 1
+        assert strictly_better > 0
+
+    def test_reference_beats_the_box_on_feasibility(self, basic_config, materials):
+        """The claim the scheme rests on, on a deliberately concave front."""
+        env = self._env(basic_config, materials, constraint_ref_extend=0.0)
+        front = self._front(env, n=60)
+        idx = env.optimise_parameters.index("absorption")
+
+        def feasible(threshold):
+            return bool((front[:, idx] >= threshold - 1e-12).any())
+
+        ref = sum(
+            feasible(env.constraint_reference("reflectivity", randomise=False)["absorption"])
+            for _ in range(300)
+        )
+        env.constraint_extend_low = env.constraint_extend_high = 0.2
+        lo, hi = env.constraint_range("absorption")
+        box = sum(feasible(np.random.uniform(lo, hi)) for _ in range(300))
+        assert ref == 300
+        assert box < ref
+
+    def test_crowding_favours_the_sparse_stretch(self, basic_config, materials):
+        """Sampling weight must move toward where the front is thin."""
+        env = self._env(basic_config, materials)
+        # 30 points crammed into [0, 0.1], 10 spread across [0.5, 1.0]
+        dense = np.linspace(0.0, 0.1, 30)
+        sparse = np.linspace(0.5, 1.0, 10)
+        xs = np.concatenate([dense, sparse])
+        env.pareto_front_rewards = [([x, 1.0 - x], None) for x in xs]
+        env._front_version += 1
+        weights, gaps, _ = env._front_crowding()
+        assert weights[30:].sum() > weights[:30].sum()
+        assert gaps[30:, 0].mean() > gaps[:30, 0].mean()
+
+    def test_crowding_is_cached_until_the_front_changes(
+        self, basic_config, materials
+    ):
+        env = self._env(basic_config, materials)
+        self._front(env)
+        w1, _, _ = env._front_crowding()
+        w2, _, _ = env._front_crowding()
+        assert w1 is w2
+        self._front(env, n=41, seed=1)
+        assert env._front_crowding()[0] is not w1
+
+
+def test_observation_scaling_puts_columns_on_a_common_scale(materials):
+    """max_thickness scales thickness, n and k onto comparable ranges."""
+    state = CoatingState(max_layers=4, n_materials=len(materials), materials=materials)
+    state.set_layer(0, 0.01, 1)
+    state.set_layer(1, 0.40, 3)
+
+    raw = state.get_observation_tensor(pre_type="lstm").view(4, -1)
+    scaled = state.get_observation_tensor(pre_type="lstm", max_thickness=0.40).view(4, -1)
+
+    # Thickness reaches the top of its own range instead of a fraction of it
+    assert raw[1, 0] == pytest.approx(0.40)
+    assert scaled[1, 0] == pytest.approx(1.0)
+
+    # n and k both land in [0, 1], and k now separates the materials rather
+    # than sitting at ~0 for everything but the most absorbing one
+    for col in (-2, -1):
+        assert scaled[:, col].min() >= 0.0
+        assert scaled[:, col].max() == pytest.approx(1.0)
+    assert scaled[0, -1] > 0.05, "low-k material should not collapse onto zero"
+
+
+def test_observation_scaling_keeps_padding_distinguishable(materials):
+    """A layer at min_thickness must not scale down onto the padding value,
+    since the sequence encoders count placed layers with thickness > 0."""
+    state = CoatingState(max_layers=6, n_materials=len(materials), materials=materials)
+    state.set_layer(0, 0.01, 1)
+    state.set_layer(1, 0.25, 2)
+    state.set_layer(2, 0.01, 3)
+
+    scaled = state.get_observation_tensor(pre_type="lstm", max_thickness=0.40).view(6, -1)
+    assert int((scaled[:, 0] > 0).sum()) == 3
+    assert scaled[3:, 0].abs().max() == 0.0
+
+
+def test_observation_scaling_is_invariant_to_the_thickness_range(materials):
+    """The same fraction of the range gives the same observation at any range."""
+    a = CoatingState(max_layers=3, n_materials=len(materials), materials=materials)
+    b = CoatingState(max_layers=3, n_materials=len(materials), materials=materials)
+    a.set_layer(0, 0.20, 2)  # half of a 0.40 range
+    b.set_layer(0, 0.40, 2)  # half of a 0.80 range
+
+    obs_a = a.get_observation_tensor(pre_type="lstm", max_thickness=0.40)
+    obs_b = b.get_observation_tensor(pre_type="lstm", max_thickness=0.80)
+    assert np.allclose(obs_a.numpy(), obs_b.numpy())
+
+
+class TestConstraintSpread:
+    """Test that constraint violations are measured in per-objective units."""
+
+    @staticmethod
+    def _env(basic_config, materials, **kw):
+        env = CoatingEnvironment(basic_config, materials)
+        env.enable_constrained_training(**kw)
+        env.is_warmup = False
+        return env
+
+    @staticmethod
+    def _front(env, spread_a=1.0, spread_b=0.1, n=40):
+        """A front deliberately stretched much further in one objective."""
+        u = np.linspace(0.0, 1.0, n)
+        pts = np.stack([u * spread_a, (1.0 - u) * spread_b], axis=1)
+        env.pareto_front_rewards = [(list(p), None) for p in pts]
+        env._front_version += 1
+        return pts
+
+    def test_falls_back_to_one_while_the_front_is_too_small(
+        self, basic_config, materials
+    ):
+        """Below the measurement threshold the penalty must be unchanged."""
+        env = self._env(basic_config, materials)
+        env.pareto_front_rewards = [([0.4, 0.6], None), ([0.8, 0.2], None)]
+        for obj in env.optimise_parameters:
+            assert env.constraint_spread(obj) == 1.0
+
+    def test_measures_each_objective_own_spread(self, basic_config, materials):
+        env = self._env(basic_config, materials)
+        self._front(env, spread_a=1.0, spread_b=0.1)
+        a, b = env.optimise_parameters
+        assert env.constraint_spread(a) == pytest.approx(1.0)
+        assert env.constraint_spread(b) == pytest.approx(0.1)
+
+    def test_spread_only_ever_grows(self, basic_config, materials):
+        """A displaced extreme must not rescale designs already scored."""
+        env = self._env(basic_config, materials)
+        a = env.optimise_parameters[0]
+        self._front(env, spread_a=1.0)
+        assert env.constraint_spread(a) == pytest.approx(1.0)
+
+        self._front(env, spread_a=0.3)  # front shrinks back
+        assert env.constraint_spread(a) == pytest.approx(1.0)
+
+        self._front(env, spread_a=2.0)  # but still tracks growth
+        assert env.constraint_spread(a) == pytest.approx(2.0)
+
+    def test_equal_relative_shortfalls_cost_the_same(self, basic_config, materials):
+        """Equal relative shortfalls cost the same in every objective."""
+        env = self._env(basic_config, materials, constraint_penalty=1.0)
+        wide, narrow = env.optimise_parameters
+        self._front(env, spread_a=1.0, spread_b=0.1)
+
+        # Half of each objective's own range
+        env.constraints = {wide: 0.5}
+        p_wide = env._compute_constraint_penalty({}, {wide: 0.0, narrow: 0.0})
+        env.constraints = {narrow: 0.05}
+        p_narrow = env._compute_constraint_penalty({}, {wide: 0.0, narrow: 0.0})
+        assert p_wide == pytest.approx(p_narrow)
+        assert p_wide == pytest.approx(0.5)
+
+    def test_met_constraints_are_still_free(self, basic_config, materials):
+        env = self._env(basic_config, materials, constraint_penalty=1.0)
+        wide, narrow = env.optimise_parameters
+        self._front(env)
+        env.constraints = {wide: 0.5, narrow: 0.05}
+        assert env._compute_constraint_penalty({}, {wide: 0.9, narrow: 0.09}) == 0.0
+
+
+class TestEvaluationCounter:
+    """Test that the search's real budget is counted, not episodes."""
+
+    @staticmethod
+    def _env(materials, intermediate):
+        data = DataConfig(
+            n_layers=10,
+            min_thickness=0.01,
+            max_thickness=0.4,
+            use_optical_thickness=True,
+            optimise_parameters=["reflectivity", "absorption"],
+            optimise_targets={"reflectivity": 1.0, "absorption": 0.0},
+            objective_bounds={
+                "reflectivity": [0.0, 0.999999],
+                "absorption": [50000, 1e-3],
+            },
+            use_intermediate_reward=intermediate,
+            combine="sum",
+        )
+        env = CoatingEnvironment(Config(data=data, training=TrainingConfig()), materials)
+        env.reset()
+        return env
+
+    @staticmethod
+    def _episode(env, n_layers=10):
+        rng = np.random.default_rng(0)
+        for _ in range(n_layers):
+            mat = int(rng.integers(1, env.n_materials))
+            *_, finished, _, _, _ = env.step([mat, float(rng.uniform(0.05, 0.35))])
+            if finished:
+                break
+
+    def test_terminal_reward_costs_one_evaluation(self, materials):
+        env = self._env(materials, intermediate=False)
+        self._episode(env)
+        assert env.n_evaluations == 1
+
+    def test_intermediate_reward_costs_one_per_layer(self, materials):
+        """An intermediate-reward episode spends one evaluation per layer."""
+        env = self._env(materials, intermediate=True)
+        self._episode(env)
+        assert env.n_evaluations == 10
+
+    def test_counter_accumulates_across_episodes(self, materials):
+        env = self._env(materials, intermediate=False)
+        for _ in range(3):
+            env.reset()
+            self._episode(env)
+        assert env.n_evaluations == 3

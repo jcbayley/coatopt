@@ -51,8 +51,10 @@ def run_experiment(
         "morl",
         "morl_discrete",
         "nsga2",
+        "moead",
         "sac_multiagent",
         "sac_hybrid",
+        "pcn",
         "hppo_multiagent",
         "hppo_sequential",
         "hppo_hybrid",
@@ -140,16 +142,19 @@ def run_experiment(
     with open(config_backup, "w") as f:
         parser.write(f)
 
-    # Setup MLflow
-    mlflow.set_experiment(experiment_name)
-    mlflow.start_run(run_name=run_dir_name)
-    mlflow.log_param("experiment_name", experiment_name)
-    mlflow.log_param("algorithm", algorithm)
-    mlflow.log_param("config_path", str(config_path))
-    mlflow.log_param("run_directory", str(save_dir))
+    # Setup MLflow. Everything downstream guards on mlflow.active_run(), so not
+    # starting a run is enough to switch the logging off.
+    disable_mlflow = parser.getboolean("general", "disable_mlflow", fallback=False)
+    if not disable_mlflow:
+        mlflow.set_experiment(experiment_name)
+        mlflow.start_run(run_name=run_dir_name)
+        mlflow.log_param("experiment_name", experiment_name)
+        mlflow.log_param("algorithm", algorithm)
+        mlflow.log_param("config_path", str(config_path))
+        mlflow.log_param("run_directory", str(save_dir))
 
     print(f"Save directory: {save_dir}")
-    print(f"MLflow run: {run_dir_name}")
+    print(f"MLflow run: {'disabled' if disable_mlflow else run_dir_name}")
 
     # Algorithm-specific training
     start_time = time.time()
@@ -159,7 +164,7 @@ def run_experiment(
 
         results = train(config_path=str(config_backup), save_dir=str(save_dir))
 
-    elif algorithm == "nsga2":
+    elif algorithm in ("nsga2", "moead"):
         from coatopt.algorithms.train_genetic_simple import train_genetic as train
 
         results = train(config_path=str(config_backup), save_dir=str(save_dir))
@@ -206,6 +211,11 @@ def run_experiment(
 
         results = train(config_path=str(config_backup), save_dir=str(save_dir))
 
+    elif algorithm == "pcn":
+        from coatopt.algorithms.train_pcn import train
+
+        results = train(config_path=str(config_backup), save_dir=str(save_dir))
+
     elif algorithm == "hppo_multiagent":
         from coatopt.algorithms.train_hppo_multiagent import train
 
@@ -228,7 +238,7 @@ def run_experiment(
 
     else:
         raise ValueError(
-            f"Unknown algorithm: {algorithm}. Must be one of: sb3_discrete, sb3_discrete_lstm, sb3_dqn, sb3_simple, morl, morl_discrete, nsga2, hppo, sac_multiagent, sac_hybrid, ppo_multiagent, ppo_sequential, hppo_hybrid, hppo_preference"
+            f"Unknown algorithm: {algorithm}. Must be one of: sb3_discrete, sb3_discrete_lstm, sb3_dqn, sb3_simple, morl, morl_discrete, nsga2, hppo, sac_multiagent, sac_hybrid, pcn, ppo_multiagent, ppo_sequential, hppo_hybrid, hppo_preference"
         )
 
     end_time = time.time()
@@ -252,11 +262,11 @@ def run_experiment(
 
         if not values_df.empty:
             print("\nGenerating interactive Pareto front visualization...")
-            fig = create_interactive_plot(
+            fig, _ = create_interactive_plot(
                 designs_df, values_df, materials, max_designs=10
             )
             html_path = save_dir / "pareto_interactive.html"
-            fig.write_html(str(html_path))
+            fig.write_html(str(html_path), include_plotlyjs="cdn")
             print(f"Saved interactive visualization to {html_path}")
 
             if not designs_df.empty:
@@ -298,7 +308,8 @@ def run_experiment(
             # Restore original sys.argv
             sys.argv = original_argv
 
-    mlflow.end_run()
+    if not disable_mlflow:
+        mlflow.end_run()
 
 
 if __name__ == "__main__":

@@ -15,9 +15,24 @@ from ..environments.utils import coating_utils, state_utils
 from ..utils.metrics import (
     compute_hypervolume,
     compute_hypervolume_mixed,
-    dominates,
     update_pareto_front,
 )
+
+
+# Below this the front is too sparse for its spread to mean anything, so
+# constraint_range falls back to the objective_bounds scale.
+MIN_FRONT_FOR_CONSTRAINT_RANGE = 10
+
+
+def _dominated_by(points: np.ndarray, others: np.ndarray) -> np.ndarray:
+    """Mask of points that some row of `others` dominates (maximisation).
+
+    A point tied with another is not dominated by it, so passing the same
+    array as both arguments filters a set against itself.
+    """
+    ge = (others[None, :, :] >= points[:, None, :]).all(-1)
+    gt = (others[None, :, :] > points[:, None, :]).any(-1)
+    return (ge & gt).any(1)
 
 
 class CoatingEnvironment:
@@ -130,6 +145,12 @@ class CoatingEnvironment:
 
         # Constrained training state
         self.use_constrained_training = False  # Set by wrapper if needed
+        self.update_constraint_bounds = False  # Set by enable_constrained_training
+        self.constraint_anchor_mode = "warmup"  # Set by enable_constrained_training
+        self.constraint_extend_low = 0.2  # Set by enable_constrained_training
+        self.constraint_extend_high = 0.2  # Set by enable_constrained_training
+        self.constraint_source = "box"  # Set by enable_constrained_training
+        self.constraint_ref_extend = 1.0  # Set by enable_constrained_training
         self.episode_count = 0
         self.is_warmup = True
         self.target_objective = None
@@ -160,6 +181,17 @@ class CoatingEnvironment:
         self.pareto_front_episodes = []  # List of episode data dicts (for BC loss)
         self.all_points = []
         self.pending_pareto_candidates = []  # Staged per-episode, flushed per-rollout
+        # Bumped whenever the front changes, so _front_crowding can cache
+        self._front_version = 0
+        self._crowding_cache = None
+        # Highest front spread seen per objective; see constraint_spread
+        self._constraint_spread = {obj: None for obj in self.optimise_parameters}
+        # Designs scored by the merit function since the run started; the only
+        # budget that means the same thing for an RL run and a genetic one.
+        self.n_evaluations = 0
+        # Grid resolution for the archive, in normalised-reward units. See
+        # flush_pareto_candidates. 0.0 falls back to storing every distinct point.
+        self.pareto_epsilon = float(getattr(data, "pareto_epsilon", 0.0005))
 
         # Observation space shape
         features_per_layer = 1 + self.n_materials + 2
@@ -246,6 +278,7 @@ class CoatingEnvironment:
 
         # Calculate reward
         if finished or self.use_intermediate_reward:
+            self.n_evaluations += 1
             total_reward, vals, reward_components = self.compute_training_reward(
                 self.current_state,
                 objective_weights=objective_weights,
@@ -303,14 +336,147 @@ class CoatingEnvironment:
                         self.observed_value_bounds[obj]["max"], val
                     )
 
-    def update_warmup_best(self, objective: str, normalised_reward: float):
-        """Update best normalised reward seen during warmup."""
+    def update_warmup_best(
+        self, objective: str, normalised_reward: float, phase: str = "WARMUP"
+    ):
+        """Raise the best normalised reward on record for an objective.
+
+        These bests anchor the constraint thresholds (frac * best).
+        """
         old_best = self.warmup_best_rewards[objective]
         if normalised_reward > old_best:
             print(
-                f"    WARMUP: New best {objective}={normalised_reward:.4f} (was {old_best:.4f})"
+                f"    {phase}: New best {objective}={normalised_reward:.4f} (was {old_best:.4f})"
             )
         self.warmup_best_rewards[objective] = max(old_best, normalised_reward)
+
+    def constraint_anchor(self, objective: str) -> float:
+        """Scale that this objective's constraint thresholds are a fraction of.
+
+        "warmup" uses whatever this run's warmup reached; "absolute" starts at
+        the normalised reward's own 1.0 and rises only if a run beats it.
+        """
+        best = self.warmup_best_rewards.get(objective, 0.0)
+        if self.constraint_anchor_mode == "absolute":
+            return max(1.0, best)
+        return best
+
+    def constraint_range(self, objective: str) -> Tuple[float, float]:
+        """Reward range to draw this objective's constraint threshold from.
+
+        Taken from the front's own spread rather than objective_bounds, with
+        both ends widened by a fraction of that spread.
+        """
+        idx = self.optimise_parameters.index(objective)
+        rewards = [r[idx] for r, _ in self.pareto_front_rewards]
+        if len(rewards) < MIN_FRONT_FOR_CONSTRAINT_RANGE:
+            return 0.0, self.constraint_anchor(objective)
+
+        lo, hi = min(rewards), max(rewards)
+        width = hi - lo
+        return (
+            lo - self.constraint_extend_low * width,
+            hi + self.constraint_extend_high * width,
+        )
+
+    def constraint_spread(self, objective: str) -> float:
+        """Scale this objective's constraint violations are measured against.
+
+        The front's own spread in this objective, so a violation reads as a
+        fraction of that range and constraint_penalty means the same thing
+        everywhere. Only ever grows, and is 1.0 until the front is large
+        enough to measure.
+        """
+        if len(self.pareto_front_rewards) >= MIN_FRONT_FOR_CONSTRAINT_RANGE:
+            _, _, spans = self._front_crowding()
+            idx = self.optimise_parameters.index(objective)
+            measured = float(spans[idx])
+            best = self._constraint_spread.get(objective)
+            if measured > 0 and (best is None or measured > best):
+                self._constraint_spread[objective] = measured
+        best = self._constraint_spread.get(objective)
+        return best if best else 1.0
+
+    def _front_crowding(self) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Sampling weights over the front, and each point's local spacing.
+
+        NSGA-II crowding distance, so sampling with these weights spends
+        episodes where the front is thin. Also returns each point's
+        per-objective neighbour gaps and the per-objective spans. Cached
+        against ``_front_version``, so it is recomputed once per flush.
+        """
+        front = np.asarray(
+            [r for r, _ in self.pareto_front_rewards], dtype=float
+        )
+        # Keyed on the point count as well as the version, so a front swapped
+        # in wholesale - a checkpoint reload - cannot be served a stale cache
+        key = (self._front_version, len(front))
+        cached = self._crowding_cache
+        if cached is not None and cached[0] == key:
+            return cached[1], cached[2], cached[3]
+
+        n, m = front.shape
+        crowd = np.zeros(n)
+        gaps = np.zeros((n, m))
+        spans = np.zeros(m)
+        for j in range(m):
+            order = np.argsort(front[:, j])
+            col = front[order, j]
+            # One-sided at the ends, the mean of both sides in the middle
+            g = np.empty(n)
+            if n > 2:
+                g[1:-1] = (col[2:] - col[:-2]) / 2.0
+            g[0] = col[1] - col[0]
+            g[-1] = col[-1] - col[-2]
+            gaps[order, j] = g
+
+            span = col[-1] - col[0]
+            spans[j] = span
+            if span > 0:
+                if n > 2:
+                    crowd[order[1:-1]] += (col[2:] - col[:-2]) / span
+                # Boundary points anchor the extremes; give them the largest
+                # weight rather than an infinity that cannot be normalised
+                crowd[order[0]] = crowd[order[-1]] = np.inf
+
+        finite = crowd[np.isfinite(crowd)]
+        cap = finite.max() if finite.size and finite.max() > 0 else 1.0
+        weights = np.where(np.isfinite(crowd), crowd, cap)
+        total = weights.sum()
+        weights = weights / total if total > 0 else np.full(n, 1.0 / n)
+
+        self._crowding_cache = (key, weights, gaps, spans)
+        return weights, gaps, spans
+
+    def constraint_reference(
+        self, target_objective: str, level_frac: float = 1.0, randomise: bool = True
+    ) -> Optional[Dict[str, float]]:
+        """Constraint thresholds taken from a design already on the front.
+
+        Anchoring on one archived point keeps the subproblem answerable, since
+        that point meets it. ``level_frac`` and ``randomise`` scale how far
+        past it the thresholds sit, in units of local neighbour spacing.
+        Returns None when the front is too small to measure spacing on.
+        """
+        if len(self.pareto_front_rewards) < MIN_FRONT_FOR_CONSTRAINT_RANGE:
+            return None
+
+        front = np.asarray(
+            [r for r, _ in self.pareto_front_rewards], dtype=float
+        )
+        weights, gaps, _ = self._front_crowding()
+        k = int(np.random.choice(len(front), p=weights))
+
+        extend = self.constraint_ref_extend * level_frac
+        if randomise:
+            extend = np.random.uniform(0.0, extend)
+
+        t_idx = self.optimise_parameters.index(target_objective)
+        return {
+            obj: float(front[k, j] + extend * gaps[k, j])
+            for j, obj in enumerate(self.optimise_parameters)
+            if j != t_idx
+        }
 
     def enable_constrained_training(
         self,
@@ -318,13 +484,39 @@ class CoatingEnvironment:
         steps_per_objective: int = 10,
         episodes_per_step: int = 200,
         constraint_penalty: float = 10.0,
+        update_constraint_bounds: bool = False,
+        constraint_anchor_mode: str = "warmup",
+        constraint_extend_low: float = 0.2,
+        constraint_extend_high: float = 0.2,
+        constraint_source: str = "box",
+        constraint_ref_extend: float = 1.0,
     ):
         """Enable two-phase constrained training.
 
-        Phase 1 (Warmup): Optimize each objective individually
-        Phase 2 (Constrained): Cycle through objectives with constraints
+        Phase 1 (warmup) optimises each objective individually; phase 2 cycles
+        through objectives under constraints. update_constraint_bounds keeps
+        the per-objective bests rising during phase 2, and constraint_source
+        picks the thresholds: "box" from each objective's range (see
+        constraint_range), "reference" from one archived design (see
+        constraint_reference).
         """
+        if constraint_anchor_mode not in ("warmup", "absolute"):
+            raise ValueError(
+                f"constraint_anchor must be 'warmup' or 'absolute', "
+                f"got {constraint_anchor_mode!r}"
+            )
+        if constraint_source not in ("box", "reference"):
+            raise ValueError(
+                f"constraint_source must be 'box' or 'reference', "
+                f"got {constraint_source!r}"
+            )
         self.use_constrained_training = True
+        self.update_constraint_bounds = update_constraint_bounds
+        self.constraint_anchor_mode = constraint_anchor_mode
+        self.constraint_extend_low = constraint_extend_low
+        self.constraint_extend_high = constraint_extend_high
+        self.constraint_source = constraint_source
+        self.constraint_ref_extend = constraint_ref_extend
         self.warmup_episodes_per_objective = warmup_episodes_per_objective
         self.total_warmup_episodes = warmup_episodes_per_objective * len(
             self.optimise_parameters
@@ -339,10 +531,7 @@ class CoatingEnvironment:
         """Enable pareto dominance bonus reward based on hypervolume improvement.
 
         Args:
-            bonus: Weight for hypervolume improvement bonus.
-                   Since hypervolume improvements are typically small (0-0.1),
-                   you may need larger values than the old dominated-count method.
-                   Suggested range: 1.0-100.0 depending on desired bonus magnitude.
+            bonus: Weight for hypervolume improvement (typically 1.0-100.0).
         """
         self.use_pareto_bonus = True
         self.pareto_dominance_bonus = bonus
@@ -369,75 +558,145 @@ class CoatingEnvironment:
             (reward_vector, val_vector, state.copy(), episode_data)
         )
 
-    def flush_pareto_candidates(self):
-        """Merge all staged candidates into the Pareto front using pymoo NDS.
+    def _exact_survivors(self, cand_rewards, front_rewards):
+        """Merge candidates keeping every distinct non-dominated point.
 
-        Call once per rollout, before the policy update.
+        The original behaviour, used when ``pareto_epsilon`` is 0.
+
+        Returns:
+            (survivors, keep_front) - indices of candidates to add, and a mask
+            of incumbents to retain.
+        """
+        # Duplicates, at the same 6 dp resolution as before; incumbents win
+        seen = {tuple(row) for row in np.round(front_rewards, 6)}
+        keep = np.zeros(len(cand_rewards), dtype=bool)
+        for i, key in enumerate(map(tuple, np.round(cand_rewards, 6))):
+            if key not in seen:
+                seen.add(key)
+                keep[i] = True
+
+        # Candidates an incumbent already dominates
+        if len(front_rewards) and keep.any():
+            keep &= ~_dominated_by(cand_rewards, front_rewards)
+
+        # Candidates dominated by a better candidate in the same batch
+        idx = np.flatnonzero(keep)
+        if len(idx) > 1:
+            keep[idx] = ~_dominated_by(cand_rewards[idx], cand_rewards[idx])
+
+        survivors = np.flatnonzero(keep)
+        keep_front = np.ones(len(front_rewards), dtype=bool)
+        if len(front_rewards) and len(survivors):
+            # Incumbents the survivors push off the front
+            keep_front = ~_dominated_by(front_rewards, cand_rewards[survivors])
+        return survivors, keep_front
+
+    def _eps_box_survivors(self, cand_rewards, front_rewards):
+        """Merge candidates onto an epsilon-box grid in reward space.
+
+        Standard epsilon-dominance archive (Laumanns et al. 2002): rewards are
+        binned onto a grid of side ``pareto_epsilon``, dominance is decided
+        between boxes, and one representative is kept per box.
+
+        Returns:
+            (survivors, keep_front) - indices of candidates to add, and a mask
+            of incumbents to retain.
+        """
+        eps = self.pareto_epsilon
+        cand_box = np.floor(cand_rewards / eps)
+        front_box = (
+            np.floor(front_rewards / eps)
+            if len(front_rewards)
+            else np.empty((0, cand_rewards.shape[1]), dtype=float)
+        )
+        keep_front = np.ones(len(front_box), dtype=bool)
+
+        # An archive built before this setting, or reloaded from an older
+        # checkpoint, can hold several points per box; collapse them.
+        owner = {}  # box key -> (score, index, True if the index is an incumbent)
+        for j, key in enumerate(map(tuple, front_box)):
+            score = float(front_rewards[j].sum())
+            held = owner.get(key)
+            if held is None:
+                owner[key] = (score, j, True)
+            elif score > held[0]:
+                keep_front[held[1]] = False
+                owner[key] = (score, j, True)
+            else:
+                keep_front[j] = False
+
+        # Candidates whose box a surviving incumbent's box already dominates,
+        # filtered first so a losing candidate cannot displace an incumbent.
+        keep = ~_dominated_by(cand_box, front_box[keep_front])
+
+        # Candidates dominated by a better candidate in the same batch
+        idx = np.flatnonzero(keep)
+        if len(idx) > 1:
+            keep[idx] = ~_dominated_by(cand_box[idx], cand_box[idx])
+
+        # One survivor per box, strongest first, so each box ends up held by
+        # the best point that landed in it. Only incumbents are displaced.
+        cand_scores = cand_rewards.sum(1)
+        idx = np.flatnonzero(keep)
+        for i in idx[np.argsort(-cand_scores[idx])]:
+            key = tuple(cand_box[i])
+            held = owner.get(key)
+            if held is None:
+                owner[key] = (float(cand_scores[i]), i, False)
+            elif held[2] and cand_scores[i] > held[0]:
+                keep_front[held[1]] = False
+                owner[key] = (float(cand_scores[i]), i, False)
+            else:
+                keep[i] = False
+
+        survivors = np.flatnonzero(keep)
+        if len(front_box) and len(survivors):
+            # Incumbents the survivors' boxes push off the front
+            keep_front &= ~_dominated_by(front_box, cand_box[survivors])
+        return survivors, keep_front
+
+    def flush_pareto_candidates(self):
+        """Merge all staged candidates into the Pareto front.
+
+        Call once per rollout, before the policy update. The stored front is
+        already non-dominated, so a batch is only compared against it and
+        against itself. With ``pareto_epsilon`` above 0 the merge runs on an
+        epsilon-box grid (see _eps_box_survivors), which bounds the archive
+        size; 0.0 keeps every distinct point.
         """
         if not self.pending_pareto_candidates:
             return
 
-        try:
-            from pymoo.util.nds.non_dominated_sorting import NonDominatedSorting
-        except ImportError:
-            # Fallback: insert candidates one-by-one with the two-pass method
-            for reward_vec, val_vec, state, ep_data in self.pending_pareto_candidates:
-                self._insert_pareto_point(reward_vec, val_vec, state, ep_data)
-            self.pending_pareto_candidates.clear()
+        candidates = self.pending_pareto_candidates
+        cand_rewards = np.array([c[0] for c in candidates], dtype=float)
+        front_rewards = (
+            np.array([r for r, _ in self.pareto_front_rewards], dtype=float)
+            if self.pareto_front_rewards
+            else np.empty((0, cand_rewards.shape[1]), dtype=float)
+        )
+
+        if self.pareto_epsilon > 0:
+            survivors, keep_front = self._eps_box_survivors(cand_rewards, front_rewards)
+        else:
+            survivors, keep_front = self._exact_survivors(cand_rewards, front_rewards)
+
+        # keep_front can still drop incumbents with no survivors at all, so only
+        # skip the rebuild when nothing at either end changed.
+        if len(survivors) == 0 and keep_front.all():
+            self.pending_pareto_candidates = []
             return
 
-        # Pool: existing front + new candidates
-        all_rewards = [r for r, _ in self.pareto_front_rewards] + [
-            c[0] for c in self.pending_pareto_candidates
-        ]
-        all_vals = [v for v, _ in self.pareto_front_values] + [
-            c[1] for c in self.pending_pareto_candidates
-        ]
-        all_states = [s for _, s in self.pareto_front_rewards] + [
-            c[2] for c in self.pending_pareto_candidates
-        ]
-        all_episodes = list(self.pareto_front_episodes) + [
-            c[3] for c in self.pending_pareto_candidates
-        ]
-
-        F = np.array(all_rewards)  # shape (N, n_objectives)
-
-        # Deduplicate by rounding to 6 decimal places before NDS
-        F_rounded = np.round(F, decimals=6)
-        _, unique_idx = np.unique(F_rounded, axis=0, return_index=True)
-
-        # NDS — pymoo minimises, so negate for maximisation
-        nds = NonDominatedSorting()
-        front_idx_in_unique = nds.do(-F[unique_idx], only_non_dominated_front=True)
-        keep = unique_idx[front_idx_in_unique]
-
         self.pareto_front_rewards = [
-            (list(all_rewards[i]), all_states[i]) for i in keep
-        ]
-        self.pareto_front_values = [(list(all_vals[i]), all_states[i]) for i in keep]
-        self.pareto_front_episodes = [all_episodes[i] for i in keep]
-        self.pending_pareto_candidates.clear()
-
-    def _insert_pareto_point(self, reward_vector, val_vector, state, episode_data):
-        """Two-pass insertion fallback (used when pymoo is unavailable)."""
-        for existing_reward_vec, _ in self.pareto_front_rewards:
-            existing = np.array(existing_reward_vec)
-            if np.allclose(reward_vector, existing, rtol=1e-6):
-                return
-            if dominates(existing, reward_vector, maximize=True):
-                return
-        dominated_indices = [
-            i
-            for i, (r, _) in enumerate(self.pareto_front_rewards)
-            if dominates(reward_vector, np.array(r), maximize=True)
-        ]
-        for i in sorted(dominated_indices, reverse=True):
-            self.pareto_front_rewards.pop(i)
-            self.pareto_front_values.pop(i)
-            self.pareto_front_episodes.pop(i)
-        self.pareto_front_rewards.append((list(reward_vector), state))
-        self.pareto_front_values.append((list(val_vector), state))
-        self.pareto_front_episodes.append(episode_data)
+            p for p, k in zip(self.pareto_front_rewards, keep_front) if k
+        ] + [(list(candidates[i][0]), candidates[i][2]) for i in survivors]
+        self.pareto_front_values = [
+            p for p, k in zip(self.pareto_front_values, keep_front) if k
+        ] + [(list(candidates[i][1]), candidates[i][2]) for i in survivors]
+        self.pareto_front_episodes = [
+            e for e, k in zip(self.pareto_front_episodes, keep_front) if k
+        ] + [candidates[i][3] for i in survivors]
+        self.pending_pareto_candidates = []
+        self._front_version += 1
 
     # Reward computation
     def compute_state_value(
@@ -455,11 +714,11 @@ class CoatingEnvironment:
 
         # Check if state is empty (all air layers)
         if len(state_trim) == 0:
-            # Return default values for empty coating
+            # Return default values for empty coating (nothing reflects, all transmits)
             if return_field_data:
-                return (0.0, None, 0.0, 0.0, None)
+                return (0.0, None, 0.0, 0.0, 1.0, None)
             else:
-                return (0.0, None, 0.0, 0.0)
+                return (0.0, None, 0.0, 0.0, 1.0)
 
         # Call existing physics code
         result = coating_utils.merit_function(
@@ -477,9 +736,11 @@ class CoatingEnvironment:
         )
 
         if return_field_data:
-            return result  # (r, thermal, absorption, thickness, field_data)
+            return (
+                result  # (r, thermal, absorption, thickness, transmission, field_data)
+            )
         else:
-            return result  # (r, thermal, absorption, thickness)
+            return result  # (r, thermal, absorption, thickness, transmission)
 
     def compute_reward(
         self,
@@ -508,7 +769,7 @@ class CoatingEnvironment:
             )
 
         # Get physics values
-        reflectivity, thermal_noise, absorption, total_thickness = (
+        reflectivity, thermal_noise, absorption, total_thickness, transmission = (
             self.compute_state_value(state)
         )
 
@@ -517,6 +778,8 @@ class CoatingEnvironment:
             "thermal_noise": thermal_noise,
             "thickness": total_thickness,
             "absorption": absorption,
+            # Transmitted power fraction converted to ppm (absorption is already ppm)
+            "transmission": transmission * 1e6,
         }
 
         # Compute base rewards for all objectives
@@ -540,6 +803,12 @@ class CoatingEnvironment:
 
         for objective in self.optimise_parameters:
             val = vals.get(objective)
+
+            # Physics undefined for this state (e.g. empty coating): worst reward
+            if val is None or not np.isfinite(val):
+                bounds = self.reward_bounds.get(objective, [-100, 0])
+                rewards[objective] = 0.0 if normalised else bounds[0]
+                continue
 
             # Compute raw log-based reward
             target = self.optimise_targets.get(objective, 0.0)
@@ -598,6 +867,14 @@ class CoatingEnvironment:
                 # Phase 2 (Constrained): Optimize target objective with constraints
                 total_reward = individual_rewards.get(self.target_objective, 0.0)
 
+                # Keep the constraint anchors current: every objective is
+                # scored every episode, so any of them can raise its own best.
+                if self.update_constraint_bounds:
+                    for obj in self.optimise_parameters:
+                        reward = individual_rewards.get(obj)
+                        if reward is not None and np.isfinite(reward):
+                            self.update_warmup_best(obj, reward, phase="CONSTRAINED")
+
                 # Add constraint penalty modifier
                 penalty = self._compute_constraint_penalty(vals, individual_rewards)
                 total_reward -= penalty
@@ -641,7 +918,9 @@ class CoatingEnvironment:
             norm_reward = rewards.get(obj, 0.0)
 
             if norm_reward < threshold:
-                violation = threshold - norm_reward
+                # In units of this objective's own front spread, so
+                # constraint_penalty means the same thing for all of them
+                violation = (threshold - norm_reward) / self.constraint_spread(obj)
                 penalty += violation * self.constraint_penalty
 
         return penalty

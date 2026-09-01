@@ -630,7 +630,7 @@ def plot_pairwise_comparison_interactive(
     if save_path:
         suffix = "_interactive_2d.html" if pareto_only else "_interactive.html"
         html_path = Path(save_path).parent / (Path(save_path).stem + suffix)
-        fig.write_html(str(html_path))
+        fig.write_html(str(html_path), include_plotlyjs="cdn")
         print(f"Saved interactive comparison plot to {html_path}")
 
     return fig
@@ -903,7 +903,7 @@ def plot_pareto_3d_interactive(
 
     if save_path:
         html_path = Path(save_path).parent / (Path(save_path).stem + "_3d.html")
-        fig.write_html(str(html_path))
+        fig.write_html(str(html_path), include_plotlyjs="cdn")
         print(f"Saved 3D Pareto plot to {html_path}")
 
     return fig
@@ -1205,7 +1205,7 @@ def plot_pareto_parallel_coords_interactive(
 
     if save_path:
         html_path = Path(save_path).parent / (Path(save_path).stem + "_parcoords.html")
-        fig.write_html(str(html_path))
+        fig.write_html(str(html_path), include_plotlyjs="cdn")
         print(f"Saved parallel-coordinates plot to {html_path}")
 
     return fig

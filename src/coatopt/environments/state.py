@@ -42,6 +42,10 @@ class CoatingState:
         self._state = np.zeros((max_layers, 2), dtype=np.float32)
         self._state[:, 1] = air_material_index  # Initialize all to air
 
+        # Observation tensors already built for this layer stack, keyed by the
+        # arguments that change the result. set_layer clears it.
+        self._obs_cache = {}
+
     @classmethod
     def from_array(
         cls,
@@ -123,6 +127,7 @@ class CoatingState:
         merit_function_callback=None,
         constraints: Optional[dict] = None,
         objective_names: Optional[list] = None,
+        max_thickness: Optional[float] = None,
         **physics_params,
     ) -> torch.Tensor:
         """
@@ -140,14 +145,49 @@ class CoatingState:
             merit_function_callback: Physics function from environment
             constraints: Dict of constraint thresholds {objective_name: threshold}
             objective_names: Ordered list of objective names for consistent constraint ordering
+            max_thickness: Upper end of the thickness action range. When given,
+                the per-layer columns are put on a common scale (see below);
+                omit it to keep the raw columns.
             **physics_params: Additional physics parameters
 
         Returns:
             Tensor with active layers only (or all layers if pre_type=="lstm")
         """
-        # Build layer stack observation
-        # For LSTM: include all max_layers (with zero padding for inactive)
-        # For others: only include active layers
+        # Only the plain layer-stack form is cached; field data and the
+        # constraint tail change every episode. Callers get a clone.
+        cacheable = (
+            not include_field_data
+            and merit_function_callback is None
+            and constraints is None
+            and objective_names is None
+            and not physics_params
+        )
+        cache_key = (pre_type, max_thickness)
+        if cacheable:
+            cached = self._obs_cache.get(cache_key)
+            if cached is not None:
+                return cached.clone()
+
+        # Per-layer column scaling onto a common range: thickness by its own
+        # upper bound (0 still means "no layer"), n min-maxed, k log-scaled.
+        scale_features = max_thickness is not None
+        if scale_features:
+            n_vals = [
+                float(m.get("n", 1.0)) for m in self.materials.values()
+            ] or [1.0]
+            k_vals = [
+                float(m.get("k", 0.0)) for m in self.materials.values()
+            ] or [0.0]
+            n_lo, n_hi = min(n_vals), max(n_vals)
+            # Floor a decade below the smallest non-zero k, so a k of 0 lands
+            # at the bottom of the scale instead of at log(0)
+            positive_k = [k for k in k_vals if k > 0]
+            k_floor = min(positive_k) / 10.0 if positive_k else 1.0
+            k_lo = np.log10(k_floor)
+            k_hi = np.log10(max(max(k_vals), k_floor))
+
+        # Build layer stack observation: LSTM gets all max_layers with zero
+        # padding for inactive ones, others only the active layers.
         layer_data = []
 
         for i in range(self.max_layers):
@@ -172,7 +212,17 @@ class CoatingState:
                 n_val = 1.0  # Default for air
                 k_val = 0.0
 
-            row = [float(thickness)] + material_onehot + [n_val, k_val]
+            t_val = float(thickness)
+            if scale_features:
+                t_val = t_val / max_thickness
+                n_val = (n_val - n_lo) / (n_hi - n_lo) if n_hi > n_lo else 0.0
+                k_val = (
+                    (np.log10(max(k_val, k_floor)) - k_lo) / (k_hi - k_lo)
+                    if k_hi > k_lo
+                    else 0.0
+                )
+
+            row = [t_val] + material_onehot + [n_val, k_val]
             layer_data.append(row)
 
         # Handle empty state (shouldn't happen with LSTM since we pad)
@@ -212,6 +262,9 @@ class CoatingState:
             elif tensor.dim() > 2:
                 tensor = tensor.flatten(1)
 
+        if cacheable:
+            self._obs_cache[cache_key] = tensor
+            return tensor.clone()
         return tensor
 
     def _add_field_info(
@@ -285,6 +338,8 @@ class CoatingState:
 
         self._state[layer_idx, 0] = thickness
         self._state[layer_idx, 1] = material_index
+        # The stack decides the observation, so any write invalidates it
+        self._obs_cache.clear()
 
     def get_layer(self, layer_idx: int) -> Tuple[float, int]:
         """Get (thickness, material_index) for a specific layer."""
@@ -362,13 +417,17 @@ class CoatingState:
 
     def copy(self) -> "CoatingState":
         """Create a deep copy of this state."""
-        return CoatingState.from_array(
+        clone = CoatingState.from_array(
             self._state.copy(),
             self.n_materials,
             self.air_material_index,
             self.substrate_material_index,
             self.materials,
         )
+        # The copy has the same stack, so anything already built for it is
+        # still correct; this is what keeps archived episodes from rebuilding.
+        clone._obs_cache = dict(self._obs_cache)
+        return clone
 
     def __repr__(self) -> str:
         active = self.get_num_active_layers()

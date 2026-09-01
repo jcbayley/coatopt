@@ -358,9 +358,6 @@ def train(config_path: str):
                 "reflectivity": [0.0, 0.99999],
                 "absorption": [10000, 0],  # ppm
             },
-            # Air penalty
-            apply_air_penalty=True,
-            air_penalty_weight=0.5,
             apply_preference_constraints=False,
         ),
         training=TrainingConfig(cycle_weights="random"),

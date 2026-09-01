@@ -162,8 +162,13 @@ class TruncatedNormalDist(TruncatedStandardNormal):
         )
 
     def rsample(self, sample_shape=torch.Size()):
-        # Sample from standardized space and transform back
-        std_samples = super(TruncatedNormalDist, self).rsample(sample_shape)
+        # Sample in standardized space and transform back, reparameterised so
+        # gradients reach loc and scale. Base icdf: self.icdf rescales already.
+        shape = self._extended_shape(sample_shape)
+        p = torch.empty(shape, device=self.a.device).uniform_(
+            self._dtype_min_gt_0, self._dtype_max_lt_1
+        )
+        std_samples = TruncatedStandardNormal.icdf(self, p).clamp(self.a, self.b)
         return self._from_std_rv(std_samples)
 
     def entropy(

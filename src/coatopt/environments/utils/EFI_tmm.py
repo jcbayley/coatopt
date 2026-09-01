@@ -45,6 +45,47 @@ def optical_to_physical(optical_thickness, wavelength, refractive_index):
     return physical_thickness
 
 
+# Absorption is reported in ppm, halved to match TFCalc's convention. Applied
+# to both the EFI integral and the exact tmm absorptance so the two agree.
+ABSORPTION_PPM_SCALE = 1e6 / 2
+
+
+def CalculateRTA_tmm(
+    dOpt,
+    materialLayer,
+    materialParams,
+    lambda_=1064,
+    polarisation="p",
+    air_index=0,
+    substrate_index=1,
+):
+    """Exact R/T/A from a single complex-index coh_tmm call (no field sampling).
+
+    Absorption is the energy-balance absorptance 1 - R - T of the stack
+    (note: no TFCalc /2 convention, unlike the EFI integral). Returns
+    (reflectivity, transmission, absorption) as power fractions.
+    """
+    wavelength = lambda_ * 1e9
+
+    n_air = materialParams[air_index]["n"]
+    n_sub = materialParams[substrate_index]["n"]
+    n_list = [complex(n_air, 0)]
+    t_list = [np.inf]
+    for layer_idx, layer_material in enumerate(materialLayer):
+        n = materialParams[layer_material]["n"]
+        k = materialParams[layer_material]["k"]
+        n_list.append(complex(n, k))
+        t_list.append(optical_to_physical(dOpt[layer_idx], wavelength, n))
+    n_list.append(complex(n_sub, 0))
+    t_list.append(np.inf)
+
+    coh = tmm.coh_tmm(polarisation, n_list, t_list, 0.0, wavelength)
+    reflectivity = float(coh["R"])
+    transmission = float(coh["T"])
+    absorption = max(0.0, 1.0 - reflectivity - transmission)
+    return reflectivity, transmission, absorption
+
+
 def CalculateEFI_tmm(
     dOpt,
     materialLayer,
@@ -122,6 +163,7 @@ def CalculateEFI_tmm(
     # coh_tmm_data_sub = coh_tmm_data  # No need to recalculate the same thing
 
     reflectivity = coh_tmm_data["R"]
+    transmission = coh_tmm_data["T"]
     #####
 
     num_points = 500
@@ -156,7 +198,7 @@ def CalculateEFI_tmm(
 
     # tmm calcualtes for forward and backward propogation of the light in the coating  x2
     # to match with the calcutions of TFCalc : total_absorption*1E5/2}
-    total_absorption = total_absorption * 1e6 / 2
+    total_absorption = total_absorption * ABSORPTION_PPM_SCALE
 
     if plots:
         import matplotlib as mpl  # Ensure you have this import
@@ -294,7 +336,7 @@ def CalculateEFI_tmm(
         )
         plt.show()
 
-    return E_sub, layer_idx, ds, E, poyn, total_absorption, reflectivity
+    return E_sub, layer_idx, ds, E, poyn, total_absorption, reflectivity, transmission
 
 
 def CalculateAbsorption_tmm(
