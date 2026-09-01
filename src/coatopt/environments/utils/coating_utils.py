@@ -490,8 +490,7 @@ def merit_function(
         reflectivity_out = np.abs(rCoat) ** 2
     else:
         # Exact R/T/A from one complex-index tmm call: absorption is the
-        # energy-balance absorptance (matches the EFI integral to <1% without
-        # its 500-point discretisation), and reflectivity includes absorption.
+        # energy-balance absorptance and reflectivity includes absorption.
         reflectivity_out, transmission, absorption_fraction = CalculateRTA_tmm(
             dOpt=layer_optical_thicknesses,
             materialLayer=layer_material_inds,

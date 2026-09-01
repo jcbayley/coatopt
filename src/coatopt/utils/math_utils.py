@@ -162,15 +162,8 @@ class TruncatedNormalDist(TruncatedStandardNormal):
         )
 
     def rsample(self, sample_shape=torch.Size()):
-        # Sample from standardized space and transform back. Reparameterised:
-        # p is drawn independently of the parameters and icdf is differentiable
-        # in loc and scale, so gradients reach both.
-        #
-        # Name the base icdf rather than dispatching through self. This class's
-        # icdf already applies _from_std_rv, so self.icdf would return a sample
-        # in original units, which _from_std_rv below would then scale a second
-        # time. For the same reason the clamp belongs on this side of the
-        # transform: self.a and self.b are the standardized bounds.
+        # Sample in standardized space and transform back, reparameterised so
+        # gradients reach loc and scale. Base icdf: self.icdf rescales already.
         shape = self._extended_shape(sample_shape)
         p = torch.empty(shape, device=self.a.device).uniform_(
             self._dtype_min_gt_0, self._dtype_max_lt_1

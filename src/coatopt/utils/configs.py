@@ -31,9 +31,8 @@ class DataConfig:
     ignore_air_option: bool = False
     ignore_substrate_option: bool = False
     use_intermediate_reward: bool = False
-    # True: 500-point EFI field loop, absorption by integration, lossless
-    # reflectivity. False: exact R/T/A from one complex-index tmm call
-    # (absorption = 1-R-T, reflectivity includes absorption) — faster.
+    # True: 500-point EFI field loop, absorption by integration. False: exact
+    # R/T/A from one complex-index tmm call (absorption = 1-R-T) — faster.
     compute_efi: bool = True
     combine: str = "sum"
 
@@ -51,11 +50,8 @@ class DataConfig:
         }
     )
 
-    # Pareto archive resolution, in normalised-reward units. Candidates landing
-    # in the same eps-box count as the same trade-off and only the best is kept,
-    # which bounds the archive instead of letting it grow with every episode.
-    # 0.0005 costs ~0.05% of the hypervolume; raise it for a smaller front
-    # (0.005 costs ~0.6%). 0.0 stores every distinct point.
+    # Pareto archive resolution, in normalised-reward units. Candidates in the
+    # same eps-box count as one trade-off, which bounds the archive size.
     pareto_epsilon: float = 0.0005
 
     # Preference constraints (disabled by default for SB3)
@@ -192,16 +188,13 @@ def load_config(config_path: str) -> Config:
             else:
                 data_kwargs[key] = value
 
-    # Keys that used to be DataConfig fields. apply_air_penalty and
-    # air_penalty_weight were parsed into the config but never read by any
-    # environment, so setting them did nothing; dropped here rather than
-    # rejected so archived config.ini files still load.
+    # Keys that used to be DataConfig fields, dropped rather than rejected so
+    # archived config.ini files still load.
     for retired in ("apply_air_penalty", "air_penalty_weight"):
         data_kwargs.pop(retired, None)
 
-    # Map beam radius aliases (INI keys are lowercased by configparser) onto the
-    # wBeam/beam_radius dataclass fields, removing the alias keys so
-    # DataConfig(**data_kwargs) only receives real fields.
+    # Map beam radius aliases onto the wBeam/beam_radius fields, dropping the
+    # aliases so DataConfig(**data_kwargs) only receives real fields.
     beam_val = None
     for alias in ("wbeam", "beam_radius", "beam_width", "w0"):
         if alias in data_kwargs:

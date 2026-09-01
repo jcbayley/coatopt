@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
 """Training-curve plots for HPPO runs.
 
-Renders a single PNG (training_curves.png) plus a CSV (training_history.csv)
-from the metrics history collected during training, so run health is visible
-without digging into MLflow.
+Renders training_curves.png plus training_history.csv from the metrics history
+collected during training.
 """
 
 from pathlib import Path

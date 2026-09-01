@@ -766,9 +766,8 @@ def print_timing_statistics(rows):
 def plot_run_timings(rows, save_path=None, title="Run timings"):
     """Histogram of per-run algorithm wall-clock, one series per run group.
 
-    A second panel appears when the runs recorded a CPU probe, plotting run
-    time against it: if the spread across supposedly identical runs is just
-    node speed, the points fall on a line, and if it isn't, they don't.
+    A second panel plots run time against the CPU probe when the runs recorded
+    one, so node speed can be told apart from real differences.
     """
     if not rows:
         print("No run_metadata.json files found - skipping timing plot")
@@ -936,10 +935,7 @@ def plot_hypervolume_vs_evaluations(
 ):
     """Convergence against designs evaluated, not wall clock.
 
-    Evolutionary and RL searches differ by an order of magnitude in how many
-    designs they get through per second, so wall clock flatters whichever
-    evaluates faster and says nothing about how well either uses a sample.
-    Runs from the same group share a colour; the group median is drawn solid
+    Runs from the same group share a colour, with the group median drawn solid
     over the individual runs.
     """
     if not histories:
@@ -1837,7 +1833,7 @@ Examples:
         print_statistics_both_spaces(pareto_fronts)
 
     # Convergence against designs evaluated, which puts RL and genetic runs on
-    # the same axis regardless of how fast each gets through a design
+    # the same axis
     if args.convergence:
         histories = load_convergence_histories(
             directories, args.labels if args.labels else None

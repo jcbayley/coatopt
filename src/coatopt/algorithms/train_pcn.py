@@ -1,65 +1,24 @@
 #!/usr/bin/env python3
 """Pareto Conditioned Networks (PCN) for CoatOpt.
 
-Self-contained, like every other trainer in this directory: it imports the
-environment and the config helpers and nothing else from the project, and
-nothing outside this file needs to change to use it.
+Wraps MORL-Baselines' PCN (Reymond, Bargiacchi & Nowe, AAMAS 2022), which
+learns ``(state, desired return, desired horizon) -> action`` by cloning its
+own best episodes: no value function and no scalarisation.
 
     python -m coatopt.algorithms.train_pcn --config path/to/config.ini
 
-Why PCN for this problem
-------------------------
-Reference: Reymond, Bargiacchi & Nowe, "Pareto Conditioned Networks",
-AAMAS 2022. The implementation is MORL-Baselines' -- this file is a wrapper,
-not a reimplementation.
-
-PCN is a *return-conditioned* method: it learns a supervised map
-``(state, desired return, desired horizon) -> action``, trained by cloning its
-own best episodes. That gives it three properties that fit a coating stack
-better than the value-based alternatives, all of which were measured on the
-MO-Gymnasium benchmark in ``benchmarks/``:
-
-* **No value function, so no credit assignment.** The coating environment pays
-  a single terminal reward on the finished stack (``use_intermediate_reward``
-  is False in every recorded experiment). For a bootstrapping method that is
-  the hardest case; for PCN the episode return *is* the training label, so a
-  sparse terminal reward is its natural input rather than an obstacle.
-
-* **No scalarisation, so no convexity ceiling.** Weighted-sum methods return
-  points on the convex hull of the front and nothing else. On the benchmark's
-  two provably non-convex environments PCN placed first on minecart
-  (0.439 of analytic-optimal hypervolume) and had the highest front coverage of
-  any method on deep-sea-treasure-concave (0.88), while weighted-sum MORL/D
-  came last on both (0.315 and 0.452). If coating fronts are non-convex, that
-  gap is structural and no amount of compute closes it.
-
-* **Deterministic, fixed-length episodes are its easy case** -- the return is a
-  clean label for the trajectory that produced it, with no evaluation noise.
-
-The honest caveat: PCN was the *worst* method on the benchmark's long-horizon
-stochastic locomotion task (hopper), by an order of magnitude. That is the
-opposite regime to this one, but it is worth knowing the failure mode exists.
-Its other weakness is a narrow policy front -- it finds good points but
-reproduces a thin set on demand, so the archive matters more than the model.
-
 Action space
 ------------
-PCN handles ``Discrete`` or ``Box``, not the hybrid (material, thickness) pair
-this problem actually has, so the pair has to be encoded. Two encodings, set by
-``action_mode``:
+PCN handles ``Discrete`` or ``Box``, not the hybrid (material, thickness) pair,
+so ``action_mode`` picks an encoding:
 
 ``discrete`` (default)
-    ``Discrete(n_materials * n_thickness_bins)``. PCN's discrete head is a
-    categorical trained with cross-entropy, which is the right loss for a
-    material choice, and exploration is a categorical sample. The cost is
-    thickness resolution -- ``n_thickness_bins`` sets it, and 64 bins over the
-    admissible range is finer than it sounds.
+    ``Discrete(n_materials * n_thickness_bins)``. Categorical material head, at
+    the cost of thickness resolution (``n_thickness_bins`` sets it).
 
 ``continuous``
-    ``Box(n_materials + 1)``: a score per material plus a thickness, with the
-    material taken as the argmax. Keeps thickness exact, but PCN then trains
-    both with MSE and explores only through its desired-return perturbation,
-    so material exploration is weak. Offered for comparison.
+    ``Box(n_materials + 1)``: a score per material plus an exact thickness,
+    material taken as the argmax. Material exploration is weaker.
 
 Config section ``[pcn]``
 ------------------------
@@ -108,11 +67,8 @@ SECTION = "pcn"
 class CoatOptPCNEnv(gym.Env):
     """The coating environment as MORL-Baselines expects to find it.
 
-    Two things differ from the other wrappers in this directory. The reward is
-    returned as a **vector** over ``optimise_parameters`` rather than a scalar,
-    because PCN is a genuine multi-objective method and conditions on the
-    return vector; and there is no target objective or constraint threshold,
-    because PCN does not scalarise at all.
+    The reward is a vector over ``optimise_parameters`` rather than a scalar,
+    and there is no target objective or constraint threshold.
     """
 
     metadata = {"render_modes": []}
@@ -135,9 +91,8 @@ class CoatOptPCNEnv(gym.Env):
         self.n_bins = int(n_thickness_bins)
         self.min_layers_before_air = int(min_layers_before_air)
 
-        # PCN neither scalarises nor constrains, so the environment's
-        # constrained-training machinery stays off and step() hands back the
-        # per-objective rewards untouched.
+        # PCN neither scalarises nor constrains, so the constrained-training
+        # machinery stays off and step() returns per-objective rewards.
         self.base_env.use_constrained_training = False
         self.base_env.is_warmup = False
 
@@ -238,9 +193,8 @@ class CoatOptPCNEnv(gym.Env):
         state, rewards, _, finished, _scalar, _full, vals = self.base_env.step(
             coatopt_action
         )
-        # The vector PCN conditions on. Zero on every non-terminal step, which
-        # is what the environment already does -- the merit function scores a
-        # finished stack.
+        # The vector PCN conditions on. Zero on every non-terminal step, since
+        # the merit function only scores a finished stack.
         reward_vec = np.array(
             [float(rewards.get(o, 0.0)) for o in self.objectives], dtype=np.float32
         )
@@ -284,9 +238,8 @@ def train(config_path: str, save_dir: str = None) -> dict:
     action_mode = _get("action_mode", "discrete")
     n_thickness_bins = _get("n_thickness_bins", 64, int)
     lr = _get("lr", 1e-3, float)
-    # Terminal reward on a fixed-length stack: there is nothing to discount
-    # between layers, and gamma < 1 would make an identical design worth less
-    # for being deeper in the episode.
+    # Terminal reward on a fixed-length stack: nothing to discount between
+    # layers, and gamma < 1 would penalise a design for being deeper.
     gamma = _get("gamma", 1.0, float)
     batch_size = _get("batch_size", 256, int)
     hidden_dim = _get("hidden_dim", 64, int)
@@ -312,11 +265,8 @@ def train(config_path: str, save_dir: str = None) -> dict:
         min_layers_before_air=min_layers_before_air,
     )
 
-    # PCN divides the desired return by scaling_factor before feeding it to the
-    # network, so it wants the rough magnitude of a return per objective plus
-    # one entry for the horizon. Rewards here are already normalised to O(1) by
-    # the environment, so the objective entries are 1 and the horizon entry is
-    # 1/n_layers.
+    # PCN divides the desired return by scaling_factor, so it wants the rough
+    # magnitude of a return per objective plus one entry for the horizon.
     scaling = np.concatenate(
         [np.ones(env.n_objectives), [1.0 / max(env.base_env.max_layers, 1)]]
     ).astype(np.float32)
@@ -381,8 +331,7 @@ def train(config_path: str, save_dir: str = None) -> dict:
     designs_df, values_df, rewards_df = env.base_env.export_pareto_dataframes()
 
     # PCN.save() prepends its own "weights/" to whatever it is given, so it
-    # cannot take an absolute path. Write the checkpoint here and hand back
-    # None, as the other trainers in this directory do.
+    # cannot take an absolute path; write the checkpoint here instead.
     try:
         agent.save(save_dir=str(save_dir) + "/", filename="pcn_model")
     except Exception as exc:  # a failed checkpoint must not lose the front

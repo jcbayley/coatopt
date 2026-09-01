@@ -50,15 +50,9 @@ from coatopt.utils.utils import convert_pymoo_to_dataframes, load_materials_from
 class HypervolumeHistory(Callback):
     """Record hypervolume against evaluation count as the search runs.
 
-    Wall-clock is a poor axis for comparing an evolutionary search against an
-    RL one, since they differ by an order of magnitude in designs evaluated per
-    second. Evaluations put both on the same footing, so record them here in
-    the same reward space and with the same reference point the RL trainer
-    logs (F is the negated normalised reward, so -F is directly comparable).
-
-    Sampled every `every` generations: hypervolume is quadratic in front size,
-    and on a 1000-member front computing it every generation costs more than
-    the search itself.
+    Uses the same reward space and reference point the RL trainer logs, so the
+    two are comparable. Sampled every `every` generations, since hypervolume
+    is quadratic in front size.
     """
 
     def __init__(self, n_objectives: int, every: int = 10):

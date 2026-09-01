@@ -186,12 +186,8 @@ class CoatingEnvironment:
         self._crowding_cache = None
         # Highest front spread seen per objective; see constraint_spread
         self._constraint_spread = {obj: None for obj in self.optimise_parameters}
-        # Designs scored by the merit function since the run started. This is
-        # the search's real cost and the only budget that means the same thing
-        # for an RL run and a genetic one, so it is what convergence is plotted
-        # against. Episodes are not a stand-in: with use_intermediate_reward a
-        # single episode scores the partial stack after every layer, so a
-        # 20-layer episode spends 20 evaluations, not one.
+        # Designs scored by the merit function since the run started; the only
+        # budget that means the same thing for an RL run and a genetic one.
         self.n_evaluations = 0
         # Grid resolution for the archive, in normalised-reward units. See
         # flush_pareto_candidates. 0.0 falls back to storing every distinct point.
@@ -345,10 +341,7 @@ class CoatingEnvironment:
     ):
         """Raise the best normalised reward on record for an objective.
 
-        These bests anchor every constraint threshold afterwards
-        (``constraints[obj] = frac * best``), so if they stay frozen at what
-        warmup managed, a policy that later exceeds them is no longer being
-        constrained by anything demanding.
+        These bests anchor the constraint thresholds (frac * best).
         """
         old_best = self.warmup_best_rewards[objective]
         if normalised_reward > old_best:
@@ -360,16 +353,8 @@ class CoatingEnvironment:
     def constraint_anchor(self, objective: str) -> float:
         """Scale that this objective's constraint thresholds are a fraction of.
 
-        With "warmup" the scale is whatever that run's warmup happened to
-        reach. That is a max over a noisy process, so it differs between runs
-        and two runs of the same config end up solving genuinely different
-        constrained problems - a large part of why repeat runs disagree.
-
-        With "absolute" the scale starts at 1.0, which is what the normalised
-        reward equals at the best end of objective_bounds, so every run sweeps
-        the same thresholds and a given level means the same thing everywhere.
-        It still rises if a run beats that, since a threshold below what the
-        policy can already reach has stopped constraining anything.
+        "warmup" uses whatever this run's warmup reached; "absolute" starts at
+        the normalised reward's own 1.0 and rises only if a run beats it.
         """
         best = self.warmup_best_rewards.get(objective, 0.0)
         if self.constraint_anchor_mode == "absolute":
@@ -379,14 +364,8 @@ class CoatingEnvironment:
     def constraint_range(self, objective: str) -> Tuple[float, float]:
         """Reward range to draw this objective's constraint threshold from.
 
-        objective_bounds only fixes an arbitrary origin and unit for the
-        reward, so a fixed [0, anchor] interval leaves it to that guess how
-        many thresholds land where designs actually are. Taking the range
-        from the front's own spread instead makes it invariant to the guess,
-        since the spread carries the same units. Both ends are widened by a
-        fraction of that spread; the upper one is what asks for thresholds no
-        design has met yet, and the lower one keeps the opposite corner
-        reachable so the front can still extend downwards.
+        Taken from the front's own spread rather than objective_bounds, with
+        both ends widened by a fraction of that spread.
         """
         idx = self.optimise_parameters.index(objective)
         rewards = [r[idx] for r, _ in self.pareto_front_rewards]
@@ -403,25 +382,10 @@ class CoatingEnvironment:
     def constraint_spread(self, objective: str) -> float:
         """Scale this objective's constraint violations are measured against.
 
-        A violation is a shortfall in normalised reward, and a reward unit does
-        not mean the same thing in each objective: objective_bounds fixes an
-        arbitrary origin and unit per objective, so how far the front stretches
-        in one is unrelated to how far it stretches in another. Measured on a
-        3-objective 20-layer archive the front spans 1.29 in reflectivity, 0.77
-        in absorption and 0.13 in thermal noise, so a flat constraint_penalty
-        pushes about ten times harder on reflectivity than on thermal noise for
-        no reason anyone chose. Dividing by the spread makes a violation read as
-        "this fraction of the front's own range", which says the same thing in
-        every objective and does not move when objective_bounds, the layer count
-        or the thickness range change.
-
-        The spread only ever grows. The epsilon-box archive can displace the
-        point holding an extreme, so a freshly measured spread can shrink, and a
-        scale free to move both ways would score the same design differently
-        from one rollout to the next.
-
-        Returns 1.0 until the front is large enough to measure, which leaves the
-        penalty exactly as it was before this scaling existed.
+        The front's own spread in this objective, so a violation reads as a
+        fraction of that range and constraint_penalty means the same thing
+        everywhere. Only ever grows, and is 1.0 until the front is large
+        enough to measure.
         """
         if len(self.pareto_front_rewards) >= MIN_FRONT_FOR_CONSTRAINT_RANGE:
             _, _, spans = self._front_crowding()
@@ -436,21 +400,10 @@ class CoatingEnvironment:
     def _front_crowding(self) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
         """Sampling weights over the front, and each point's local spacing.
 
-        Crowding distance in the NSGA-II sense: a point's score is the sum,
-        over objectives, of the gap between its two neighbours in that
-        objective, normalised by the objective's span. Sparse stretches of the
-        front score higher, so drawing reference points with these weights
-        spends episodes where the front is thin rather than where it is
-        already dense. The per-objective neighbour gaps are returned alongside
-        because they set how far past a reference point it is worth asking for
-        - a step measured in local spacing rather than in the front's global
-        spread, which is what keeps the ask reachable. The per-objective spans
-        come back with them: they are already measured here, and
-        constraint_spread needs exactly the same numbers.
-
-        Cached against ``_front_version`` so it is recomputed once per flush
-        rather than once per episode. Measured at 3 objectives this costs
-        0.45 ms at 2.5k points and 4.2 ms at 30k, against ~36 ms per episode.
+        NSGA-II crowding distance, so sampling with these weights spends
+        episodes where the front is thin. Also returns each point's
+        per-objective neighbour gaps and the per-objective spans. Cached
+        against ``_front_version``, so it is recomputed once per flush.
         """
         front = np.asarray(
             [r for r, _ in self.pareto_front_rewards], dtype=float
@@ -500,20 +453,10 @@ class CoatingEnvironment:
     ) -> Optional[Dict[str, float]]:
         """Constraint thresholds taken from a design already on the front.
 
-        Drawing each threshold independently from a per-objective range treats
-        the objectives as if they varied independently, but the front is
-        concave: measured on a 3-objective 20-layer archive only half the
-        threshold vectors sampled that way were met by any design on the
-        front, so half the episodes asked for a trade-off nothing had
-        achieved. Anchoring on one archived point instead makes the
-        subproblem answerable by construction - that point meets it - and the
-        pressure to improve comes from the target objective, which is left
-        unconstrained and unbounded.
-
-        ``level_frac`` and ``randomise`` scale how far past the reference
-        point the thresholds sit, in units of the local neighbour spacing.
-        Returns None when the front is too small to measure spacing on, so
-        the caller can fall back to the range-based thresholds.
+        Anchoring on one archived point keeps the subproblem answerable, since
+        that point meets it. ``level_frac`` and ``randomise`` scale how far
+        past it the thresholds sit, in units of local neighbour spacing.
+        Returns None when the front is too small to measure spacing on.
         """
         if len(self.pareto_front_rewards) < MIN_FRONT_FOR_CONSTRAINT_RANGE:
             return None
@@ -550,18 +493,12 @@ class CoatingEnvironment:
     ):
         """Enable two-phase constrained training.
 
-        Phase 1 (Warmup): Optimize each objective individually
-        Phase 2 (Constrained): Cycle through objectives with constraints
-
-        update_constraint_bounds keeps the per-objective bests rising during
-        phase 2 rather than freezing them at warmup, so the thresholds scale
-        with what the policy can actually reach.
-
-        constraint_source picks how thresholds are chosen: "box" draws each
-        one independently from that objective's range across the front (see
-        constraint_range), "reference" takes them from a single archived
-        design (see constraint_reference). Only "reference" reads
-        constraint_ref_extend; only "box" reads the two extend fractions.
+        Phase 1 (warmup) optimises each objective individually; phase 2 cycles
+        through objectives under constraints. update_constraint_bounds keeps
+        the per-objective bests rising during phase 2, and constraint_source
+        picks the thresholds: "box" from each objective's range (see
+        constraint_range), "reference" from one archived design (see
+        constraint_reference).
         """
         if constraint_anchor_mode not in ("warmup", "absolute"):
             raise ValueError(
@@ -594,10 +531,7 @@ class CoatingEnvironment:
         """Enable pareto dominance bonus reward based on hypervolume improvement.
 
         Args:
-            bonus: Weight for hypervolume improvement bonus.
-                   Since hypervolume improvements are typically small (0-0.1),
-                   you may need larger values than the old dominated-count method.
-                   Suggested range: 1.0-100.0 depending on desired bonus magnitude.
+            bonus: Weight for hypervolume improvement (typically 1.0-100.0).
         """
         self.use_pareto_bonus = True
         self.pareto_dominance_bonus = bonus
@@ -660,12 +594,9 @@ class CoatingEnvironment:
     def _eps_box_survivors(self, cand_rewards, front_rewards):
         """Merge candidates onto an epsilon-box grid in reward space.
 
-        Rewards are binned onto a grid of side ``pareto_epsilon`` and dominance
-        is decided between boxes rather than between points, with one
-        representative kept per box. This is the standard epsilon-dominance
-        archive (Laumanns et al. 2002): the stored front is bounded by the
-        number of boxes it can occupy instead of growing with every episode,
-        at a cost of at most ``pareto_epsilon`` per objective in front quality.
+        Standard epsilon-dominance archive (Laumanns et al. 2002): rewards are
+        binned onto a grid of side ``pareto_epsilon``, dominance is decided
+        between boxes, and one representative is kept per box.
 
         Returns:
             (survivors, keep_front) - indices of candidates to add, and a mask
@@ -680,9 +611,8 @@ class CoatingEnvironment:
         )
         keep_front = np.ones(len(front_box), dtype=bool)
 
-        # An archive built before this setting was enabled, or reloaded from an
-        # older checkpoint, can hold several points per box; collapse those to
-        # their best member so the one-per-box invariant holds from here on.
+        # An archive built before this setting, or reloaded from an older
+        # checkpoint, can hold several points per box; collapse them.
         owner = {}  # box key -> (score, index, True if the index is an incumbent)
         for j, key in enumerate(map(tuple, front_box)):
             score = float(front_rewards[j].sum())
@@ -695,9 +625,8 @@ class CoatingEnvironment:
             else:
                 keep_front[j] = False
 
-        # Candidates whose box a surviving incumbent's box already dominates.
-        # Filtering before claiming boxes matters: a candidate that lost here
-        # must not have displaced an incumbent on its way out.
+        # Candidates whose box a surviving incumbent's box already dominates,
+        # filtered first so a losing candidate cannot displace an incumbent.
         keep = ~_dominated_by(cand_box, front_box[keep_front])
 
         # Candidates dominated by a better candidate in the same batch
@@ -705,10 +634,8 @@ class CoatingEnvironment:
         if len(idx) > 1:
             keep[idx] = ~_dominated_by(cand_box[idx], cand_box[idx])
 
-        # One survivor per box, strongest first, so each box ends up held by the
-        # best point that landed in it. Only an incumbent is ever displaced:
-        # candidates arrive in descending score order, so a later one cannot
-        # outscore an earlier candidate already holding the box.
+        # One survivor per box, strongest first, so each box ends up held by
+        # the best point that landed in it. Only incumbents are displaced.
         cand_scores = cand_rewards.sum(1)
         idx = np.flatnonzero(keep)
         for i in idx[np.argsort(-cand_scores[idx])]:
@@ -731,22 +658,11 @@ class CoatingEnvironment:
     def flush_pareto_candidates(self):
         """Merge all staged candidates into the Pareto front.
 
-        Call once per rollout, before the policy update.
-
-        The stored front is already non-dominated, so a new batch only has to
-        be compared against it and against itself: O(front x candidates)
-        instead of re-sorting the whole pool every rollout. Measured on a
-        3-objective front, that takes a flush from 23 ms to 1.5 ms at 8k
-        archived points, and the gap widens as the archive grows.
-
-        With ``pareto_epsilon`` above 0 the merge runs on an epsilon-box grid
-        (see _eps_box_survivors), which bounds the archive instead of letting
-        thickness resolution decide its size. On a 20-layer 3-objective run,
-        dropping min_thickness from 0.1 to 0.01 took the archive from 3k
-        points to 30k; of those an eps of 0.0005 keeps ~1.4k for 0.05% of the
-        hypervolume, and 0.005 keeps ~200 for 0.6%. Hypervolume over 30k
-        points took 285 s, over 1.4k it takes under a second. 0.0 restores the
-        old keep-everything behaviour.
+        Call once per rollout, before the policy update. The stored front is
+        already non-dominated, so a batch is only compared against it and
+        against itself. With ``pareto_epsilon`` above 0 the merge runs on an
+        epsilon-box grid (see _eps_box_survivors), which bounds the archive
+        size; 0.0 keeps every distinct point.
         """
         if not self.pending_pareto_candidates:
             return
@@ -951,9 +867,8 @@ class CoatingEnvironment:
                 # Phase 2 (Constrained): Optimize target objective with constraints
                 total_reward = individual_rewards.get(self.target_objective, 0.0)
 
-                # Keep the constraint anchors current. Every objective is scored
-                # on every episode, so any of them can raise its own best, not
-                # just the one being targeted.
+                # Keep the constraint anchors current: every objective is
+                # scored every episode, so any of them can raise its own best.
                 if self.update_constraint_bounds:
                     for obj in self.optimise_parameters:
                         reward = individual_rewards.get(obj)

@@ -110,9 +110,8 @@ class CoatOptHybridEnv(gym.Env):
         self.warmup_episodes_per_objective = (
             warmup_episodes  # Episodes per objective during warmup
         )
-        # Warmup interleaving: cycle the target objective every
-        # warmup_block_episodes instead of one long block per objective.
-        # Default (None) = one block per objective, the original behaviour.
+        # Cycle the warmup target every warmup_block_episodes; None gives
+        # one block per objective.
         self.warmup_block_episodes = warmup_block_episodes or warmup_episodes
         self.total_warmup_episodes = warmup_episodes * len(
             self.objectives
@@ -204,8 +203,7 @@ class CoatOptHybridEnv(gym.Env):
         # Warmup phase
         if self.episode_count <= self.total_warmup_episodes:
             self.is_warmup = True
-            # Alternate objectives during warmup, cycling every
-            # warmup_block_episodes (defaults to one block per objective)
+            # Alternate objectives every warmup_block_episodes
             obj_idx = ((self.episode_count - 1) // self.warmup_block_episodes) % len(
                 self.objectives
             )
@@ -227,20 +225,16 @@ class CoatOptHybridEnv(gym.Env):
             obj_idx = phase % len(self.objectives)
             target_obj = self.objectives[obj_idx]
 
-            # Constraint level (gradually tighten). "cycle" restarts the ramp
-            # once it tops out; "ramp" climbs once and stays there. With
-            # randomise_constraints the top level draws frac from U(0, 1),
-            # which already covers every threshold the lower levels sample, so
-            # restarting the ramp narrows the range rather than widening it.
+            # Constraint level. "cycle" restarts the ramp once it tops out;
+            # "ramp" climbs once and holds there.
             sweep = phase // len(self.objectives)
             if self.constraint_level_schedule == "ramp":
                 level = min(sweep, self.steps_per_objective - 1)
             else:
                 level = sweep % self.steps_per_objective
 
-            # Set constraints on the other objectives. "reference" takes them
-            # from one archived design so the subproblem is answerable by
-            # construction; "box" draws each from the range the front spans.
+            # Constrain the other objectives: "reference" takes them all from
+            # one archived design, "box" from the range the front spans.
             max_frac = (level + 1) / self.steps_per_objective
             constraints = None
             if self.env.constraint_source == "reference":
@@ -311,11 +305,8 @@ class RolloutBuffer:
         self.log_probs = []
         self.dones = []
         self.masks = []
-        # Target objective of the episode each step belongs to. Only the
-        # advantage normalisation reads it - the value head is shared - but a
-        # rollout spans as many targets as episodes whenever the phase is
-        # shorter than the rollout, and the grouping has to come from
-        # somewhere.
+        # Target objective of each step's episode. Read by the advantage
+        # normalisation, since a rollout can span several targets.
         self.target_idxs = []
         self.ptr = 0
 
@@ -381,8 +372,7 @@ class RolloutBuffer:
 class LSTMEncoder(nn.Module):
     """Recurrent encoder of the layer stack.
 
-    encode_step carries (h, c) so a rollout step feeds only the layer just
-    placed instead of re-reading the whole stack.
+    encode_step carries (h, c) so a rollout step feeds only the new layer.
     """
 
     def __init__(self, in_dim, hidden=32, layers=1, **_):
@@ -426,15 +416,8 @@ class _AttentionBlock(nn.Module):
 class AttentionEncoder(nn.Module):
     """Causal self-attention encoder of the layer stack.
 
-    Causal is not optional: the update reads position t from one pass over
-    the episode's final observation, so if position t could see later layers
-    it would use layers the policy had not placed yet and the PPO ratio would
-    compare two different functions. No dropout, for the same reason - the
-    rollout and the update must agree on the same state.
-
-    On CPU this is much cheaper than the LSTM despite being O(T^2): 50 layers
-    is one small matmul, where the LSTM is 50 dependent tiny ones. Rollout
-    keeps no state and simply re-encodes the prefix placed so far.
+    Causal and dropout-free so position t sees only the first t layers and
+    rollout and update encode the same state identically.
     """
 
     def __init__(self, in_dim, hidden=32, layers=2, heads=2, ff_mult=2, max_len=50):
@@ -458,34 +441,18 @@ class AttentionEncoder(nn.Module):
 
 PRE_MODELS = {"lstm": LSTMEncoder, "attention": AttentionEncoder}
 
-# Thickness sampling width, as a fraction of (max_t - min_t) rather than an
-# absolute value. An absolute clamp does not mean the same thing at every
-# thickness range: at scale ~ the range the truncated normal is
-# indistinguishable from uniform and d(log_prob)/d(log_std) falls to ~2e-4, so
-# the head sits on a dead plateau and never learns a width. Measured on a
-# 20-layer 3-objective run at [0.01, 0.40] the realised std stayed pinned at
-# the uniform limit (0.1123) for all 150k episodes; the same run at
-# [0.10, 0.40] escaped by chance around episode 13k and reached 0.024. These
-# bounds put the whole usable interval in the informative region at any range.
+# Thickness sampling width as a fraction of (max_t - min_t), so the clamp
+# means the same thing at any thickness range.
 LOG_STD_MIN, LOG_STD_MAX = -5.0, -1.2  # 0.7% .. 30% of the thickness range
-# Where the width starts, strictly inside the clamp. 8% of the range: on a
-# 20-layer stack a realised std of 0.02 costs almost nothing in transmission,
-# 0.05 costs 5x and 0.1 costs 95x, so this begins in the band where thickness
-# jitter is cheap and the material head learns from a reward that reflects the
-# layer sequence rather than a dice roll on thicknesses.
+# Where the width starts, strictly inside the clamp (8% of the range).
 LOG_STD_INIT = -2.5
 
 
 class HybridActorCritic(nn.Module):
     """Actor-Critic with hybrid discrete+continuous actions.
 
-    Discrete head: material selection (masked categorical)
-    Continuous head: thickness (TruncatedNormal with bounds [min_t, max_t])
-    Value head: state value V(s)
-
-    pre_model_type selects how the layer stack is read before the MLP trunk:
-    "linear" feeds the flattened observation straight in, "lstm" and
-    "attention" encode the sequence first.
+    Heads: masked categorical material, TruncatedNormal thickness, value.
+    pre_model_type ("linear", "lstm", "attention") sets the stack encoder.
     """
 
     def __init__(
@@ -527,10 +494,10 @@ class HybridActorCritic(nn.Module):
                 n_features_per_layer, max_len=max_layers, **(pre_model_params or {})
             )
 
-            # After the encoder: concat [encoded stack, objective weights, constraints]
+            # After the encoder: [encoded stack, target one-hot, constraints]
             combined_dim = (
                 self.encoder.out_dim + n_constraints + n_constraints
-            )  # n_objectives = n_constraints
+            )  # one objective per constraint
             prev_dim = combined_dim
         else:
             # Standard MLP trunk, straight off the flattened observation
@@ -551,15 +518,9 @@ class HybridActorCritic(nn.Module):
         self.thickness_mean = nn.Linear(prev_dim + n_materials, 1)
         self.thickness_logstd = nn.Linear(prev_dim + n_materials, 1)
 
-        # One value head, not one per objective. The trunk input already
-        # carries the target one-hot and the constraint thresholds (see
-        # _trunk_features), so the features every head would read are already
-        # target-conditioned. The thresholds are continuous and redrawn every
-        # episode besides, so no finite set of heads can index the subproblem
-        # actually being solved; splitting the last layer per objective only
-        # fragmented the rollout across them, which costs most when the target
-        # cycles every episode.
-        self.n_objectives = n_constraints  # Number of objectives
+        # One value head, not one per objective: the trunk input already
+        # carries the target one-hot and the constraint thresholds.
+        self.n_objectives = n_constraints  # width of the observation tail
         self.value_head = nn.Linear(prev_dim, 1)
 
     def _obs_layers(self, obs):
@@ -570,11 +531,8 @@ class HybridActorCritic(nn.Module):
     def _seq_features(self, obs, episode_idx=None, step_idx=None):
         """Encoded layer stack at each step.
 
-        Every encoder is causal, so output position t of one pass depends only
-        on the first t layers. With episode_idx/step_idx, obs holds one final
-        observation per episode and each step's feature is gathered from a
-        single shared pass; otherwise obs is per-step and the output is read
-        at each observation's own layer count.
+        With episode_idx/step_idx, obs holds one final observation per episode
+        and each step's feature is gathered from a single causal pass.
         """
         layers = self._obs_layers(obs)
         # Prepend a padding row (row -1 is always padding) so position t
@@ -589,12 +547,8 @@ class HybridActorCritic(nn.Module):
     def _seq_step(self, obs, state=None):
         """Encoded layer stack during rollout, advancing by the new layer.
 
-        Same causality as _seq_features: position t depends only on the first
-        t layers, so a recurrent encoder can carry its state between steps and
-        read one new layer instead of a max_layers-long pass. A first step (no
-        layers placed) restarts the state, and a missing state mid-episode
-        rebuilds from the layers placed so far, so the caller cannot
-        desynchronise it. Stateless encoders just re-encode that prefix.
+        A recurrent encoder carries state between steps; a first step or a
+        missing state rebuilds from the layers placed so far.
         """
         layers = self._obs_layers(obs)
         n_placed = int((layers[0, :, 0] > 0).sum())
@@ -617,9 +571,7 @@ class HybridActorCritic(nn.Module):
     def _thickness_dist(self, features, material):
         """Thickness distribution, conditioned on the chosen material.
 
-        Shared so acting and evaluating cannot drift apart: PPO compares log
-        probs from the two, which only means something if they build the same
-        distribution.
+        Shared by act and evaluate so their log probs stay comparable.
         """
         material_onehot = torch.nn.functional.one_hot(
             material, num_classes=self.n_materials
@@ -717,9 +669,7 @@ class HybridActorCritic(nn.Module):
         log_prob = dist_d.log_prob(materials) + dist_c.log_prob(thicknesses)
         value = self.value_head(features).squeeze(-1)
 
-        # The two entropies come back separately because they carry their own
-        # coefficients: the thickness width wants to collapse early for a clean
-        # reward signal, while material exploration wants to stay open.
+        # Separate entropies: the two heads carry their own coefficients.
         return log_prob, value, dist_d.entropy(), dist_c.entropy()
 
 
@@ -733,13 +683,8 @@ def select_bc_episodes(
 ):
     """Pick archive episodes matching the current constrained subproblem.
 
-    Ranks Pareto-archive designs by (violation of the current constraint
-    thresholds, then target-objective reward) and returns the episodes of the
-    top_k: the archive's best feasible answers to the phase the policy is
-    currently solving. Falls back to the least-violating designs when nothing
-    on the front satisfies the thresholds yet. This keeps the BC conditioning
-    consistent with the demonstrated behaviour (imitating the whole front
-    under the current target teaches the policy to ignore the conditioning).
+    Ranks Pareto designs by (constraint violation, target reward) and returns
+    the top_k, falling back to the least-violating when none are feasible.
     """
     if target_objective not in objectives:
         return front_episodes
@@ -788,8 +733,7 @@ def compute_bc_loss_from_pareto(
     picks = torch.randperm(len(valid_episodes))[:max_episodes].tolist()
     sampled_episodes = [valid_episodes[i] for i in picks]
 
-    # Index the pool rather than materialising every transition: the dicts for
-    # thousands of steps were built and thrown away on every call.
+    # Index the pool rather than materialising every transition
     transitions = [
         (episode, i)
         for episode in sampled_episodes
@@ -864,8 +808,7 @@ class PPOAgent:
         self.gamma = gamma
         self.clip_range = clip_range
         self.ent_coef = ent_coef
-        # Entropy coefficient for the thickness head. None tracks ent_coef,
-        # which is the single-coefficient behaviour this had before the split.
+        # Thickness-head entropy coefficient; None tracks ent_coef
         self.ent_coef_thickness = (
             ent_coef if ent_coef_thickness is None else ent_coef_thickness
         )
@@ -928,12 +871,8 @@ class PPOAgent:
         masks = rollout_data["masks"]
         target_idxs = rollout_data["target_idxs"]
 
-        # Normalise advantages within each target objective rather than across
-        # the whole rollout. A rollout spans several targets whenever the phase
-        # is shorter than it, and the objectives sit at different reward
-        # levels, so one shared mean and std lets "which objective this episode
-        # was" outweigh "were these actions any good" in the advantage. With a
-        # single target this is exactly the old whole-batch normalisation.
+        # Normalise advantages within each target objective: a rollout spans
+        # several targets, and they sit at different reward levels.
         advantages = advantages.clone()
         for t in torch.unique(target_idxs):
             sel = target_idxs == t
@@ -1042,10 +981,8 @@ class PPOAgent:
                     - self.ent_coef_thickness * entropy_c.mean()
                 )
 
-                # Behaviour cloning rides the first minibatch of each epoch:
-                # same number of archive samples as the old dedicated pass,
-                # but its gradient joins the PPO gradient in one clipped step
-                # instead of taking an optimiser step of its own.
+                # Behaviour cloning rides the first minibatch of each epoch so
+                # its gradient joins the PPO gradient in one clipped step.
                 if use_bc and i_batch == 0:
                     bc_loss = compute_bc_loss_from_pareto(
                         self.policy,
@@ -1124,13 +1061,8 @@ def train(config_path: str, save_dir: str):
     clip_range = _get("clip_range", 0.2, float)
     ent_coef = _get("ent_coef", 0.01, float)
     ent_coef_final = _get("ent_coef_final", ent_coef, float)
-    # The thickness head can carry its own entropy coefficient: the sampling
-    # width wants to collapse early, so the reward the material head learns
-    # from stops being dominated by thickness jitter, while material
-    # exploration wants to stay open. Unset, both track ent_coef, which is the
-    # single-coefficient behaviour. Set alone, the final defaults to itself
-    # (no annealing) rather than to ent_coef_final, which would otherwise ramp
-    # a deliberately small thickness coefficient back up.
+    # The thickness head can carry its own entropy coefficient. Unset, both
+    # track ent_coef; set alone, the final defaults to itself (no annealing).
     _ent_thickness = _get("ent_coef_thickness", "", str).strip()
     if _ent_thickness:
         ent_coef_thickness = float(_ent_thickness)
@@ -1177,16 +1109,14 @@ def train(config_path: str, save_dir: str):
     update_constraint_bounds = _get(
         "update_constraint_bounds", False, lambda x: x.lower() == "true"
     )
-    # "warmup" scales thresholds by this run's warmup best (run-dependent, so
-    # repeat runs solve different problems); "absolute" scales by the
+    # "warmup" scales thresholds by this run's warmup best; "absolute" by the
     # normalised reward's own 1.0, rising only if a run beats it.
     constraint_anchor = _get("constraint_anchor", "warmup", str).strip().lower()
     # Fraction of the front's own spread to widen each end of that range by
     constraint_extend_low = _get("constraint_extend_low", 0.2, float)
     constraint_extend_high = _get("constraint_extend_high", 0.2, float)
-    # "box": each threshold drawn independently from its objective's range.
-    # "reference": all thresholds taken from one archived design, so the
-    # constrained subproblem always has at least that design as an answer.
+    # "box": each threshold drawn from its objective's range. "reference":
+    # all taken from one archived design, which answers the subproblem.
     constraint_source = _get("constraint_source", "box", str).strip().lower()
     # How far past the reference point to ask, in units of that point's local
     # neighbour spacing on the front. 0.0 asks only to match it.
@@ -1196,11 +1126,8 @@ def train(config_path: str, save_dir: str):
     hidden_str = _get("hidden", "[256, 256]")
     hidden = eval(hidden_str)
 
-    # These tensors are far too small to gain from intra-op threading, and on a
-    # request_cpus=1 Condor slot torch would otherwise start one thread per host
-    # core and thrash against the single allocated CPU. Attention pays for this
-    # much more than the LSTM does: measured on a 6-core box, going from 1 to 8
-    # threads cost attention 55% and the LSTM 7%. 0 leaves torch's default alone.
+    # These tensors are too small to gain from intra-op threading, and extra
+    # threads thrash a single-CPU slot. 0 leaves torch's default alone.
     torch_threads = _get("torch_threads", 1, int)
     if torch_threads > 0:
         torch.set_num_threads(torch_threads)
@@ -1292,28 +1219,20 @@ def train(config_path: str, save_dir: str):
         hidden_dims=hidden,
         pre_model_type=pre_model_type,
         pre_model_params=pre_model_params,
-        # both are needed whatever the encoder: n_constraints sizes the
-        # per-objective value heads, and only the encoders require max_layers
+        # n_constraints sizes the objective/constraint tail; max_layers is
+        # only read by the sequence encoders
         max_layers=max_layers,
         n_constraints=n_constraints,
     )
 
-    # Initialize air material (index 0) with strong negative bias
-    # This prevents "masked action explosion" where air probability shoots up
-    # when it's masked, then gets selected immediately when unmasked
+    # Strong negative bias on air (index 0), so its probability cannot build up
+    # while masked and fire the moment it is unmasked
     with torch.no_grad():
         initial_air_bias = -3.0
         policy.material_head.bias[0] = initial_air_bias
 
-        # Start the thickness width inside its clamp rather than on the
-        # ceiling. Filling the bias with LOG_STD_MAX lands every state exactly
-        # on the boundary, where clamp passes no gradient, so the head cannot
-        # learn a width at all: measured over 45k episodes of a 50-layer run,
-        # 8 of 10 seeds still reported the realised std of log_std ==
-        # LOG_STD_MAX (0.054 with the mean at a range edge, 0.072 at the
-        # centre), unmoved since initialisation. Starting strictly inside means
-        # gradient flows from the first update and the width can move either
-        # way, which is the point - not the particular value it starts at.
+        # Start the width strictly inside the clamp: filling the bias with
+        # LOG_STD_MAX sits on the boundary, where clamp passes no gradient.
         policy.thickness_logstd.weight.mul_(0.01)
         policy.thickness_logstd.bias.fill_(LOG_STD_INIT)
 
@@ -1353,21 +1272,14 @@ def train(config_path: str, save_dir: str):
     ep_policy_std = []          # realised sampling std of the truncated normal
     ep_thickness_mean = []
     ep_thickness_within = []    # spread of layers within one design
-    # Per-episode constraint thresholds and target. Logging fires once per
-    # update, so reading env.constraints there samples one episode out of
-    # every episodes_per_update; when that stride is a whole number of
-    # objective cycles the same phase is sampled every time and one
-    # objective's column reads 0.0 for the entire run. Record per episode and
-    # aggregate over the window instead.
+    # Per-episode thresholds and target. Logging fires once per update, so
+    # reading env.constraints there samples one episode in every stride.
     ep_constraints = []
     ep_targets = []
     sample_designs = []  # Track sample designs during warmup for debugging
     training_history = []  # periodic metrics rows for training_curves.png
     # Logging and checkpointing are checked once per update, so episode_count
-    # jumps by episodes_per_update and rarely lands exactly on a multiple of
-    # these intervals -- with episodes_per_update=4 and plot_freq=5000 it never
-    # did, and a whole run wrote no checkpoints. Fire on elapsed episodes
-    # instead, so any interval is honoured at the first update past it.
+    # rarely lands on a multiple of these intervals; fire on elapsed episodes.
     last_log_episode = 0
     last_plot_episode = 0
     last_hv_episode = 0
@@ -1436,13 +1348,8 @@ def train(config_path: str, save_dir: str):
     if verbose:
         print(f"Training for {total_episodes} episodes")
 
-    # algorithm_runtime is the optimisation alone. Everything the loop does
-    # for reporting -- the metrics block, MLflow writes, checkpoints, CSVs and
-    # curve plots -- is timed into logging_io_seconds and subtracted, and the
-    # final plots fall outside the loop entirely. total_runtime minus
-    # algorithm_runtime is therefore what reporting cost you, which is worth
-    # watching: MLflow writes at mlflow_log_freq and hypervolume at
-    # hypervolume_freq are both easy to make dominate a run by accident.
+    # algorithm_runtime is the optimisation alone: everything the loop does for
+    # reporting is timed into logging_io_seconds and subtracted.
     loop_start = time.perf_counter()
     logging_io_seconds = 0.0
 
@@ -1694,8 +1601,7 @@ def train(config_path: str, save_dir: str):
                 metrics["episode.length_min"] = float(np.min(length_window))
                 metrics["episode.length_max"] = float(np.max(length_window))
 
-            # Search width in thickness. Measured on a 20-layer stack, 0.02
-            # costs almost nothing, 0.05 costs 5x transmission and 0.1 costs 95x.
+            # Search width in thickness
             if ep_policy_std:
                 std_window = ep_policy_std[-100:]
                 metrics["policy.thickness_std"] = float(np.mean(std_window))
@@ -1724,12 +1630,8 @@ def train(config_path: str, save_dir: str):
                         metrics[f"vals.{obj}_p10"] = float(np.percentile(vals, 10))
                         metrics[f"vals.{obj}_p90"] = float(np.percentile(vals, 90))
 
-            # Hypervolume. This is by far the most expensive metric here and
-            # it scales roughly quadratically with the archive: measured at 3
-            # objectives it costs 0.27 s at 2k points and 5.1 s at 8k, so at
-            # mlflow_log_freq it would add hours to a run whose front grows
-            # that far. Recompute on its own slower schedule and carry the
-            # last value forward so the column stays continuous.
+            # Hypervolume is the most expensive metric here and scales
+            # quadratically with the archive, so it runs on its own schedule.
             if len(env.env.pareto_front_rewards) > 1:
                 if env.episode_count - last_hv_episode >= hypervolume_freq:
                     last_hv_episode = env.episode_count
@@ -1744,12 +1646,8 @@ def train(config_path: str, save_dir: str):
             for obj, best in env.env.warmup_best_rewards.items():
                 metrics[f"warmup_best.{obj}"] = best
 
-            # Constraint thresholds over the window, averaged only across the
-            # episodes where each objective was actually constrained, so a
-            # column no longer depends on which phase the log happened to land
-            # on. constraint.<obj>_frac is how often it was constrained at all;
-            # target.<obj>_frac how often it was the target. Both are 0.0
-            # during warmup, when nothing is constrained.
+            # Thresholds averaged over the window, across only the episodes
+            # where each objective was constrained; *_frac is how often it was.
             if ep_constraints:
                 window = ep_constraints[-100:]
                 target_window = ep_targets[-100:]
@@ -1780,12 +1678,8 @@ def train(config_path: str, save_dir: str):
                 metrics["policy.air_logit_init"] = air_logit
 
             metrics["episode"] = env.episode_count
-            # One episode produces one design, so episodes are the evaluation
-            # count. Named to match what the genetic trainer records, so the
-            # two can be compared on designs evaluated rather than wall clock.
-            # Designs scored, not episodes run: the genetic trainer logs
-            # pymoo's n_eval here, and the two only agree when an episode costs
-            # exactly one evaluation (see CoatingEnvironment.n_evaluations)
+            # Designs scored, not episodes run, so this matches the n_eval the
+            # genetic trainer logs (see CoatingEnvironment.n_evaluations)
             metrics["evaluations"] = env.env.n_evaluations
             training_history.append(metrics)
 

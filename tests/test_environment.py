@@ -1139,11 +1139,7 @@ class TestReferenceConstraints:
 
 
 def test_observation_scaling_puts_columns_on_a_common_scale(materials):
-    """max_thickness scales thickness, n and k onto comparable ranges.
-
-    Raw, the three columns span 0.01-0.4, 1-3.7 and 0-5e-3, so k is three
-    orders below n despite being what the absorption objective turns on.
-    """
+    """max_thickness scales thickness, n and k onto comparable ranges."""
     state = CoatingState(max_layers=4, n_materials=len(materials), materials=materials)
     state.set_layer(0, 0.01, 1)
     state.set_layer(1, 0.40, 3)
@@ -1164,11 +1160,8 @@ def test_observation_scaling_puts_columns_on_a_common_scale(materials):
 
 
 def test_observation_scaling_keeps_padding_distinguishable(materials):
-    """A layer at min_thickness must not scale down onto the padding value.
-
-    The sequence encoders count placed layers with ``thickness > 0`` on column
-    0, so scaling has to leave 0 meaning "no layer here".
-    """
+    """A layer at min_thickness must not scale down onto the padding value,
+    since the sequence encoders count placed layers with thickness > 0."""
     state = CoatingState(max_layers=6, n_materials=len(materials), materials=materials)
     state.set_layer(0, 0.01, 1)
     state.set_layer(1, 0.25, 2)
@@ -1180,11 +1173,7 @@ def test_observation_scaling_keeps_padding_distinguishable(materials):
 
 
 def test_observation_scaling_is_invariant_to_the_thickness_range(materials):
-    """The same fraction of the range gives the same observation at any range.
-
-    This is the point of scaling: a network tuned at [0.1, 0.4] should see the
-    same input distribution at [0.01, 0.4] rather than needing to be retuned.
-    """
+    """The same fraction of the range gives the same observation at any range."""
     a = CoatingState(max_layers=3, n_materials=len(materials), materials=materials)
     b = CoatingState(max_layers=3, n_materials=len(materials), materials=materials)
     a.set_layer(0, 0.20, 2)  # half of a 0.40 range
@@ -1244,11 +1233,7 @@ class TestConstraintSpread:
         assert env.constraint_spread(a) == pytest.approx(2.0)
 
     def test_equal_relative_shortfalls_cost_the_same(self, basic_config, materials):
-        """The point of the scaling: the objectives get equal say.
-
-        Raw, a shortfall of 0.05 in an objective spanning 0.1 is penalised the
-        same as 0.05 in one spanning 1.0, so the wide objective dominates.
-        """
+        """Equal relative shortfalls cost the same in every objective."""
         env = self._env(basic_config, materials, constraint_penalty=1.0)
         wide, narrow = env.optimise_parameters
         self._front(env, spread_a=1.0, spread_b=0.1)
@@ -1307,11 +1292,7 @@ class TestEvaluationCounter:
         assert env.n_evaluations == 1
 
     def test_intermediate_reward_costs_one_per_layer(self, materials):
-        """The whole reason episodes cannot stand in for evaluations.
-
-        A genetic run logs designs actually scored, so counting episodes here
-        would put the RL curve an order of magnitude too far left.
-        """
+        """An intermediate-reward episode spends one evaluation per layer."""
         env = self._env(materials, intermediate=True)
         self._episode(env)
         assert env.n_evaluations == 10

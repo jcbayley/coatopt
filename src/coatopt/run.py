@@ -142,9 +142,8 @@ def run_experiment(
     with open(config_backup, "w") as f:
         parser.write(f)
 
-    # Setup MLflow. Everything downstream guards on mlflow.active_run(), so
-    # not starting a run is enough to switch the logging off; the training
-    # curves and CSVs are built from the trainer's own history either way.
+    # Setup MLflow. Everything downstream guards on mlflow.active_run(), so not
+    # starting a run is enough to switch the logging off.
     disable_mlflow = parser.getboolean("general", "disable_mlflow", fallback=False)
     if not disable_mlflow:
         mlflow.set_experiment(experiment_name)

@@ -46,8 +46,7 @@ def optical_to_physical(optical_thickness, wavelength, refractive_index):
 
 
 # Absorption is reported in ppm, halved to match TFCalc's convention. Applied
-# to both the EFI integral and the exact tmm absorptance so the two agree;
-# change here if the ppm convention is revised.
+# to both the EFI integral and the exact tmm absorptance so the two agree.
 ABSORPTION_PPM_SCALE = 1e6 / 2
 
 

@@ -43,12 +43,7 @@ class CoatingState:
         self._state[:, 1] = air_material_index  # Initialize all to air
 
         # Observation tensors already built for this layer stack, keyed by the
-        # arguments that change the result. The stack only changes through
-        # set_layer, which clears this. Worth caching because the archive keeps
-        # a state per step and behaviour cloning re-reads them every update:
-        # profiled on a 20-layer run, get_observation_tensor was called 608k
-        # times against 98k env steps, the other 510k being BC re-reading
-        # archived states whose contents cannot have changed.
+        # arguments that change the result. set_layer clears it.
         self._obs_cache = {}
 
     @classmethod
@@ -158,11 +153,8 @@ class CoatingState:
         Returns:
             Tensor with active layers only (or all layers if pre_type=="lstm")
         """
-        # Only the plain layer-stack form is cached. Field data depends on
-        # physics parameters and constraints/objective_names append a tail that
-        # changes every episode, so those rebuild as before. A clone is handed
-        # out rather than the cached tensor itself: still far cheaper than
-        # rebuilding, and no caller can corrupt the entry.
+        # Only the plain layer-stack form is cached; field data and the
+        # constraint tail change every episode. Callers get a clone.
         cacheable = (
             not include_field_data
             and merit_function_callback is None
@@ -176,21 +168,8 @@ class CoatingState:
             if cached is not None:
                 return cached.clone()
 
-        # Per-layer column scaling. The encoder reads these columns straight
-        # off, so their raw magnitudes decide how much of each one it sees, and
-        # those magnitudes have nothing to do with how informative the column
-        # is: thickness spans the action range (0.01-0.4), n spans 1-3.7, and k
-        # spans 0-5e-3, three orders below n despite being the property the
-        # absorption objective turns on. Raw thickness also means the encoder's
-        # input distribution shifts whenever the action range is changed, so a
-        # network tuned at one range has to be retuned at the next.
-        #
-        # Thickness is divided by its own upper bound rather than mapped onto
-        # [0, 1] across [min_t, max_t]: 0 has to keep meaning "no layer placed
-        # here", which is how the sequence encoders count placed layers, and a
-        # layer at min_t must not collide with padding. n is min-maxed across
-        # the material library, k the same after a log (it spans decades, so a
-        # linear map would leave every material but the most absorbing at ~0).
+        # Per-layer column scaling onto a common range: thickness by its own
+        # upper bound (0 still means "no layer"), n min-maxed, k log-scaled.
         scale_features = max_thickness is not None
         if scale_features:
             n_vals = [
@@ -207,9 +186,8 @@ class CoatingState:
             k_lo = np.log10(k_floor)
             k_hi = np.log10(max(max(k_vals), k_floor))
 
-        # Build layer stack observation
-        # For LSTM: include all max_layers (with zero padding for inactive)
-        # For others: only include active layers
+        # Build layer stack observation: LSTM gets all max_layers with zero
+        # padding for inactive ones, others only the active layers.
         layer_data = []
 
         for i in range(self.max_layers):
@@ -447,8 +425,7 @@ class CoatingState:
             self.materials,
         )
         # The copy has the same stack, so anything already built for it is
-        # still correct. This is what keeps archived episodes - which are
-        # copies taken during the rollout - from rebuilding on every BC pass.
+        # still correct; this is what keeps archived episodes from rebuilding.
         clone._obs_cache = dict(self._obs_cache)
         return clone
 

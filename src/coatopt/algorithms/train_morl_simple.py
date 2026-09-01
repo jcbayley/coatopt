@@ -6,12 +6,8 @@ Uses MOSAC agents with weight adaptation (PSA) to explore the Pareto front.
 Trains a population of agents with different weight vectors that adapt toward
 underexplored regions.
 
-Note on the action space: MOSAC is continuous-only (it asserts a Box action
-space), so the material choice is relaxed onto a continuous axis and rounded
-back to an index in step().  The policy therefore learns a Gaussian over a
-fake ordering of chemically unrelated materials.  MORL/D also supports
-policy_name="MOSACDiscrete" over a flat Discrete space, which is a better fit
-for this problem; see train_morl_discrete.py for that action encoding.
+Note on the action space: MOSAC is continuous-only, so the material choice is
+relaxed onto a continuous axis and rounded back to an index in step().
 
 Config section: [morl] or [morld]
   method                   = morld          # read by run.py
@@ -99,11 +95,8 @@ class CoatOptMOGymWrapper(gym.Env):
         # materials file cannot silently change which index means "stop here".
         self.air_material_idx = self.env.air_material_index
 
-        # Multi-objective settings.  Read the parsed list off the environment
-        # rather than config.data: the environment has already stripped
-        # direction suffixes ("reflectivity:max" -> "reflectivity"), and when a
-        # config uses the older comma-separated form config.data holds a raw
-        # string whose len() counts characters, not objectives.
+        # Multi-objective settings. Read the parsed list off the environment
+        # rather than config.data, which can hold an unparsed string.
         self.objectives = list(self.env.optimise_parameters)
         self.reward_dim = len(self.objectives)
 
@@ -124,14 +117,8 @@ class CoatOptMOGymWrapper(gym.Env):
             dtype=np.float32,
         )
 
-        # MO-Gymnasium required: reward_space.  compute_objective_rewards
-        # (normalised=True) maps each objective onto [0, 1] with
-        # (raw - min) / (max - min), and step() subtracts the correction
-        # penalty on top, so the floor is -penalty.  With
-        # reward_normalisation_apply_clipping off that ratio is unbounded,
-        # so the space is left unbounded in that case.  morl-baselines only
-        # reads .shape from this, but a wrong bound would misreport the scale
-        # the returns are on.
+        # MO-Gymnasium required: reward_space.  Normalised rewards sit in
+        # [0, 1] less the correction penalty, unbounded without clipping.
         if self.env.reward_normalisation_apply_clipping:
             reward_low = np.full(
                 self.reward_dim, -consecutive_material_penalty, dtype=np.float32
@@ -145,9 +132,7 @@ class CoatOptMOGymWrapper(gym.Env):
     def _get_obs(self, state) -> np.ndarray:
         """Convert CoatingState to fixed-size numpy array.
 
-        max_thickness puts the per-layer columns on a common scale; without it
-        k sits three orders of magnitude below n and the encoder barely sees
-        the column the absorption objective turns on.
+        max_thickness puts the per-layer columns on a common scale.
         """
         tensor = state.get_observation_tensor(
             pre_type="lstm", max_thickness=self.env.max_thickness
@@ -178,8 +163,7 @@ class CoatOptMOGymWrapper(gym.Env):
         consecutive_penalty = 0.0
 
         # Correct consecutive material selection.  Skip air: substituting it
-        # would end the episode rather than correct the layer, which silently
-        # truncated every design that repeated a material.
+        # would end the episode rather than correct the layer.
         if (
             self.mask_consecutive_materials
             and self.previous_material_idx is not None
@@ -225,11 +209,8 @@ class CoatOptMOGymWrapper(gym.Env):
             coatopt_action
         )
 
-        # CoatingEnvironment.step() only stages the finished design; it enters
-        # the Pareto archive on flush.  HPPO flushes once per rollout, but
-        # MORL/D owns its inner loop and exposes no rollout boundary, so flush
-        # per episode.  Cost is O(front x 1) numpy work against an
-        # epsilon-box-bounded archive, negligible next to one tmm evaluation.
+        # step() only stages the finished design; it enters the archive on
+        # flush. MORL/D exposes no rollout boundary, so flush per episode.
         if finished:
             self.env.flush_pareto_candidates()
 
@@ -293,18 +274,16 @@ def setup_morl_training(config_path: str, algorithm: str = "morld"):
     verbose = parser.getint(section, "verbose", fallback=1)
     net_arch = eval(parser.get(section, "net_arch", fallback="[256, 256]"))
 
-    # MORL/D evaluates the whole population between weight exchanges; each
-    # eval episode is a full merit-function evaluation, so these two decide how
-    # much of the budget goes to measuring rather than searching.
+    # MORL/D evaluates the whole population between weight exchanges, and each
+    # eval episode costs a full merit-function evaluation.
     num_eval_episodes_for_front = parser.getint(
         section, "num_eval_episodes_for_front", fallback=5
     )
     num_eval_weights_for_eval = parser.getint(
         section, "num_eval_weights_for_eval", fallback=50
     )
-    # morl-baselines' own checkpointing writes into ./weights/ in the working
-    # directory and gives no way to redirect it, so it stays off and the final
-    # weights are written into save_dir instead.
+    # morl-baselines' checkpointing writes into ./weights/ with no way to
+    # redirect it, so it stays off and save_dir gets the final weights.
     save_checkpoints = parser.getboolean(section, "save_checkpoints", fallback=False)
 
     # Directories
@@ -402,12 +381,8 @@ def create_morl_agent(algorithm: str, setup_dict: dict):
         )
         gamma = parser.getfloat(section, "gamma", fallback=0.99)
 
-        # MOSAC takes policy_lr/q_lr, not learning_rate.  Passing the config's
-        # learning_rate straight through raised
-        # "MOSAC.__init__() got an unexpected keyword argument 'learning_rate'"
-        # for every value other than the 3e-4 default that skipped the branch.
-        # MORL/D supplies id/env/weights/scalarization/gamma/log/seed/parent_rng
-        # to the policy factory itself, so policy_args must not repeat those.
+        # MOSAC takes policy_lr/q_lr, not learning_rate. MORL/D supplies
+        # id/env/weights/scalarization/gamma/log/seed/parent_rng itself.
         policy_args = {
             "net_arch": net_arch,
             "policy_lr": parser.getfloat(section, "learning_rate", fallback=3e-4),
@@ -453,10 +428,8 @@ def create_morl_agent(algorithm: str, setup_dict: dict):
 def merge_pareto_front(target_env, source_env):
     """Fold source_env's archived designs into target_env's Pareto front.
 
-    MORL/D evaluates on a second environment, so every design found during its
-    population evaluation lands in that environment's archive and would
-    otherwise be discarded.  Restaging re-derives each reward vector with the
-    target's own bounds, so the merged front stays internally consistent.
+    MORL/D evaluates on a second environment, so its designs land in that
+    environment's archive; restaging re-derives them with the target's bounds.
     """
     source_env.flush_pareto_candidates()
     for val_vector, state in source_env.pareto_front_values:

@@ -2,9 +2,8 @@
 """RTA + thermal-noise interactive comparison plots.
 
 Recomputes reflectivity, transmission and absorption from the saved Pareto
-designs with a single complex-index transfer-matrix evaluation (so energy
-balance holds: R + T + A = 1), plus coating thermal noise — meaning every run
-shows the full R/T/A/CTN picture regardless of which objectives were optimised.
+designs with a single complex-index transfer-matrix evaluation (R + T + A = 1),
+plus coating thermal noise, whatever the run optimised.
 
 Provides:
     evaluate_designs_rta            - designs_df -> RTA/CTN DataFrame

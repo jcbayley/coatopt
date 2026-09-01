@@ -424,15 +424,9 @@ def load_pareto_front(run_dir: Path):
 def get_cpu_info() -> dict:
     """Describe the machine a run actually landed on.
 
-    Condor schedules across heterogeneous nodes, so an otherwise identical run
-    can be several times slower purely because of where it ran. Recording the
-    host, the CPU model and a fixed timing probe makes that visible instead of
-    leaving it to be guessed at.
-
-    cpu_count is what the machine advertises; cpu_affinity is how many of those
-    this process may actually use, which is what request_cpus restricts. When
-    affinity is far below cpu_count, any library defaulting its thread pool to
-    cpu_count will oversubscribe the allocation.
+    Records the host, CPU model and a fixed timing probe, since Condor
+    schedules across heterogeneous nodes. cpu_count is what the machine
+    advertises; cpu_affinity is how many of those this process may use.
     """
     info = {
         "node": platform.node(),
@@ -522,10 +516,8 @@ def save_run_metadata(
         "duration_seconds": round(duration_seconds, 2),
         "duration_minutes": round(duration_minutes, 2),
         "duration_hours": round(duration_hours, 2),
-        # total_runtime is the whole train() call, including the checkpoint,
-        # CSV and plot writes it does internally. algorithm_runtime is the
-        # optimisation alone, reported by the trainer via its metadata dict
-        # (None if that trainer does not separate the two yet).
+        # total_runtime is the whole train() call; algorithm_runtime is the
+        # optimisation alone, or None if the trainer does not separate them.
         "total_runtime": round(duration_seconds, 2),
         "algorithm_runtime": None,
         "pareto_front_size": pareto_front_size,
