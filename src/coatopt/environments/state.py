@@ -42,6 +42,15 @@ class CoatingState:
         self._state = np.zeros((max_layers, 2), dtype=np.float32)
         self._state[:, 1] = air_material_index  # Initialize all to air
 
+        # Observation tensors already built for this layer stack, keyed by the
+        # arguments that change the result. The stack only changes through
+        # set_layer, which clears this. Worth caching because the archive keeps
+        # a state per step and behaviour cloning re-reads them every update:
+        # profiled on a 20-layer run, get_observation_tensor was called 608k
+        # times against 98k env steps, the other 510k being BC re-reading
+        # archived states whose contents cannot have changed.
+        self._obs_cache = {}
+
     @classmethod
     def from_array(
         cls,
@@ -149,6 +158,24 @@ class CoatingState:
         Returns:
             Tensor with active layers only (or all layers if pre_type=="lstm")
         """
+        # Only the plain layer-stack form is cached. Field data depends on
+        # physics parameters and constraints/objective_names append a tail that
+        # changes every episode, so those rebuild as before. A clone is handed
+        # out rather than the cached tensor itself: still far cheaper than
+        # rebuilding, and no caller can corrupt the entry.
+        cacheable = (
+            not include_field_data
+            and merit_function_callback is None
+            and constraints is None
+            and objective_names is None
+            and not physics_params
+        )
+        cache_key = (pre_type, max_thickness)
+        if cacheable:
+            cached = self._obs_cache.get(cache_key)
+            if cached is not None:
+                return cached.clone()
+
         # Per-layer column scaling. The encoder reads these columns straight
         # off, so their raw magnitudes decide how much of each one it sees, and
         # those magnitudes have nothing to do with how informative the column
@@ -257,6 +284,9 @@ class CoatingState:
             elif tensor.dim() > 2:
                 tensor = tensor.flatten(1)
 
+        if cacheable:
+            self._obs_cache[cache_key] = tensor
+            return tensor.clone()
         return tensor
 
     def _add_field_info(
@@ -330,6 +360,8 @@ class CoatingState:
 
         self._state[layer_idx, 0] = thickness
         self._state[layer_idx, 1] = material_index
+        # The stack decides the observation, so any write invalidates it
+        self._obs_cache.clear()
 
     def get_layer(self, layer_idx: int) -> Tuple[float, int]:
         """Get (thickness, material_index) for a specific layer."""
@@ -407,13 +439,18 @@ class CoatingState:
 
     def copy(self) -> "CoatingState":
         """Create a deep copy of this state."""
-        return CoatingState.from_array(
+        clone = CoatingState.from_array(
             self._state.copy(),
             self.n_materials,
             self.air_material_index,
             self.substrate_material_index,
             self.materials,
         )
+        # The copy has the same stack, so anything already built for it is
+        # still correct. This is what keeps archived episodes - which are
+        # copies taken during the rollout - from rebuilding on every BC pass.
+        clone._obs_cache = dict(self._obs_cache)
+        return clone
 
     def __repr__(self) -> str:
         active = self.get_num_active_layers()
