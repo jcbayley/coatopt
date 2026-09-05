@@ -172,12 +172,8 @@ class CoatingState:
         # upper bound (0 still means "no layer"), n min-maxed, k log-scaled.
         scale_features = max_thickness is not None
         if scale_features:
-            n_vals = [
-                float(m.get("n", 1.0)) for m in self.materials.values()
-            ] or [1.0]
-            k_vals = [
-                float(m.get("k", 0.0)) for m in self.materials.values()
-            ] or [0.0]
+            n_vals = [float(m.get("n", 1.0)) for m in self.materials.values()] or [1.0]
+            k_vals = [float(m.get("k", 0.0)) for m in self.materials.values()] or [0.0]
             n_lo, n_hi = min(n_vals), max(n_vals)
             # Floor a decade below the smallest non-zero k, so a k of 0 lands
             # at the bottom of the scale instead of at log(0)

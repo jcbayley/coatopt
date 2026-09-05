@@ -405,9 +405,7 @@ class CoatingEnvironment:
         per-objective neighbour gaps and the per-objective spans. Cached
         against ``_front_version``, so it is recomputed once per flush.
         """
-        front = np.asarray(
-            [r for r, _ in self.pareto_front_rewards], dtype=float
-        )
+        front = np.asarray([r for r, _ in self.pareto_front_rewards], dtype=float)
         # Keyed on the point count as well as the version, so a front swapped
         # in wholesale - a checkpoint reload - cannot be served a stale cache
         key = (self._front_version, len(front))
@@ -461,9 +459,7 @@ class CoatingEnvironment:
         if len(self.pareto_front_rewards) < MIN_FRONT_FOR_CONSTRAINT_RANGE:
             return None
 
-        front = np.asarray(
-            [r for r, _ in self.pareto_front_rewards], dtype=float
-        )
+        front = np.asarray([r for r, _ in self.pareto_front_rewards], dtype=float)
         weights, gaps, _ = self._front_crowding()
         k = int(np.random.choice(len(front), p=weights))
 

@@ -405,7 +405,10 @@ class _AttentionBlock(nn.Module):
     def forward(self, x):
         b, t, d = x.shape
         q, k, v = self.qkv(self.norm1(x)).chunk(3, dim=-1)
-        split = lambda z: z.view(b, t, self.heads, d // self.heads).transpose(1, 2)
+
+        def split(z):
+            return z.view(b, t, self.heads, d // self.heads).transpose(1, 2)
+
         attended = torch.nn.functional.scaled_dot_product_attention(
             split(q), split(k), split(v), is_causal=True
         )
@@ -947,14 +950,12 @@ class PPOAgent:
                     batch_idx = batch
                     episode_kwargs = {}
 
-                log_probs, values, entropy_d, entropy_c = (
-                    self.policy.evaluate_actions(
-                        obs[batch_idx],
-                        masks[batch_idx],
-                        materials[batch_idx],
-                        thicknesses[batch_idx],
-                        **episode_kwargs,
-                    )
+                log_probs, values, entropy_d, entropy_c = self.policy.evaluate_actions(
+                    obs[batch_idx],
+                    masks[batch_idx],
+                    materials[batch_idx],
+                    thicknesses[batch_idx],
+                    **episode_kwargs,
                 )
 
                 # Policy loss (clipped surrogate)
@@ -1269,9 +1270,9 @@ def train(config_path: str, save_dir: str):
     ep_rewards = []
     ep_vals = []
     ep_lengths = []  # Track episode lengths
-    ep_policy_std = []          # realised sampling std of the truncated normal
+    ep_policy_std = []  # realised sampling std of the truncated normal
     ep_thickness_mean = []
-    ep_thickness_within = []    # spread of layers within one design
+    ep_thickness_within = []  # spread of layers within one design
     # Per-episode thresholds and target. Logging fires once per update, so
     # reading env.constraints there samples one episode in every stride.
     ep_constraints = []
@@ -1330,9 +1331,9 @@ def train(config_path: str, save_dir: str):
                 import pandas as pd
 
                 prior = pd.read_csv(history_csv)
-                training_history = prior[
-                    prior["episode"] <= ckpt["episode"]
-                ].to_dict("records")
+                training_history = prior[prior["episode"] <= ckpt["episode"]].to_dict(
+                    "records"
+                )
             except Exception as e:
                 if verbose:
                     print(f"  [history reload] skipped: {e}")
@@ -1653,12 +1654,10 @@ def train(config_path: str, save_dir: str):
                 target_window = ep_targets[-100:]
                 for obj in objectives:
                     held = [c[obj] for c in window if obj in c]
-                    metrics[f"constraint.{obj}"] = (
-                        float(np.mean(held)) if held else 0.0
-                    )
+                    metrics[f"constraint.{obj}"] = float(np.mean(held)) if held else 0.0
                     metrics[f"constraint.{obj}_frac"] = len(held) / len(window)
-                    metrics[f"target.{obj}_frac"] = (
-                        target_window.count(obj) / len(target_window)
+                    metrics[f"target.{obj}_frac"] = target_window.count(obj) / len(
+                        target_window
                     )
 
             # Monitor air material bias (check if it's shooting up)

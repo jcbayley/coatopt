@@ -106,8 +106,12 @@ class CoatOptPCNEnv(gym.Env):
             self.action_space = gym.spaces.Discrete(self.n_materials * self.n_bins)
         else:
             self.action_space = gym.spaces.Box(
-                low=np.concatenate([np.zeros(self.n_materials), [self.min_thickness]]).astype(np.float32),
-                high=np.concatenate([np.ones(self.n_materials), [self.max_thickness]]).astype(np.float32),
+                low=np.concatenate(
+                    [np.zeros(self.n_materials), [self.min_thickness]]
+                ).astype(np.float32),
+                high=np.concatenate(
+                    [np.ones(self.n_materials), [self.max_thickness]]
+                ).astype(np.float32),
                 dtype=np.float32,
             )
 
@@ -157,7 +161,9 @@ class CoatOptPCNEnv(gym.Env):
             material, bin_idx = divmod(a, self.n_bins)
             # Bin centres, so no thickness sits exactly on a boundary.
             frac = (bin_idx + 0.5) / self.n_bins
-            thickness = self.min_thickness + frac * (self.max_thickness - self.min_thickness)
+            thickness = self.min_thickness + frac * (
+                self.max_thickness - self.min_thickness
+            )
         else:
             a = np.asarray(action, dtype=np.float64).ravel()
             material = int(np.argmax(a[: self.n_materials]))
@@ -168,7 +174,9 @@ class CoatOptPCNEnv(gym.Env):
         # than rejected: the nearest legal index, searching upward and wrapping.
         mask = self.valid_materials()
         if not mask[material]:
-            order = [(material + k) % self.n_materials for k in range(1, self.n_materials)]
+            order = [
+                (material + k) % self.n_materials for k in range(1, self.n_materials)
+            ]
             material = next(m for m in order if mask[m])
         return material, float(thickness)
 
@@ -270,8 +278,12 @@ def train(config_path: str, save_dir: str = None) -> dict:
     scaling = np.concatenate(
         [np.ones(env.n_objectives), [1.0 / max(env.base_env.max_layers, 1)]]
     ).astype(np.float32)
-    max_return = np.full(env.n_objectives, _get("max_return", 2.0, float), dtype=np.float32)
-    ref_point = np.full(env.n_objectives, _get("ref_point", -1.0, float), dtype=np.float64)
+    max_return = np.full(
+        env.n_objectives, _get("max_return", 2.0, float), dtype=np.float32
+    )
+    ref_point = np.full(
+        env.n_objectives, _get("ref_point", -1.0, float), dtype=np.float64
+    )
 
     if save_dir is None:
         base = parser.get("general", "save_dir", fallback="./runs")
@@ -310,7 +322,11 @@ def train(config_path: str, save_dir: str = None) -> dict:
 
     # PCN prints a line per update unconditionally; log=False does not silence
     # it. Keep it behind verbose like every other trainer here.
-    sink = contextlib.nullcontext() if verbose > 1 else contextlib.redirect_stdout(io.StringIO())
+    sink = (
+        contextlib.nullcontext()
+        if verbose > 1
+        else contextlib.redirect_stdout(io.StringIO())
+    )
     start = time.time()
     with sink:
         agent.train(
@@ -336,10 +352,15 @@ def train(config_path: str, save_dir: str = None) -> dict:
         agent.save(save_dir=str(save_dir) + "/", filename="pcn_model")
     except Exception as exc:  # a failed checkpoint must not lose the front
         if verbose:
-            print(f"  warning: could not save PCN weights ({type(exc).__name__}: {exc})")
+            print(
+                f"  warning: could not save PCN weights ({type(exc).__name__}: {exc})"
+            )
 
     if verbose:
-        print(f"\n  done in {elapsed:.0f}s — {len(rewards_df)} Pareto solutions", flush=True)
+        print(
+            f"\n  done in {elapsed:.0f}s — {len(rewards_df)} Pareto solutions",
+            flush=True,
+        )
 
     return {
         "pareto_designs": designs_df,

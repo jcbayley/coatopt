@@ -1079,9 +1079,7 @@ class TestReferenceConstraints:
             c = env.constraint_reference("reflectivity", randomise=False)
             assert (front[:, idx] >= c["absorption"] - 1e-12).any()
 
-    def test_extension_asks_for_more_than_its_reference(
-        self, basic_config, materials
-    ):
+    def test_extension_asks_for_more_than_its_reference(self, basic_config, materials):
         """Non-zero extend must push past the point, or it exerts no pressure."""
         env = self._env(basic_config, materials, constraint_ref_extend=1.0)
         front = self._front(env)
@@ -1104,7 +1102,9 @@ class TestReferenceConstraints:
             return bool((front[:, idx] >= threshold - 1e-12).any())
 
         ref = sum(
-            feasible(env.constraint_reference("reflectivity", randomise=False)["absorption"])
+            feasible(
+                env.constraint_reference("reflectivity", randomise=False)["absorption"]
+            )
             for _ in range(300)
         )
         env.constraint_extend_low = env.constraint_extend_high = 0.2
@@ -1126,9 +1126,7 @@ class TestReferenceConstraints:
         assert weights[30:].sum() > weights[:30].sum()
         assert gaps[30:, 0].mean() > gaps[:30, 0].mean()
 
-    def test_crowding_is_cached_until_the_front_changes(
-        self, basic_config, materials
-    ):
+    def test_crowding_is_cached_until_the_front_changes(self, basic_config, materials):
         env = self._env(basic_config, materials)
         self._front(env)
         w1, _, _ = env._front_crowding()
@@ -1145,7 +1143,9 @@ def test_observation_scaling_puts_columns_on_a_common_scale(materials):
     state.set_layer(1, 0.40, 3)
 
     raw = state.get_observation_tensor(pre_type="lstm").view(4, -1)
-    scaled = state.get_observation_tensor(pre_type="lstm", max_thickness=0.40).view(4, -1)
+    scaled = state.get_observation_tensor(pre_type="lstm", max_thickness=0.40).view(
+        4, -1
+    )
 
     # Thickness reaches the top of its own range instead of a fraction of it
     assert raw[1, 0] == pytest.approx(0.40)
@@ -1167,7 +1167,9 @@ def test_observation_scaling_keeps_padding_distinguishable(materials):
     state.set_layer(1, 0.25, 2)
     state.set_layer(2, 0.01, 3)
 
-    scaled = state.get_observation_tensor(pre_type="lstm", max_thickness=0.40).view(6, -1)
+    scaled = state.get_observation_tensor(pre_type="lstm", max_thickness=0.40).view(
+        6, -1
+    )
     assert int((scaled[:, 0] > 0).sum()) == 3
     assert scaled[3:, 0].abs().max() == 0.0
 
@@ -1273,7 +1275,9 @@ class TestEvaluationCounter:
             use_intermediate_reward=intermediate,
             combine="sum",
         )
-        env = CoatingEnvironment(Config(data=data, training=TrainingConfig()), materials)
+        env = CoatingEnvironment(
+            Config(data=data, training=TrainingConfig()), materials
+        )
         env.reset()
         return env
 

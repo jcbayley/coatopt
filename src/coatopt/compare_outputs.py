@@ -1010,7 +1010,9 @@ def plot_hypervolume_vs_evaluations(
     if xscale == "log":
         ax.set_xscale("log")
     ax.set_xlabel("Designs evaluated", color=_INK_SECONDARY, fontsize=10)
-    ax.set_ylabel("Pareto hypervolume (reward space)", color=_INK_SECONDARY, fontsize=10)
+    ax.set_ylabel(
+        "Pareto hypervolume (reward space)", color=_INK_SECONDARY, fontsize=10
+    )
     ax.set_title(title, color=_INK_PRIMARY, fontsize=12, loc="left", pad=12)
     # Curves rise left to right, so the upper left is the reliably empty corner
     legend = ax.legend(frameon=False, fontsize=9, loc="upper left")
@@ -1037,7 +1039,9 @@ def print_convergence_statistics(histories):
 
     budgets = [10_000, 50_000, 100_000, 500_000, 1_000_000]
     usable = [
-        b for b in budgets if any(df["evaluations"].max() >= b for dfs in groups.values() for df in dfs)
+        b
+        for b in budgets
+        if any(df["evaluations"].max() >= b for dfs in groups.values() for df in dfs)
     ]
     if not usable:
         usable = [max(df["evaluations"].max() for dfs in groups.values() for df in dfs)]
@@ -1051,7 +1055,9 @@ def print_convergence_statistics(histories):
         cells = []
         for budget in usable:
             reached = [
-                float(df.loc[df["evaluations"] <= budget, "pareto.hypervolume"].iloc[-1])
+                float(
+                    df.loc[df["evaluations"] <= budget, "pareto.hypervolume"].iloc[-1]
+                )
                 for df in dfs
                 if (df["evaluations"] <= budget).any()
             ]

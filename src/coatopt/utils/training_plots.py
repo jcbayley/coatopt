@@ -165,9 +165,7 @@ def save_training_curves(
             lw=1.5,
             label="sampling spread",
         )
-        ax.axhline(
-            np.exp(-4), color=_MUTED, lw=0.8, ls=":", label="min spread (0.018)"
-        )
+        ax.axhline(np.exp(-4), color=_MUTED, lw=0.8, ls=":", label="min spread (0.018)")
     ax.axhline(0.25, color=_MUTED, lw=0.8, ls="--", label="quarter-wave (0.25)")
     ax.legend(fontsize=7, frameon=False)
     _style(ax, "Thickness placed and sampling spread", logy=True)
