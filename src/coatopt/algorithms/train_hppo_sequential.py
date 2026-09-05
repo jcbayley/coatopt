@@ -26,6 +26,8 @@ Config section: [hppo_sequential]
   pareto_bonus             = 0.0            # Hypervolume improvement bonus
   bc_weight                = 0.1            # Behavior cloning weight from Pareto episodes (0.0 = disabled)
   bc_selection             = target         # "target": imitate archive best for current target+constraints; "all": whole front
+  bc_every                 = 0              # BC on every k-th minibatch; 0 = first minibatch of each epoch
+  lockstep_rollouts        = false          # run each update's episodes in lockstep with batched policy calls
   lr                       = 3e-4
   lr_final                 = 3e-5           # Final LR (annealing target)
   lr_decay_episodes        = 10000          # Anneal over this many episodes per phase
@@ -69,7 +71,6 @@ import torch.nn as nn
 from coatopt.environments.environment import CoatingEnvironment
 from coatopt.utils.checkpoint import load_checkpoint, save_checkpoint
 from coatopt.utils.configs import Config, load_config
-from coatopt.utils.math_utils import TruncatedNormalDist
 from coatopt.utils.utils import load_materials_from_parser
 
 
@@ -179,10 +180,7 @@ class CoatOptHybridEnv(gym.Env):
 
     def _get_obs(self, state) -> np.ndarray:
         """Convert state to observation with objective weights and constraint thresholds."""
-        tensor = state.get_observation_tensor(
-            pre_type="lstm", max_thickness=self.env.max_thickness
-        )
-        base = tensor.numpy().flatten().astype(np.float32)
+        base = state.observation_array(self.env.max_thickness).ravel()
         n_obj = len(self.objectives)
         obs = np.empty(len(base) + 2 * n_obj, dtype=np.float32)
         obs[: len(base)] = base
@@ -449,6 +447,11 @@ PRE_MODELS = {"lstm": LSTMEncoder, "attention": AttentionEncoder}
 LOG_STD_MIN, LOG_STD_MAX = -5.0, -1.2  # 0.7% .. 30% of the thickness range
 # Where the width starts, strictly inside the clamp (8% of the range).
 LOG_STD_INIT = -2.5
+INV_SQRT2 = 1.0 / math.sqrt(2.0)
+INV_SQRT_2PI = 1.0 / math.sqrt(2.0 * math.pi)
+LOG_SQRT_2PI = 0.5 * math.log(2.0 * math.pi)
+LOG_SQRT_2PI_E = 0.5 * math.log(2.0 * math.pi * math.e)
+EPS = float(torch.finfo(torch.float32).eps)
 
 
 class HybridActorCritic(nn.Module):
@@ -483,9 +486,9 @@ class HybridActorCritic(nn.Module):
             )
 
         if self.use_sequence:
-            assert (
-                max_layers is not None and n_constraints is not None
-            ), f"max_layers and n_constraints required for {pre_model_type}"
+            assert max_layers is not None and n_constraints is not None, (
+                f"max_layers and n_constraints required for {pre_model_type}"
+            )
 
             # Observation structure: [layer_sequence (flattened), current_layer, constraints]
             n_features_per_layer = 1 + n_materials + 2  # thickness + one-hot + 2
@@ -567,32 +570,58 @@ class HybridActorCritic(nn.Module):
         tail = obs[:, -(self.n_objectives + self.n_constraints) :]
         return self.trunk(torch.cat([seq_features, tail], dim=1))
 
-    def _material_dist(self, features, mask):
+    def _material_log_probs(self, features, mask):
         logits = self.material_head(features) + (1.0 - mask) * -1e8
-        return torch.distributions.Categorical(logits=logits)
+        return torch.log_softmax(logits, dim=-1)
 
-    def _thickness_dist(self, features, material):
-        """Thickness distribution, conditioned on the chosen material.
-
-        Shared by act and evaluate so their log probs stay comparable.
+    def _thickness_params(self, features, material):
+        """Mean and scale of the thickness normal for the chosen material, its
+        truncation bounds in standard units, the lower bound's CDF and the
+        truncated mass. Shared by act and evaluate so log probs stay comparable.
         """
         material_onehot = torch.nn.functional.one_hot(
             material, num_classes=self.n_materials
-        ).float()
+        ).to(features.dtype)
         thickness_input = torch.cat([features, material_onehot], dim=-1)
-        mean_raw = self.thickness_mean(thickness_input).squeeze(-1)
         width = self.max_t - self.min_t
-        mean = self.min_t + width * torch.sigmoid(mean_raw)
+        mean = self.min_t + width * torch.sigmoid(
+            self.thickness_mean(thickness_input).squeeze(-1)
+        )
         log_std = torch.clamp(
             self.thickness_logstd(thickness_input).squeeze(-1),
             LOG_STD_MIN,
             LOG_STD_MAX,
         )
-        return TruncatedNormalDist(
-            loc=mean,
-            scale=width * torch.exp(log_std),
-            a=torch.full_like(mean, self.min_t),
-            b=torch.full_like(mean, self.max_t),
+        scale = width * torch.exp(log_std)
+        a = (self.min_t - mean) / scale
+        b = (self.max_t - mean) / scale
+        cdf_a = 0.5 * (1.0 + torch.erf(a * INV_SQRT2))
+        cdf_b = 0.5 * (1.0 + torch.erf(b * INV_SQRT2))
+        mass = (cdf_b - cdf_a).clamp_min(EPS)
+        return mean, scale, a, b, cdf_a, mass
+
+    @staticmethod
+    def _thickness_log_prob(mean, scale, mass, thickness):
+        u = (thickness - mean) / scale
+        return -0.5 * u * u - LOG_SQRT_2PI - torch.log(mass) - torch.log(scale)
+
+    @staticmethod
+    def _thickness_std(scale, a, b, mass):
+        """Realised spread of the truncated normal, which sets the search width."""
+        pdf_a = torch.exp(-0.5 * a * a) * INV_SQRT_2PI
+        pdf_b = torch.exp(-0.5 * b * b) * INV_SQRT_2PI
+        var = 1.0 - (b * pdf_b - a * pdf_a) / mass - ((pdf_b - pdf_a) / mass) ** 2
+        return scale * var.clamp_min(0.0).sqrt()
+
+    @staticmethod
+    def _thickness_entropy(scale, a, b, mass):
+        pdf_a = torch.exp(-0.5 * a * a) * INV_SQRT_2PI
+        pdf_b = torch.exp(-0.5 * b * b) * INV_SQRT_2PI
+        return (
+            LOG_SQRT_2PI_E
+            + torch.log(mass)
+            - 0.5 * (b * pdf_b - a * pdf_a) / mass
+            + torch.log(scale)
         )
 
     def forward(self, obs, mask, deterministic=False, lstm_state=None):
@@ -617,22 +646,27 @@ class HybridActorCritic(nn.Module):
             seq_features, lstm_state = self._seq_step(obs, lstm_state)
         features = self._trunk_features(obs, seq_features)
 
-        dist_d = self._material_dist(features, mask)
-        material = dist_d.logits.argmax(dim=-1) if deterministic else dist_d.sample()
+        log_probs_d = self._material_log_probs(features, mask)
+        if deterministic:
+            material = log_probs_d.argmax(dim=-1)
+        else:
+            material = torch.multinomial(log_probs_d.exp(), 1).squeeze(-1)
 
-        dist_c = self._thickness_dist(features, material)
-        thickness = (
-            dist_c.loc.clamp(self.min_t, self.max_t)
-            if deterministic
-            else dist_c.rsample()
-        )
+        mean, scale, a, b, cdf_a, mass = self._thickness_params(features, material)
+        if deterministic:
+            thickness = mean
+        else:
+            # Inverse-CDF sample of the truncated normal
+            u = torch.rand_like(mean).clamp(EPS, 1.0 - EPS)
+            z = math.sqrt(2.0) * torch.erfinv(2.0 * (cdf_a + u * mass) - 1.0)
+            thickness = mean + scale * torch.minimum(torch.maximum(z, a), b)
 
-        log_prob = dist_d.log_prob(material) + dist_c.log_prob(thickness)
+        log_prob = log_probs_d.gather(-1, material.unsqueeze(-1)).squeeze(
+            -1
+        ) + self._thickness_log_prob(mean, scale, mass, thickness)
         value = self.value_head(features).squeeze(-1)
-
-        # Realised spread of the truncated normal, which is what sets the
-        # search width. It is well below scale once the truncation bites.
-        return material, thickness, log_prob, value, dist_c.variance.sqrt(), lstm_state
+        std = self._thickness_std(scale, a, b, mass)
+        return material, thickness, log_prob, value, std, lstm_state
 
     def evaluate_actions(
         self,
@@ -666,14 +700,18 @@ class HybridActorCritic(nn.Module):
             )
         features = self._trunk_features(obs, seq_features)
 
-        dist_d = self._material_dist(features, mask)
-        dist_c = self._thickness_dist(features, materials)
+        log_probs_d = self._material_log_probs(features, mask)
+        mean, scale, a, b, _, mass = self._thickness_params(features, materials)
 
-        log_prob = dist_d.log_prob(materials) + dist_c.log_prob(thicknesses)
+        log_prob = log_probs_d.gather(-1, materials.unsqueeze(-1)).squeeze(
+            -1
+        ) + self._thickness_log_prob(mean, scale, mass, thicknesses)
         value = self.value_head(features).squeeze(-1)
 
         # Separate entropies: the two heads carry their own coefficients.
-        return log_prob, value, dist_d.entropy(), dist_c.entropy()
+        entropy_d = -(log_probs_d.exp() * log_probs_d).sum(dim=-1)
+        entropy_c = self._thickness_entropy(scale, a, b, mass)
+        return log_prob, value, entropy_d, entropy_c
 
 
 def select_bc_episodes(
@@ -713,83 +751,124 @@ def select_bc_episodes(
 def compute_bc_loss_from_pareto(
     policy, pareto_episodes, env_wrapper, bc_weight=0.1, batch_size=32
 ):
-    """Compute behavior cloning loss from Pareto front episodes stored in environment.
+    """Behaviour cloning loss on transitions drawn from archived Pareto episodes.
 
-    Args:
-        policy: policy network
-        pareto_episodes: list of Pareto front episodes
-        env_wrapper: environment wrapper
-        bc_weight: weight for BC loss
-        batch_size: batch size for sampling
+    Each episode's flat layer-stack observations and actions are cached on it
+    the first time it is drawn. The objective tail is filled in per call, as
+    the target and thresholds change every episode.
     """
-    if not pareto_episodes or len(pareto_episodes) == 0:
+    valid = [ep for ep in (pareto_episodes or []) if ep is not None]
+    if not valid:
+        return 0.0
+    picks = torch.randperm(len(valid))[: min(batch_size, len(valid))].tolist()
+    max_thickness = env_wrapper.env.max_thickness
+    cached = []
+    for i in picks:
+        episode = valid[i]
+        entry = episode.get("_bc_cache")
+        if entry is None:
+            states = episode.get("states")
+            materials = episode.get("discrete_actions")
+            thicknesses = episode.get("continuous_actions")
+            if not states or not materials or not thicknesses:
+                continue
+            entry = (
+                np.stack([s.observation_array(max_thickness).ravel() for s in states]),
+                np.array([int(m) for m in materials], dtype=np.int64),
+                np.array([float(t) for t in thicknesses], dtype=np.float32),
+            )
+            episode["_bc_cache"] = entry
+        cached.append(entry)
+    if not cached:
         return 0.0
 
-    # Filter out None episodes
-    valid_episodes = [ep for ep in pareto_episodes if ep is not None]
-    if not valid_episodes:
-        return 0.0
+    base = np.concatenate([c[0] for c in cached])
+    materials = np.concatenate([c[1] for c in cached])
+    thicknesses = np.concatenate([c[2] for c in cached])
+    n = min(batch_size, len(base))
+    idx = torch.randperm(len(base))[:n].numpy()
 
-    # Sample a subset of Pareto episodes first — iterating all N episodes to collect
-    # transitions is O(N * ep_len) every update, which is expensive for large fronts.
-    max_episodes = min(batch_size, len(valid_episodes))
-    picks = torch.randperm(len(valid_episodes))[:max_episodes].tolist()
-    sampled_episodes = [valid_episodes[i] for i in picks]
+    n_obj = len(env_wrapper.objectives)
+    width = base.shape[1]
+    obs = np.empty((n, width + 2 * n_obj), dtype=np.float32)
+    obs[:, :width] = base[idx]
+    target = env_wrapper.env.target_objective
+    constraints = env_wrapper.env.constraints
+    for j, objective in enumerate(env_wrapper.objectives):
+        obs[:, width + j] = 1.0 if objective == target else 0.0
+    for j, objective in enumerate(env_wrapper.env.optimise_parameters):
+        obs[:, width + n_obj + j] = constraints.get(objective, 0.0)
 
-    # Index the pool rather than materialising every transition
-    transitions = [
-        (episode, i)
-        for episode in sampled_episodes
-        if episode.get("states")
-        and episode.get("discrete_actions")
-        and episode.get("continuous_actions")
-        for i in range(len(episode["states"]))
-    ]
+    log_probs, *_ = policy.evaluate_actions(
+        torch.from_numpy(obs),
+        torch.ones(n, policy.n_materials),
+        torch.from_numpy(materials[idx]),
+        torch.from_numpy(thicknesses[idx]),
+    )
+    return -bc_weight * log_probs.mean()
 
-    if not transitions:
-        return 0.0
 
-    # Sample batch
-    n_samples = min(batch_size, len(transitions))
+class FlatAdam:
+    """Adam over one flat parameter buffer, so a step is a few vector ops
+    instead of one per parameter tensor. Parameters and their gradients are
+    views into the buffer.
+    """
 
-    picks = torch.randperm(len(transitions))[:n_samples].tolist()
-    sampled = [transitions[i] for i in picks]
+    def __init__(self, params, lr, betas=(0.9, 0.999), eps=1e-8):
+        self.params = list(params)
+        n = sum(p.numel() for p in self.params)
+        self.flat = torch.zeros(n)
+        self.flat_grad = torch.zeros(n)
+        self.exp_avg = torch.zeros(n)
+        self.exp_avg_sq = torch.zeros(n)
+        self.step_count = 0
+        self.param_groups = [{"lr": lr, "betas": betas, "eps": eps}]
+        offset = 0
+        for p in self.params:
+            k = p.numel()
+            self.flat[offset : offset + k].copy_(p.data.reshape(-1))
+            p.data = self.flat[offset : offset + k].view_as(p)
+            p.grad = self.flat_grad[offset : offset + k].view_as(p)
+            offset += k
 
-    # Prepare batch tensors
-    obs_list = []
-    mat_list = []
-    thick_list = []
-    mask_list = []
+    def zero_grad(self):
+        self.flat_grad.zero_()
 
-    for episode, step in sampled:
-        state = episode["states"][step]
-        # Get observation using wrapper's method (includes constraints)
-        if hasattr(env_wrapper, "_get_obs"):
-            obs = env_wrapper._get_obs(state)
-        elif hasattr(state, "get_observation_tensor"):
-            obs = state.get_observation_tensor(pre_type="lstm").numpy().flatten()
-        else:
-            obs = state
-        obs_list.append(obs)
+    @torch.no_grad()
+    def clip_grad_norm_(self, max_norm):
+        norm = self.flat_grad.norm()
+        self.flat_grad.mul_(torch.clamp(max_norm / (norm + 1e-6), max=1.0))
+        return norm
 
-        # Actions
-        mat = episode["discrete_actions"][step]
-        thick = episode["continuous_actions"][step]
-        mat_list.append(mat.item() if torch.is_tensor(mat) else mat)
-        thick_list.append(thick.item() if torch.is_tensor(thick) else thick)
-        mask_list.append(np.ones(policy.n_materials))  # Default mask
+    @torch.no_grad()
+    def step(self):
+        group = self.param_groups[0]
+        lr, (beta1, beta2), eps = group["lr"], group["betas"], group["eps"]
+        self.step_count += 1
+        self.exp_avg.lerp_(self.flat_grad, 1.0 - beta1)
+        self.exp_avg_sq.mul_(beta2).addcmul_(
+            self.flat_grad, self.flat_grad, value=1.0 - beta2
+        )
+        bias1 = 1.0 - beta1**self.step_count
+        bias2 = 1.0 - beta2**self.step_count
+        denom = (self.exp_avg_sq.sqrt() / math.sqrt(bias2)).add_(eps)
+        self.flat.addcdiv_(self.exp_avg, denom, value=-lr / bias1)
 
-    # Convert to tensors
-    obs_t = torch.FloatTensor(np.array(obs_list))
-    mat_t = torch.LongTensor(mat_list)
-    thick_t = torch.FloatTensor(thick_list)
-    mask_t = torch.FloatTensor(np.array(mask_list))
+    def state_dict(self):
+        return {
+            "flat": self.flat.clone(),
+            "exp_avg": self.exp_avg.clone(),
+            "exp_avg_sq": self.exp_avg_sq.clone(),
+            "step_count": self.step_count,
+            "param_groups": [dict(g) for g in self.param_groups],
+        }
 
-    # Compute log probs from policy
-    log_probs, *_ = policy.evaluate_actions(obs_t, mask_t, mat_t, thick_t)
-    bc_loss = -log_probs.mean()  # Negative log likelihood
-
-    return bc_weight * bc_loss
+    def load_state_dict(self, state):
+        self.flat.copy_(state["flat"])
+        self.exp_avg.copy_(state["exp_avg"])
+        self.exp_avg_sq.copy_(state["exp_avg_sq"])
+        self.step_count = int(state["step_count"])
+        self.param_groups = [dict(g) for g in state["param_groups"]]
 
 
 class PPOAgent:
@@ -807,7 +886,7 @@ class PPOAgent:
         max_grad_norm: float = 0.5,
     ):
         self.policy = policy
-        self.optimizer = torch.optim.Adam(policy.parameters(), lr=lr)
+        self.optimizer = FlatAdam(policy.parameters(), lr=lr)
         self.gamma = gamma
         self.clip_range = clip_range
         self.ent_coef = ent_coef
@@ -832,19 +911,32 @@ class PPOAgent:
             mask: action mask
             deterministic: whether to sample or take argmax
         """
-        with torch.no_grad():
-            obs_t = torch.FloatTensor(obs).unsqueeze(0)
-            mask_t = torch.FloatTensor(mask).unsqueeze(0)
+        with torch.inference_mode():
+            obs_t = torch.as_tensor(obs, dtype=torch.float32).unsqueeze(0)
+            mask_t = torch.as_tensor(mask, dtype=torch.float32).unsqueeze(0)
             material, thickness, log_prob, value, std, self.lstm_state = self.policy(
                 obs_t, mask_t, deterministic, self.lstm_state
             )
-            self.last_thickness_std = std.item()
-            return (
-                material.item(),
-                thickness.item(),
-                log_prob.item(),
-                value.item(),
+            out = torch.cat(
+                [material.float(), thickness, log_prob, value, std]
+            ).tolist()
+        self.last_thickness_std = out[4]
+        return int(out[0]), out[1], out[2], out[3]
+
+    def act_batch(self, obs, mask):
+        """Sample actions for episodes at the same layer count in one policy call."""
+        with torch.inference_mode():
+            material, thickness, log_prob, value, std, _ = self.policy(
+                torch.as_tensor(obs, dtype=torch.float32),
+                torch.as_tensor(mask, dtype=torch.float32),
             )
+        return (
+            material.tolist(),
+            thickness.tolist(),
+            log_prob.tolist(),
+            value.tolist(),
+            std.tolist(),
+        )
 
     def update(
         self,
@@ -854,6 +946,7 @@ class PPOAgent:
         pareto_episodes=None,
         bc_weight=0.1,
         env_wrapper=None,
+        bc_every: int = 0,
     ):
         """PPO update using rollout data with optional BC loss from Pareto episodes.
 
@@ -864,6 +957,8 @@ class PPOAgent:
             pareto_episodes: optional list of Pareto front episodes for BC loss
             bc_weight: weight for behavior cloning loss
             env_wrapper: environment wrapper (for BC loss)
+            bc_every: add the BC loss on every k-th minibatch; 0 keeps it on
+                the first minibatch of each epoch
         """
         obs = rollout_data["observations"]
         materials = rollout_data["materials"]
@@ -982,9 +1077,10 @@ class PPOAgent:
                     - self.ent_coef_thickness * entropy_c.mean()
                 )
 
-                # Behaviour cloning rides the first minibatch of each epoch so
-                # its gradient joins the PPO gradient in one clipped step.
-                if use_bc and i_batch == 0:
+                # Behaviour cloning rides a PPO minibatch so its gradient joins
+                # the PPO gradient in one clipped step.
+                bc_turn = i_batch % bc_every == 0 if bc_every else i_batch == 0
+                if use_bc and bc_turn:
                     bc_loss = compute_bc_loss_from_pareto(
                         self.policy,
                         pareto_episodes,
@@ -998,9 +1094,7 @@ class PPOAgent:
 
                 self.optimizer.zero_grad()
                 loss.backward()
-                torch.nn.utils.clip_grad_norm_(
-                    self.policy.parameters(), self.max_grad_norm
-                )
+                self.optimizer.clip_grad_norm_(self.max_grad_norm)
                 self.optimizer.step()
 
                 # Logging
@@ -1022,6 +1116,108 @@ class PPOAgent:
             logs[k] /= max(n_updates, 1)
 
         return logs
+
+
+def collect_lockstep(
+    env, agent, buffer, n_episodes, objective_to_idx, track_bc, record
+):
+    """Run n_episodes episodes in lockstep: one batched policy call per layer,
+    then one env step per live episode.
+
+    The env's per-episode fields are swapped in and out around each step, so
+    the schedule, constraint sampling, reward and Pareto staging are those of
+    the sequential loop. The env must already be reset for the first episode
+    and is left reset for the next update, so episode_count advances by
+    n_episodes as before. Returns the next (obs, mask) and the step count.
+    """
+    base = env.env
+    keys = ("current_state", "current_index", "done", "target_objective", "constraints")
+
+    episodes = []
+    for i in range(n_episodes):
+        if i == 0:
+            obs, mask = env._get_obs(base.current_state), env.get_action_mask()
+        else:
+            obs, info = env.reset()
+            mask = info["mask"]
+        episodes.append(
+            {
+                "env": tuple(getattr(base, k) for k in keys),
+                "wrapper": (env.prev_material, env.current_layer),
+                "obs": obs,
+                "mask": mask,
+                "states": [],
+                "discrete_actions": [],
+                "continuous_actions": [],
+                "stds": [],
+                "thicknesses": [],
+                "transitions": [],
+            }
+        )
+
+    live = list(range(n_episodes))
+    n_steps = 0
+    while live:
+        obs_batch = np.stack([episodes[i]["obs"] for i in live])
+        mask_batch = np.stack([episodes[i]["mask"] for i in live])
+        materials, thicknesses, log_probs, values, stds = agent.act_batch(
+            obs_batch, mask_batch
+        )
+        still_live = []
+        for j, i in enumerate(live):
+            ep = episodes[i]
+            for k, v in zip(keys, ep["env"]):
+                setattr(base, k, v)
+            env.prev_material, env.current_layer = ep["wrapper"]
+
+            target_idx = objective_to_idx[base.target_objective]
+            material, thickness = materials[j], thicknesses[j]
+            action = {
+                "material": material,
+                "thickness": np.array([thickness], dtype=np.float32),
+            }
+            kwargs = {}
+            if track_bc:
+                ep["states"].append(base.current_state.copy())
+                ep["discrete_actions"].append(torch.tensor(material))
+                ep["continuous_actions"].append(torch.tensor(thickness))
+                kwargs["episode_data"] = {
+                    k: ep[k]
+                    for k in ("states", "discrete_actions", "continuous_actions")
+                }
+            ep["stds"].append(stds[j])
+            ep["thicknesses"].append(thickness)
+
+            next_obs, reward, done, _, info = env.step(action, **kwargs)
+            ep["transitions"].append(
+                (
+                    ep["obs"],
+                    material,
+                    thickness,
+                    reward,
+                    values[j],
+                    log_probs[j],
+                    done,
+                    ep["mask"],
+                    target_idx,
+                )
+            )
+            n_steps += 1
+            if done:
+                if "vals" in info:
+                    record(info["vals"], reward, ep["stds"], ep["thicknesses"])
+            else:
+                ep["obs"], ep["mask"] = next_obs, info["mask"]
+                still_live.append(i)
+            ep["env"] = tuple(getattr(base, k) for k in keys)
+            ep["wrapper"] = (env.prev_material, env.current_layer)
+        live = still_live
+
+    for ep in episodes:
+        for transition in ep["transitions"]:
+            buffer.add(*transition)
+    obs, info = env.reset()
+    return obs, info["mask"], n_steps
 
 
 def train(config_path: str, save_dir: str):
@@ -1130,6 +1326,8 @@ def train(config_path: str, save_dir: str):
     # These tensors are too small to gain from intra-op threading, and extra
     # threads thrash a single-CPU slot. 0 leaves torch's default alone.
     torch_threads = _get("torch_threads", 1, int)
+    lockstep_rollouts = _get("lockstep_rollouts", False, lambda x: x.lower() == "true")
+    bc_every = _get("bc_every", 0, int)
     if torch_threads > 0:
         torch.set_num_threads(torch_threads)
 
@@ -1245,6 +1443,8 @@ def train(config_path: str, save_dir: str):
     if verbose:
         if use_sequence:
             print(f"Layer-stack encoder: {pre_model_type} {pre_model_params}")
+        if lockstep_rollouts:
+            print(f"Lockstep rollouts: {episodes_per_update} episodes per batch")
         if restart_decay_on_phase:
             print(
                 f"LR/entropy decay will restart every {lr_decay_episodes} episodes (warm restarts enabled)"
@@ -1290,6 +1490,35 @@ def train(config_path: str, save_dir: str):
 
     # Create objective name -> index mapping for value head selection
     objective_to_idx = {obj: idx for idx, obj in enumerate(objectives)}
+
+    def record_episode(vals, reward, stds, thicknesses):
+        ep_rewards.append(reward)
+        ep_vals.append(vals)
+        ep_lengths.append(env.current_layer)
+        ep_policy_std.append(float(np.mean(stds)))
+        ep_thickness_mean.append(float(np.mean(thicknesses)))
+        ep_thickness_within.append(float(np.std(thicknesses)))
+        # Captured before reset() overwrites them for the next episode
+        ep_constraints.append(dict(env.env.constraints))
+        ep_targets.append(env.env.target_objective)
+        # Only the last 100 are ever read
+        if len(ep_constraints) > 200:
+            del ep_constraints[:-100]
+            del ep_targets[:-100]
+        # Sample designs during warmup for debugging (keep last 100)
+        if env.is_warmup:
+            sample_designs.append(
+                {
+                    "episode": env.episode_count,
+                    "target_obj": env.env.target_objective,
+                    "state_array": env.env.current_state.get_array(),
+                    "vals": vals.copy(),
+                    "reward": reward,
+                    "length": env.current_layer,
+                }
+            )
+            if len(sample_designs) > 100:
+                sample_designs.pop(0)
 
     # Annealing tracking
     lr_init = lr
@@ -1359,110 +1588,92 @@ def train(config_path: str, save_dir: str):
         buffer.clear()
         episodes_collected = 0
 
-        while episodes_collected < episodes_per_update:
-            # Track episode data for Pareto BC loss (only if enabled)
-            if bc_weight > 0:
-                episode_states = []
-                episode_materials = []
-                episode_thicknesses = []
-
-            # Collect single episode. Names kept distinct from the BC tracking
-            # above, which reuses the per-step actions for its own list.
-            episode_done = False
-            episode_stds = []
-            episode_sampled_thicknesses = []
-            while not episode_done:
-                # Recorded per step so the update can group advantages by
-                # target; the value head itself is shared across objectives.
-                target_obj_idx = objective_to_idx[env.env.target_objective]
-                material, thickness, log_prob, value = agent.act(obs, mask)
-                action = {
-                    "material": material,
-                    "thickness": np.array([thickness], dtype=np.float32),
-                }
-
-                # Track trajectory if BC loss enabled
+        if lockstep_rollouts:
+            obs, mask, n_steps = collect_lockstep(
+                env,
+                agent,
+                buffer,
+                episodes_per_update,
+                objective_to_idx,
+                bc_weight > 0,
+                record_episode,
+            )
+            step_count += n_steps
+        else:
+            while episodes_collected < episodes_per_update:
+                # Track episode data for Pareto BC loss (only if enabled)
                 if bc_weight > 0:
-                    episode_states.append(env.env.current_state.copy())
-                    episode_materials.append(torch.tensor(material))
-                    episode_thicknesses.append(torch.tensor(thickness))
+                    episode_states = []
+                    episode_materials = []
+                    episode_thicknesses = []
 
-                # Step environment (pass episode data on every step, used only when done=True)
-                step_kwargs = {}
-                if bc_weight > 0 and len(episode_states) > 0:
-                    step_kwargs["episode_data"] = {
-                        "states": episode_states,
-                        "discrete_actions": episode_materials,
-                        "continuous_actions": episode_thicknesses,
+                # Collect single episode. Names kept distinct from the BC tracking
+                # above, which reuses the per-step actions for its own list.
+                episode_done = False
+                episode_stds = []
+                episode_sampled_thicknesses = []
+                while not episode_done:
+                    # Recorded per step so the update can group advantages by
+                    # target; the value head itself is shared across objectives.
+                    target_obj_idx = objective_to_idx[env.env.target_objective]
+                    material, thickness, log_prob, value = agent.act(obs, mask)
+                    action = {
+                        "material": material,
+                        "thickness": np.array([thickness], dtype=np.float32),
                     }
 
-                episode_stds.append(agent.last_thickness_std)
-                episode_sampled_thicknesses.append(thickness)
+                    # Track trajectory if BC loss enabled
+                    if bc_weight > 0:
+                        episode_states.append(env.env.current_state.copy())
+                        episode_materials.append(torch.tensor(material))
+                        episode_thicknesses.append(torch.tensor(thickness))
 
-                next_obs, reward, done, _, info = env.step(action, **step_kwargs)
-                next_mask = info["mask"]
+                    # Step environment (pass episode data on every step, used only when done=True)
+                    step_kwargs = {}
+                    if bc_weight > 0 and len(episode_states) > 0:
+                        step_kwargs["episode_data"] = {
+                            "states": episode_states,
+                            "discrete_actions": episode_materials,
+                            "continuous_actions": episode_thicknesses,
+                        }
 
-                buffer.add(
-                    obs,
-                    material,
-                    thickness,
-                    reward,
-                    value,
-                    log_prob,
-                    done,
-                    mask,
-                    target_obj_idx,
-                )
+                    episode_stds.append(agent.last_thickness_std)
+                    episode_sampled_thicknesses.append(thickness)
 
-                if done:
-                    episode_done = True
-                    if "vals" in info:
-                        ep_rewards.append(reward)
-                        ep_vals.append(info["vals"])
-                        ep_lengths.append(env.current_layer)  # Track episode length
-                        ep_policy_std.append(float(np.mean(episode_stds)))
-                        ep_thickness_mean.append(
-                            float(np.mean(episode_sampled_thicknesses))
-                        )
-                        ep_thickness_within.append(
-                            float(np.std(episode_sampled_thicknesses))
-                        )
-                        # Captured before reset() overwrites them for the next
-                        # episode, so these are the thresholds this episode ran under
-                        ep_constraints.append(dict(env.env.constraints))
-                        ep_targets.append(env.env.target_objective)
-                        # Only the last 100 are ever read; cap so a 150k-episode
-                        # run does not carry a dict per episode
-                        if len(ep_constraints) > 200:
-                            del ep_constraints[:-100]
-                            del ep_targets[:-100]
+                    next_obs, reward, done, _, info = env.step(action, **step_kwargs)
+                    next_mask = info["mask"]
 
-                        # Sample designs during warmup for debugging (keep last 100)
-                        if env.is_warmup:
-                            # Get state array directly from environment
-                            state_array = env.env.current_state.get_array()
-                            design_info = {
-                                "episode": env.episode_count,
-                                "target_obj": env.env.target_objective,
-                                "state_array": state_array,
-                                "vals": info["vals"].copy(),
-                                "reward": reward,
-                                "length": env.current_layer,
-                            }
-                            sample_designs.append(design_info)
-                            # Keep only last 100
-                            if len(sample_designs) > 100:
-                                sample_designs.pop(0)
+                    buffer.add(
+                        obs,
+                        material,
+                        thickness,
+                        reward,
+                        value,
+                        log_prob,
+                        done,
+                        mask,
+                        target_obj_idx,
+                    )
 
-                    episodes_collected += 1
+                    if done:
+                        episode_done = True
+                        if "vals" in info:
+                            record_episode(
+                                info["vals"],
+                                reward,
+                                episode_stds,
+                                episode_sampled_thicknesses,
+                            )
 
-                    obs, info = env.reset()
-                    mask = info["mask"]
-                else:
-                    obs = next_obs
-                    mask = next_mask
+                        episodes_collected += 1
 
-                step_count += 1
+                        obs, info = env.reset()
+                        mask = info["mask"]
+                    else:
+                        obs = next_obs
+                        mask = next_mask
+
+                    step_count += 1
 
         # Finalize buffer
         _, _, _, last_value = agent.act(obs, mask)
@@ -1548,6 +1759,7 @@ def train(config_path: str, save_dir: str):
             pareto_episodes=pareto_episodes,
             bc_weight=bc_weight,
             env_wrapper=env,
+            bc_every=bc_every,
         )
         # Logging
         if env.episode_count - last_log_episode >= mlflow_log_freq:
