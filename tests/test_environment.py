@@ -1159,6 +1159,22 @@ def test_observation_scaling_puts_columns_on_a_common_scale(materials):
     assert scaled[0, -1] > 0.05, "low-k material should not collapse onto zero"
 
 
+def test_observation_array_matches_observation_tensor(materials):
+    state = CoatingState(max_layers=6, n_materials=len(materials), materials=materials)
+    state.set_layer(0, 0.10, 1)
+    state.set_layer(1, 0.25, 2)
+    arr = state.observation_array(0.40)
+    state.set_layer(2, 0.40, 3)
+    clone = state.copy()
+    clone.set_layer(3, 0.15, 1)
+
+    for st in (state, clone):
+        ref = st.get_observation_tensor(pre_type="lstm", max_thickness=0.40).view(6, -1)
+        assert np.allclose(st.observation_array(0.40), ref.numpy(), atol=1e-6)
+    assert state.observation_array(0.40)[3, 0] == 0.0
+    assert clone.observation_array(0.40)[3, 0] > 0.0
+
+
 def test_observation_scaling_keeps_padding_distinguishable(materials):
     """A layer at min_thickness must not scale down onto the padding value,
     since the sequence encoders count placed layers with thickness > 0."""

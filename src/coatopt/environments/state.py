@@ -45,6 +45,20 @@ class CoatingState:
         # Observation tensors already built for this layer stack, keyed by the
         # arguments that change the result. set_layer clears it.
         self._obs_cache = {}
+        # Flat per-layer observation rows, kept current by set_layer
+        self._obs_array = None
+        self._obs_array_scale = None
+        self._material_rows = None
+
+    def __setstate__(self, state):
+        self.__dict__.update(state)
+        for key, default in (
+            ("_obs_cache", {}),
+            ("_obs_array", None),
+            ("_obs_array_scale", None),
+            ("_material_rows", None),
+        ):
+            self.__dict__.setdefault(key, default)
 
     @classmethod
     def from_array(
@@ -172,15 +186,7 @@ class CoatingState:
         # upper bound (0 still means "no layer"), n min-maxed, k log-scaled.
         scale_features = max_thickness is not None
         if scale_features:
-            n_vals = [float(m.get("n", 1.0)) for m in self.materials.values()] or [1.0]
-            k_vals = [float(m.get("k", 0.0)) for m in self.materials.values()] or [0.0]
-            n_lo, n_hi = min(n_vals), max(n_vals)
-            # Floor a decade below the smallest non-zero k, so a k of 0 lands
-            # at the bottom of the scale instead of at log(0)
-            positive_k = [k for k in k_vals if k > 0]
-            k_floor = min(positive_k) / 10.0 if positive_k else 1.0
-            k_lo = np.log10(k_floor)
-            k_hi = np.log10(max(max(k_vals), k_floor))
+            n_lo, n_hi, k_floor, k_lo, k_hi = self._nk_scaling()
 
         # Build layer stack observation: LSTM gets all max_layers with zero
         # padding for inactive ones, others only the active layers.
@@ -263,6 +269,48 @@ class CoatingState:
             return tensor.clone()
         return tensor
 
+    def _nk_scaling(self):
+        n_vals = [float(m.get("n", 1.0)) for m in self.materials.values()] or [1.0]
+        k_vals = [float(m.get("k", 0.0)) for m in self.materials.values()] or [0.0]
+        n_lo, n_hi = min(n_vals), max(n_vals)
+        # Floor a decade below the smallest non-zero k, so a k of 0 lands
+        # at the bottom of the scale instead of at log(0)
+        positive_k = [k for k in k_vals if k > 0]
+        k_floor = min(positive_k) / 10.0 if positive_k else 1.0
+        k_lo = np.log10(k_floor)
+        k_hi = np.log10(max(max(k_vals), k_floor))
+        return n_lo, n_hi, k_floor, k_lo, k_hi
+
+    def _material_row_table(self) -> np.ndarray:
+        """Row [0, one-hot, n, k] per material, scaled as in get_observation_tensor."""
+        if self._material_rows is None:
+            n_lo, n_hi, k_floor, k_lo, k_hi = self._nk_scaling()
+            rows = np.zeros((self.n_materials, self.n_materials + 3), dtype=np.float32)
+            for m in range(self.n_materials):
+                rows[m, 1 + m] = 1.0
+                props = self.materials.get(m, {}) if self.materials else {}
+                n_val = float(props.get("n", 1.0))
+                k_val = float(props.get("k", 0.0))
+                rows[m, -2] = (n_val - n_lo) / (n_hi - n_lo) if n_hi > n_lo else 0.0
+                rows[m, -1] = (
+                    (np.log10(max(k_val, k_floor)) - k_lo) / (k_hi - k_lo)
+                    if k_hi > k_lo
+                    else 0.0
+                )
+            self._material_rows = rows
+        return self._material_rows
+
+    def observation_array(self, max_thickness: float) -> np.ndarray:
+        """Padded (max_layers, n_materials + 3) rows of
+        [thickness / max_thickness, material one-hot, n, k], the same values as
+        get_observation_tensor("lstm", max_thickness), updated in place by set_layer."""
+        if self._obs_array is None or self._obs_array_scale != max_thickness:
+            rows = self._material_row_table()
+            self._obs_array = rows[self._state[:, 1].astype(np.int64)]
+            self._obs_array[:, 0] = self._state[:, 0] / max_thickness
+            self._obs_array_scale = max_thickness
+        return self._obs_array
+
     def _add_field_info(
         self, layer_tensor: torch.Tensor, field_results: dict
     ) -> torch.Tensor:
@@ -336,6 +384,9 @@ class CoatingState:
         self._state[layer_idx, 1] = material_index
         # The stack decides the observation, so any write invalidates it
         self._obs_cache.clear()
+        if self._obs_array is not None:
+            self._obs_array[layer_idx] = self._material_row_table()[int(material_index)]
+            self._obs_array[layer_idx, 0] = thickness / self._obs_array_scale
 
     def get_layer(self, layer_idx: int) -> Tuple[float, int]:
         """Get (thickness, material_index) for a specific layer."""
@@ -423,12 +474,16 @@ class CoatingState:
         # The copy has the same stack, so anything already built for it is
         # still correct; this is what keeps archived episodes from rebuilding.
         clone._obs_cache = dict(self._obs_cache)
+        if self._obs_array is not None:
+            clone._obs_array = self._obs_array.copy()
+            clone._obs_array_scale = self._obs_array_scale
+            clone._material_rows = self._material_rows
         return clone
 
     def __repr__(self) -> str:
         active = self.get_num_active_layers()
         total_thick = self.get_total_thickness()
-        return f"CoatingState({active}/{self.max_layers} active layers, {total_thick*1e9:.1f}nm total)"
+        return f"CoatingState({active}/{self.max_layers} active layers, {total_thick * 1e9:.1f}nm total)"
 
     def __str__(self) -> str:
         """Human-readable representation showing all layers."""
@@ -436,7 +491,9 @@ class CoatingState:
         for i in range(self.max_layers):
             thickness, material = self.get_layer(i)
             if thickness > 1e-9:  # Only show active layers
-                lines.append(f"  Layer {i}: {thickness*1e9:.2f}nm, material {material}")
+                lines.append(
+                    f"  Layer {i}: {thickness * 1e9:.2f}nm, material {material}"
+                )
         return "\n".join(lines)
 
 
