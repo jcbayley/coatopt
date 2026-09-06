@@ -7,18 +7,22 @@ Uses PyMOO to optimize coating designs with repair operators enforcing:
 - All layers after first air must be air
 - No air until min_layers_before_air reached
 
-Config section: [nsga2]
+Config section: [nsga2] or [moead]
   n_generations            = 100
-  population_size          = 100
+  population_size          = 100            # NSGA2/NSGA3 only
   algorithm                = NSGA2          # NSGA2, NSGA3, or MOEAD
   seed                     = 42
   crossover_probability    = 0.9
   crossover_eta            = 15.0
-  mutation_probability     = None           # Default: 1/n_var
+  mutation_probability     =                # Blank/None: 1/n_var
   mutation_eta             = 20.0
   min_layers_before_air    = 0              # Min layers before air allowed
+  n_partitions             = 12             # NSGA3/MOEAD reference directions
+  n_neighbors              = 20             # MOEAD only
+  prob_neighbor_mating     = 0.9            # MOEAD only
 """
 
+import time
 from pathlib import Path
 from typing import Optional
 
@@ -26,6 +30,7 @@ import numpy as np
 from pymoo.algorithms.moo.moead import MOEAD
 from pymoo.algorithms.moo.nsga2 import NSGA2
 from pymoo.algorithms.moo.nsga3 import NSGA3
+from pymoo.core.callback import Callback
 from pymoo.core.problem import ElementwiseProblem
 from pymoo.core.repair import Repair
 from pymoo.operators.crossover.sbx import SBX
@@ -37,8 +42,46 @@ from pymoo.util.ref_dirs import get_reference_directions
 from coatopt.environments.environment import CoatingEnvironment
 from coatopt.environments.state import CoatingState
 from coatopt.utils.configs import load_config
+from coatopt.utils.metrics import compute_hypervolume
 from coatopt.utils.plotting import plot_coating_stack, plot_pareto_front
 from coatopt.utils.utils import convert_pymoo_to_dataframes, load_materials_from_parser
+
+
+class HypervolumeHistory(Callback):
+    """Record hypervolume against evaluation count as the search runs.
+
+    Uses the same reward space and reference point the RL trainer logs, so the
+    two are comparable. Sampled every `every` generations, since hypervolume
+    is quadratic in front size.
+    """
+
+    def __init__(self, n_objectives: int, every: int = 10):
+        super().__init__()
+        self.every = max(1, every)
+        self.ref_point = np.zeros(n_objectives)
+        self.rows = []
+
+    def notify(self, algorithm):
+        generation = algorithm.n_gen
+        if generation != 1 and generation % self.every:
+            return
+        front = algorithm.opt.get("F") if algorithm.opt is not None else None
+        if front is None or len(front) == 0:
+            return
+        try:
+            hv = compute_hypervolume(
+                -np.asarray(front, dtype=float), self.ref_point, maximize=True
+            )
+        except Exception:
+            return
+        self.rows.append(
+            {
+                "generation": int(generation),
+                "evaluations": int(algorithm.evaluator.n_eval),
+                "pareto.size": int(len(front)),
+                "pareto.hypervolume": float(hv),
+            }
+        )
 
 
 class CoatingOptimizationProblem(ElementwiseProblem):
@@ -196,16 +239,24 @@ def train_genetic(config_path: str, save_dir: Optional[str] = None):
     if save_dir is None:
         save_dir = parser.get("general", "save_dir")
 
-    # [nsga2] section
-    total_generations = parser.getint("nsga2", "n_generations")
-    population_size = parser.getint("nsga2", "population_size")
-    algorithm = parser.get("nsga2", "algorithm")
-    seed = parser.getint("nsga2", "seed")
-    crossover_prob = parser.getfloat("nsga2", "crossover_probability")
-    crossover_eta = parser.getfloat("nsga2", "crossover_eta")
-    mutation_prob = parser.getfloat("nsga2", "mutation_probability")
-    mutation_eta = parser.getfloat("nsga2", "mutation_eta")
-    min_layers_before_air = parser.getint("nsga2", "min_layers_before_air", fallback=0)
+    # [nsga2] section, or [moead] for MOEA/D runs
+    section = "moead" if parser.has_section("moead") else "nsga2"
+    total_generations = parser.getint(section, "n_generations")
+    # MOEA/D takes its population from the reference directions instead
+    population_size = parser.getint(section, "population_size", fallback=0)
+    algorithm = parser.get(section, "algorithm")
+    seed = parser.getint(section, "seed")
+    crossover_prob = parser.getfloat(section, "crossover_probability")
+    crossover_eta = parser.getfloat(section, "crossover_eta")
+    # Blank or "None" means the pymoo default of 1/n_var, applied below
+    mutation_prob_raw = parser.get(section, "mutation_probability", fallback="")
+    mutation_prob = (
+        None
+        if mutation_prob_raw.strip().lower() in ("", "none")
+        else float(mutation_prob_raw)
+    )
+    mutation_eta = parser.getfloat(section, "mutation_eta")
+    min_layers_before_air = parser.getint(section, "min_layers_before_air", fallback=0)
     verbose = True
 
     # [Data] section
@@ -222,9 +273,12 @@ def train_genetic(config_path: str, save_dir: Optional[str] = None):
     config = load_config(config_path)
     config.data.n_layers = n_layers
 
-    n_partitions = None
-    n_neighbors = 20
-    prob_neighbor_mating = 0.7
+    # Reference directions for NSGA-III/MOEA/D; defaults are pymoo's own
+    n_partitions = parser.getint(section, "n_partitions", fallback=12)
+    n_neighbors = parser.getint(section, "n_neighbors", fallback=20)
+    prob_neighbor_mating = parser.getfloat(
+        section, "prob_neighbor_mating", fallback=0.9
+    )
 
     # Create environment
     env = CoatingEnvironment(config, materials)
@@ -249,8 +303,6 @@ def train_genetic(config_path: str, save_dir: Optional[str] = None):
             eliminate_duplicates=True,
         )
     elif algorithm == "NSGA3":
-        if n_partitions is None:
-            n_partitions = 12  # Default for 2 objectives
         ref_dirs = get_reference_directions(
             "uniform", len(env.optimise_parameters), n_partitions=n_partitions
         )
@@ -264,11 +316,11 @@ def train_genetic(config_path: str, save_dir: Optional[str] = None):
             eliminate_duplicates=True,
         )
     elif algorithm == "MOEAD":
-        if n_partitions is None:
-            n_partitions = population_size
         ref_dirs = get_reference_directions(
             "uniform", len(env.optimise_parameters), n_partitions=n_partitions
         )
+        # One subproblem per direction, so the directions set the population
+        population_size = len(ref_dirs)
         algo = MOEAD(
             ref_dirs=ref_dirs,
             n_neighbors=n_neighbors,
@@ -288,14 +340,35 @@ def train_genetic(config_path: str, save_dir: Optional[str] = None):
         print(f"  Crossover prob: {crossover_prob}")
         print(f"  Mutation prob: {mutation_prob}")
 
-    # Run optimization
+    # Run optimization. algorithm_runtime covers this alone; the Pareto and
+    # stack plots below are excluded so the figure is comparable across runs.
+    history = HypervolumeHistory(
+        n_objectives=len(env.optimise_parameters),
+        every=parser.getint(section, "hypervolume_freq", fallback=10),
+    )
+    opt_start = time.perf_counter()
     result = minimize(
         problem,
         algo,
         ("n_gen", total_generations),
         seed=seed,
         verbose=verbose,
+        callback=history,
     )
+    algorithm_runtime = time.perf_counter() - opt_start
+
+    # Same filename and columns the RL trainer writes, so anything reading a
+    # run directory gets one format regardless of which algorithm produced it.
+    if save_dir and history.rows:
+        import pandas as pd
+
+        history_path = Path(save_dir)
+        history_path.mkdir(parents=True, exist_ok=True)
+        pd.DataFrame(history.rows).to_csv(
+            history_path / "training_history.csv", index=False
+        )
+        if verbose:
+            print(f"  Saved hypervolume history ({len(history.rows)} points)")
 
     if verbose:
         print("\nOptimization complete!")
@@ -350,6 +423,7 @@ def train_genetic(config_path: str, save_dir: Optional[str] = None):
             "crossover_prob": crossover_prob,
             "mutation_prob": mutation_prob,
             "seed": seed,
+            "algorithm_runtime": round(algorithm_runtime, 2),
         },
     }
 

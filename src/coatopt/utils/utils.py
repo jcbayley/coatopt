@@ -2,8 +2,10 @@
 
 import ast
 import json
+import os
 import platform
 import subprocess
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -419,6 +421,64 @@ def load_pareto_front(run_dir: Path):
     return designs_df, values_df, rewards_df
 
 
+def get_cpu_info() -> dict:
+    """Describe the machine a run actually landed on.
+
+    Records the host, CPU model and a fixed timing probe, since Condor
+    schedules across heterogeneous nodes. cpu_count is what the machine
+    advertises; cpu_affinity is how many of those this process may use.
+    """
+    info = {
+        "node": platform.node(),
+        "system": platform.system(),
+        "release": platform.release(),
+        "python_version": platform.python_version(),
+        "machine": platform.machine(),
+        "cpu_model": platform.processor() or None,
+        "cpu_count": os.cpu_count(),
+        "cpu_affinity": None,
+        "torch_threads": None,
+        "matmul_probe_ms": None,
+    }
+
+    try:
+        if platform.system() == "Linux":
+            with open("/proc/cpuinfo") as f:
+                for line in f:
+                    if line.startswith("model name"):
+                        info["cpu_model"] = line.split(":", 1)[1].strip()
+                        break
+        elif platform.system() == "Darwin":
+            info["cpu_model"] = subprocess.check_output(
+                ["sysctl", "-n", "machdep.cpu.brand_string"], text=True
+            ).strip()
+    except Exception:
+        pass
+
+    try:  # Linux only; this is the count request_cpus actually grants
+        info["cpu_affinity"] = len(os.sched_getaffinity(0))
+    except (AttributeError, OSError):
+        pass
+
+    # Fixed probe so two runs can be compared directly. Read it together with
+    # torch_threads, which is what it was measured under.
+    try:
+        import torch
+
+        info["torch_threads"] = torch.get_num_threads()
+        a = torch.ones(256, 256)
+        for _ in range(3):
+            a @ a
+        start = time.perf_counter()
+        for _ in range(50):
+            a @ a
+        info["matmul_probe_ms"] = round((time.perf_counter() - start) / 50 * 1e3, 3)
+    except Exception:
+        pass
+
+    return info
+
+
 def save_run_metadata(
     save_dir: str,
     algorithm_name: str,
@@ -456,16 +516,16 @@ def save_run_metadata(
         "duration_seconds": round(duration_seconds, 2),
         "duration_minutes": round(duration_minutes, 2),
         "duration_hours": round(duration_hours, 2),
+        # total_runtime is the whole train() call; algorithm_runtime is the
+        # optimisation alone, or None if the trainer does not separate them.
+        "total_runtime": round(duration_seconds, 2),
+        "algorithm_runtime": None,
         "pareto_front_size": pareto_front_size,
         "total_episodes": total_episodes,
         "total_generations": total_generations,
         "config_path": str(config_path) if config_path else None,
         "git_hash": get_git_hash(),
-        "platform": {
-            "system": platform.system(),
-            "python_version": platform.python_version(),
-            "machine": platform.machine(),
-        },
+        "platform": get_cpu_info(),
     }
 
     # Add any additional info

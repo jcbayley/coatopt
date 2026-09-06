@@ -76,6 +76,10 @@ output = logs/job_$(run_id).out
 error = logs/job_$(run_id).err
 log = logs/job_$(run_id).log
 
+# Keep every library inside the CPU allocation; otherwise each job sizes its
+# thread pool from the machine's core count and jobs oversubscribe a node.
+environment = "OMP_NUM_THREADS={request_cpus} MKL_NUM_THREADS={request_cpus} OPENBLAS_NUM_THREADS={request_cpus} NUMEXPR_NUM_THREADS={request_cpus}"
+
 # Resource requirements
 request_cpus = {request_cpus}
 request_memory = {request_memory}
