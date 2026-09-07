@@ -64,3 +64,18 @@ htmlcov/
 # Type checking
 .mypy_cache/
 .pytype/
+
+# Run outputs and data directories
+paper_runs/
+runs/
+output/
+tmp/
+*obj_*layer*/
+condor_*/
+TiTa205_*/
+*.zip
+*.code-workspace
+*_backup.py
+\#*#
+* copy*
+

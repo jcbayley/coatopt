@@ -356,6 +356,23 @@ def load_pareto_front(run_dir: Path):
     rewards_df = combined[reward_cols].copy()
     rewards_df.columns = [col.replace("_reward", "") for col in rewards_df.columns]
 
+    # Ensure dual compatibility between transmission (ppm) and reflectivity (0-1)
+    if "transmission" in values_df.columns and "reflectivity" not in values_df.columns:
+        abs_col = values_df["absorption"] if "absorption" in values_df.columns else 0.0
+        values_df["reflectivity"] = np.clip(1.0 - (values_df["transmission"] + abs_col) * 1e-6, 0.0, 1.0)
+    elif "reflectivity" in values_df.columns and "transmission" not in values_df.columns:
+        abs_col = values_df["absorption"] if "absorption" in values_df.columns else 0.0
+        values_df["transmission"] = np.maximum(0.0, (1.0 - values_df["reflectivity"]) * 1e6 - abs_col)
+
+    if "absorption" not in values_df.columns:
+        values_df["absorption"] = 0.0
+
+    # Ensure rewards_df also provides both keys if one is present
+    if "transmission" in rewards_df.columns and "reflectivity" not in rewards_df.columns:
+        rewards_df["reflectivity"] = rewards_df["transmission"]
+    elif "reflectivity" in rewards_df.columns and "transmission" not in rewards_df.columns:
+        rewards_df["transmission"] = rewards_df["reflectivity"]
+
     return designs_df, values_df, rewards_df
 
 

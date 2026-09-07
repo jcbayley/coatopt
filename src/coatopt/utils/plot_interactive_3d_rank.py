@@ -2716,7 +2716,7 @@ def generate_3d_rank_dashboard_from_args(args):
             document.getElementById('btn-toggle-z-scale').classList.remove('active');
         }
 
-        var selectedDesignIdx = null;
+        var selectedDesignIdx = (designsList.length > 0) ? designsList[0].originalIdx : 0;
         var comparisonDesignIdx = null;
 
         function showPlotMessage(divId, message) {
@@ -2805,6 +2805,8 @@ def generate_3d_rank_dashboard_from_args(args):
             traces = traces.concat(selTraces);
             
             var layout = {
+                barmode: 'overlay',
+                bargap: 0,
                 paper_bgcolor: '#1e1e1e',
                 plot_bgcolor: '#1e1e1e',
                 margin: { l: 45, r: 20, t: 15, b: 35 },
@@ -3939,6 +3941,16 @@ def generate_3d_rank_dashboard_from_args(args):
         if (initialSelectIdx !== null) {
             updateSelectedDesign(initialSelectIdx);
         }
+
+        // Ensure all Plotly responsive plots redraw cleanly once container dimensions settle
+        setTimeout(function() {
+            try {
+                Plotly.Plots.resize('plot-3d');
+                Plotly.Plots.resize('plot-stack');
+                Plotly.Plots.resize('plot-field');
+                Plotly.Plots.resize('plot-spectrum');
+            } catch(e) {}
+        }, 150);
 
         // Camera rotation variables and animation loop
         var rotating = false;
